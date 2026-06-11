@@ -1,0 +1,27 @@
+{
+  "name": "@zod-compiler/trpc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "client": "tsx src/client.ts",
+    "build": "tsdown",
+    "check": "zod-compiler check src/schemas.ts --json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@trpc/client": "^11.17.0",
+    "@trpc/server": "^11.17.0",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsdown": "^0.22.1",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:",
+    "zod-compiler": "workspace:*"
+  }
+}

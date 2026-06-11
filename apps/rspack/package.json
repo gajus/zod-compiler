@@ -1,0 +1,20 @@
+{
+  "name": "@zod-compiler/rspack",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rspack build",
+    "start": "node dist/main.js",
+    "test": "pnpm build && node dist/main.js"
+  },
+  "dependencies": {
+    "zod": "catalog:",
+    "zod-compiler": "workspace:*"
+  },
+  "devDependencies": {
+    "@rspack/cli": "^2.0.5",
+    "@rspack/core": "^2.0.5",
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "greeting": "Hello",
+  "farewell": "Goodbye",
+  "errors": {
+    "notFound": "Not found",
+    "invalid": "Invalid input"
+  }
+}

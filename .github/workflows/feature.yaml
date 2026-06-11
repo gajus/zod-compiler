@@ -1,0 +1,34 @@
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: setup repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: setup pnpm
+        uses: pnpm/action-setup@v6
+      - name: setup node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # build before lint and test: #src imports resolve to dist/ — type-aware
+      # lint reads dist/ types, and test discovery executes fixtures through
+      # jiti, which resolves #src to dist/ at runtime.
+      - run: pnpm build
+      - run: pnpm lint
+      - run: pnpm test
+    timeout-minutes: 10
+name: Test and build
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review

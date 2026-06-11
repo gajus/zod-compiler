@@ -1,0 +1,9 @@
+dist
+node_modules
+*.log
+.*
+!.github
+!.gitignore
+!.npmrc
+!.oxlintrc.json
+!.oxfmtrc.json

@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "..",
+    "paths": {
+      "zod3": ["./node_modules/zod3"]
+    }
+  },
+  "include": ["**/*.ts"]
+}

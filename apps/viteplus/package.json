@@ -1,0 +1,25 @@
+{
+  "name": "@zod-compiler/viteplus",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "zod-compiler generate src/schemas.ts -o src/schemas.compiled.ts",
+    "check": "zod-compiler check src/schemas.ts",
+    "start": "tsx src/main.ts",
+    "dev": "vp dev",
+    "build": "vp build",
+    "start:built": "node dist/main.mjs",
+    "test": "vp test run",
+    "lint": "vp check"
+  },
+  "dependencies": {
+    "zod": "catalog:",
+    "zod-compiler": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "^0.1.24"
+  }
+}

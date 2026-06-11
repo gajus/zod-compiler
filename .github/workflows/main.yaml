@@ -1,0 +1,38 @@
+jobs:
+  release:
+    environment: release
+    name: Release
+    permissions:
+      contents: write
+      id-token: write
+      issues: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: setup repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: setup pnpm
+        uses: pnpm/action-setup@v6
+      - name: setup node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # build before lint and test: #src imports resolve to dist/ — type-aware
+      # lint reads dist/ types, and test discovery executes fixtures through
+      # jiti, which resolves #src to dist/ at runtime.
+      - run: pnpm build
+      - run: pnpm lint
+      - run: pnpm test
+      - env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm exec semantic-release
+    timeout-minutes: 30
+name: Release
+on:
+  push:
+    branches:
+      - main

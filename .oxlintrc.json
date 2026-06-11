@@ -1,0 +1,121 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["import", "typescript", "unicorn", "oxc", "promise"],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "no-unused-vars": "error",
+    "no-undef": "off",
+    "typescript/no-explicit-any": "error",
+    "no-empty": "error",
+    "no-console": "warn",
+    "no-var": "error",
+    "import/no-cycle": "warn",
+    "prefer-const": "error",
+    "typescript/consistent-type-imports": [
+      "error",
+      {
+        "disallowTypeAnnotations": false
+      }
+    ],
+    "no-param-reassign": "error",
+    "typescript/no-non-null-assertion": "warn",
+    "typescript/no-namespace": "error",
+    "no-else-return": "warn",
+    "typescript/prefer-as-const": "error",
+    "unicorn/no-static-only-class": "warn",
+    "typescript/no-useless-empty-export": "error",
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/no-implied-eval": "off"
+  },
+  "overrides": [
+    {
+      "files": ["src/**", "tests/**"],
+      "rules": {
+        "import/no-nodejs-modules": "error"
+      }
+    },
+    {
+      "files": [
+        "src/cli/**",
+        "src/loader.ts",
+        "src/static-filter.ts",
+        "tests/cli/**",
+        "tests/discovery.test.ts",
+        "tests/loader.test.ts",
+        "src/unplugin/**",
+        "tests/unplugin/**",
+        "tests/zod-version.ts"
+      ],
+      "rules": {
+        "import/no-nodejs-modules": "off"
+      }
+    },
+    {
+      "files": ["src/core/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["#src/cli/**", "#src/unplugin/**", "#src/discovery.*", "#src/loader.*"],
+                "message": "core/ must not depend on cli/, unplugin/, discovery, or loader"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/cli/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["#src/unplugin/**"],
+                "message": "cli/ must not depend on unplugin/"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/unplugin/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["#src/cli/**"],
+                "message": "unplugin/ must not depend on cli/"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["apps/hono/**"],
+      "globals": {
+        "Bun": "readonly"
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "node_modules",
+    "dist",
+    "**/dist",
+    "**/*.compiled.ts",
+    "**/*.compiled.js",
+    "**/.next",
+    "smoke/node_modules",
+    "tests/fixtures"
+  ]
+}

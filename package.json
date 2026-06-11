@@ -1,0 +1,125 @@
+{
+  "name": "zod-compiler",
+  "version": "1.0.18",
+  "description": "Compile Zod schemas into zero-overhead validation functions",
+  "keywords": [
+    "aot",
+    "codegen",
+    "compiler",
+    "performance",
+    "schema",
+    "typescript",
+    "validation",
+    "zod"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gajus/zod-compiler.git"
+  },
+  "bin": {
+    "zod-compiler": "./dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "type": "module",
+  "imports": {
+    "#src/*": {
+      "types": "./dist/*",
+      "source": "./src/*",
+      "default": "./dist/*"
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "source": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./vite": {
+      "types": "./dist/unplugin/vite.d.ts",
+      "source": "./src/unplugin/vite.ts",
+      "import": "./dist/unplugin/vite.js",
+      "default": "./dist/unplugin/vite.js"
+    },
+    "./webpack": {
+      "types": "./dist/unplugin/webpack.d.ts",
+      "source": "./src/unplugin/webpack.ts",
+      "import": "./dist/unplugin/webpack.js",
+      "default": "./dist/unplugin/webpack.js"
+    },
+    "./esbuild": {
+      "types": "./dist/unplugin/esbuild.d.ts",
+      "source": "./src/unplugin/esbuild.ts",
+      "import": "./dist/unplugin/esbuild.js",
+      "default": "./dist/unplugin/esbuild.js"
+    },
+    "./rollup": {
+      "types": "./dist/unplugin/rollup.d.ts",
+      "source": "./src/unplugin/rollup.ts",
+      "import": "./dist/unplugin/rollup.js",
+      "default": "./dist/unplugin/rollup.js"
+    },
+    "./rolldown": {
+      "types": "./dist/unplugin/rolldown.d.ts",
+      "source": "./src/unplugin/rolldown.ts",
+      "import": "./dist/unplugin/rolldown.js",
+      "default": "./dist/unplugin/rolldown.js"
+    },
+    "./bun": {
+      "types": "./dist/unplugin/bun.d.ts",
+      "source": "./src/unplugin/bun.ts",
+      "import": "./dist/unplugin/bun.js",
+      "default": "./dist/unplugin/bun.js"
+    },
+    "./rspack": {
+      "types": "./dist/unplugin/rspack.d.ts",
+      "source": "./src/unplugin/rspack.ts",
+      "import": "./dist/unplugin/rspack.js",
+      "default": "./dist/unplugin/rspack.js"
+    },
+    "./farm": {
+      "types": "./dist/unplugin/farm.d.ts",
+      "source": "./src/unplugin/farm.ts",
+      "import": "./dist/unplugin/farm.js",
+      "default": "./dist/unplugin/farm.js"
+    }
+  },
+  "scripts": {
+    "benchmark": "vitest bench --config benchmarks/vitest.config.ts",
+    "build": "rm -fr ./dist && tsc",
+    "dev": "tsc --watch",
+    "lint": "oxlint --type-aware && oxfmt --check && tsc --noEmit && knip",
+    "size:cli": "pnpm --filter @zod-compiler/benchmarks size:cli",
+    "size:unplugin": "pnpm --filter @zod-compiler/benchmarks size:unplugin",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@jridgewell/remapping": "^2.3.5",
+    "acorn": "^8.16.0",
+    "get-tsconfig": "^4.14.0",
+    "jiti": "^2.7.0",
+    "magic-string": "^0.30.21",
+    "picomatch": "^4.0.4",
+    "unplugin": "^3.0.0"
+  },
+  "devDependencies": {
+    "@jridgewell/trace-mapping": "^0.3.31",
+    "@types/node": "catalog:",
+    "@types/picomatch": "^4.0.3",
+    "knip": "^6.16.1",
+    "oxfmt": "^0.54.0",
+    "oxlint": "^1.69.0",
+    "oxlint-tsgolint": "^0.23.0",
+    "semantic-release": "^25.0.3",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  },
+  "packageManager": "pnpm@10.33.1"
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@zod-compiler/benchmarks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "size:cli": "tsx suites/size/cli.ts",
+    "size:unplugin": "tsx suites/size/unplugin.ts"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "typia": "^12.1.1",
+    "zod": "catalog:",
+    "zod-compiler": "workspace:*",
+    "zod3": "npm:zod@3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@typia/unplugin": "^12.1.1",
+    "tsx": "catalog:",
+    "vite": "catalog:"
+  }
+}

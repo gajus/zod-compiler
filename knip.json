@@ -1,0 +1,23 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreWorkspaces": ["apps/*"],
+  "workspaces": {
+    ".": {
+      "entry": [
+        "src/unplugin/{bun,esbuild,farm,rolldown,rollup,rspack,vite,webpack}.ts",
+        "tests/compat.mjs"
+      ],
+      "project": ["src/**/*.ts", "tests/**/*.{ts,mjs}"],
+      "ignore": ["tests/fixtures/**"],
+      "ignoreExportsUsedInFile": {
+        "interface": true,
+        "type": true
+      }
+    },
+    "benchmarks": {
+      "entry": ["suites/**/*.bench.ts", "suites/size/{cli,unplugin}.ts"],
+      "project": ["**/*.ts"],
+      "ignore": ["fixtures/**"]
+    }
+  }
+}

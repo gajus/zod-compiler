@@ -1,0 +1,24 @@
+{
+  "name": "@zod-compiler/hono",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "build": "bun run build.ts",
+    "generate": "zod-compiler generate src/schemas.ts -o src/schemas.compiled.ts",
+    "check": "zod-compiler check src/schemas.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hono/zod-validator": "^0.8.0",
+    "hono": "^4.12.23",
+    "zod": "catalog:",
+    "zod-compiler": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
