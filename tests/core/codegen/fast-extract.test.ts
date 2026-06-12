@@ -90,8 +90,11 @@ describe("size-gated fast-check extraction", () => {
 
   it("bounds a discriminated union of many small options", () => {
     // Each option is below MIN_EXTRACT on its own, so bounding the switch relies
-    // on the over-budget pressure relief, not per-option size.
-    const options = Array.from({ length: 150 }, (_, i) =>
+    // on the over-budget pressure relief, not per-option size. The option count
+    // clears the cap even after the discriminated-union fast path strips each
+    // case's redundant object-guard + discriminator re-check (which raised the
+    // inline headroom): ~250 options is the floor where extraction re-engages.
+    const options = Array.from({ length: 300 }, (_, i) =>
       z.object({
         t: z.literal(i),
         a: z.string().min(1),

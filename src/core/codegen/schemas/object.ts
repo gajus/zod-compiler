@@ -96,11 +96,21 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
   return code;
 }
 
-export function fastObject(ir: ObjectIR, g: FastGen): string | null {
+/**
+ * Property/strict/refine fast-checks for an object, WITHOUT the leading
+ * `typeof===object && !==null && !Array.isArray` type-guard. Returns the
+ * conjunct parts (joinable with `&&`), or null if any child is fast-ineligible.
+ *
+ * `skipKey`, when given, omits that one property's check. Used by the
+ * discriminated-union fast path (via `g.discSkipKey`): the enclosing `switch`
+ * has already matched the discriminator's value, so re-checking it is redundant.
+ */
+function fastObjectBody(ir: ObjectIR, g: FastGen, skipKey?: string): string[] | null {
   const x = g.input;
-  const parts: string[] = [`typeof ${x}==="object"`, `${x}!==null`, `!Array.isArray(${x})`];
+  const parts: string[] = [];
 
   for (const [key, propIR] of Object.entries(ir.properties)) {
+    if (key === skipKey) continue;
     const propExpr = `${x}[${escapeString(key)}]`;
     const propCheck = g.visit(propIR, { input: propExpr });
     if (propCheck === null) return null; // All-or-nothing
@@ -109,7 +119,9 @@ export function fastObject(ir: ObjectIR, g: FastGen): string | null {
 
   // Strict unknown-key pass: hosted boolean helper (a for-in loop cannot live
   // in the && chain). Same for-in iteration as the slow path — fast/slow
-  // agreement is load-bearing under the __zcFinD deferral.
+  // agreement is load-bearing under the __zcFinD deferral. The membership set is
+  // the FULL key list (the discriminator is a recognized key), independent of
+  // skipKey, which only suppresses re-validating the discriminator's value.
   if (ir.strict) {
     const keys = Object.keys(ir.properties);
     const fnName = g.temp("so");
@@ -129,5 +141,19 @@ export function fastObject(ir: ObjectIR, g: FastGen): string | null {
     }
   }
 
-  return parts.join("&&");
+  return parts;
+}
+
+export function fastObject(ir: ObjectIR, g: FastGen): string | null {
+  const x = g.input;
+  const body = fastObjectBody(ir, g, g.discSkipKey);
+  if (body === null) return null;
+  // Discriminated-union option: the enclosing switch (and the caller's guard)
+  // already established object-ness and the discriminator value, so emit only
+  // the remaining checks — no leading type-guard. An option with nothing left
+  // to check accepts unconditionally ("true").
+  if (g.discSkipKey !== undefined) {
+    return body.length > 0 ? body.join("&&") : "true";
+  }
+  return [`typeof ${x}==="object"`, `${x}!==null`, `!Array.isArray(${x})`, ...body].join("&&");
 }

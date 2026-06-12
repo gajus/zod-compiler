@@ -112,21 +112,31 @@ const fastRegistry = {
  *   helper's own top node — see generateFast); children are always extractable
  * @param scope      size accumulator for the function being assembled (a child
  *   visit shares the parent's scope; a hoisted helper body gets a fresh one)
+ * @param discSkipKey discriminated-union option marker (see FastGen.discSkipKey);
+ *   carried only on the option's own node, never auto-propagated to children
  */
 export function createFastGen(
   inputExpr: string,
   ctx: CodeGenContext,
   extractable = false,
   scope: FastScope = { used: 0 },
+  discSkipKey?: string,
 ): FastGen {
   return {
     input: inputExpr,
     ctx,
     extractable,
     scope,
+    discSkipKey,
     visit(ir, overrides) {
-      // A child shares this function's scope and is itself extractable.
-      return generateFast(ir, createFastGen(overrides?.input ?? inputExpr, ctx, true, scope));
+      // A child shares this function's scope and is itself extractable. The
+      // discriminated-union skip is NOT inherited implicitly — only a caller
+      // that explicitly passes overrides.discSkipKey (fastDiscriminatedUnion)
+      // sets it, so nested objects keep their own type-guard.
+      return generateFast(
+        ir,
+        createFastGen(overrides?.input ?? inputExpr, ctx, true, scope, overrides?.discSkipKey),
+      );
     },
     scoped: (input) => createFastGen(input, ctx, true, { used: 0 }),
     temp: (prefix) => emitTemp(ctx, prefix),
@@ -169,7 +179,12 @@ export function generateFast(ir: SchemaIR, g: FastGen): string | null {
       // Generate the body relative to the helper's parameter, in a fresh scope;
       // the top node is non-extractable (it IS this helper) while its children
       // stay extractable, so an oversized helper splits further recursively.
-      const inner = generateFast(ir, createFastGen(param, g.ctx, false, { used: 0 }));
+      // Carry discSkipKey so an extracted discriminated-union option still drops
+      // its redundant guard inside the hoisted helper.
+      const inner = generateFast(
+        ir,
+        createFastGen(param, g.ctx, false, { used: 0 }, g.discSkipKey),
+      );
       if (inner === null) return null; // ineligible sub-schema disables the whole fast path
       const fnName = emitTemp(g.ctx, "fo");
       g.ctx.preamble.push(`function ${fnName}(${param}){return ${inner};}`);

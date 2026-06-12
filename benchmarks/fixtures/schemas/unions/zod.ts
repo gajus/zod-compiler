@@ -26,3 +26,40 @@ export const DiscriminatedUnionSchema = z.discriminatedUnion("type", [
 ]);
 
 export type UIEvent = z.infer<typeof DiscriminatedUnionSchema>;
+
+// ─── Large discriminated union (8 options) ───────────────────────────────────
+// A discriminated union with enough options that the compiled switch-dispatch
+// helper exceeds V8's inlining budget — the regime where the per-case object
+// guard is NOT cleaned up by the optimizer and codegen has to avoid emitting it.
+
+export const LargeDiscriminatedUnionSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("click"),
+    x: z.number().int(),
+    y: z.number().int(),
+    target: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("scroll"),
+    direction: z.enum(["up", "down"]),
+    delta: z.number().positive(),
+  }),
+  z.object({ type: z.literal("keypress"), key: z.string().min(1), modifiers: z.array(z.string()) }),
+  z.object({ type: z.literal("focus"), elementId: z.string().min(1), tabIndex: z.number().int() }),
+  z.object({ type: z.literal("blur"), elementId: z.string().min(1) }),
+  z.object({ type: z.literal("submit"), formId: z.string().min(1), fields: z.array(z.string()) }),
+  z.object({
+    type: z.literal("resize"),
+    width: z.number().positive(),
+    height: z.number().positive(),
+  }),
+  z.object({
+    type: z.literal("drag"),
+    fromX: z.number().int(),
+    fromY: z.number().int(),
+    toX: z.number().int(),
+    toY: z.number().int(),
+  }),
+]);
+
+export type LargeUIEvent = z.infer<typeof LargeDiscriminatedUnionSchema>;

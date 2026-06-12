@@ -51,7 +51,16 @@ export function fastDiscriminatedUnion(ir: DiscriminatedUnionIR, g: FastGen): st
   const body = g.scoped(helperParam);
   for (const { value, option: index } of ir.cases) {
     const option = ir.options[index] as SchemaIR;
-    const check = body.visit(option);
+
+    // `discSkipKey` tells an object option to drop its own type-guard and
+    // discriminator re-check: the caller's guard (`typeof x==="object"&&…`
+    // below) already proved object-ness, and this switch case has matched the
+    // discriminator value, so re-emitting either is pure redundancy the
+    // optimizer only removes when it inlines this helper — which a union large
+    // enough to matter won't. Routed through the normal `visit` so size-gated
+    // extraction still bounds the switch (the strip survives into any hoisted
+    // helper); non-object options ignore the hint and keep their own guard.
+    const check = body.visit(option, { discSkipKey: ir.discriminator });
     if (check === null) return null;
     cases.push(`case ${literalToJs(value)}:return ${check};`);
   }

@@ -138,10 +138,18 @@ export interface FastGen {
   readonly scope: FastScope;
 
   /**
+   * Set on the gen for a discriminated-union option only: the discriminator
+   * key. Signals `fastObject` to omit its type-guard and skip re-checking that
+   * property (the switch already matched its value). Never propagated to child
+   * nodes — nested objects keep their own guard.
+   */
+  readonly discSkipKey?: string | undefined;
+
+  /**
    * Recursively generate fast-check expression for a child IR node.
    * Returns null if any child is ineligible for fast path.
    */
-  visit(ir: SchemaIR, overrides?: { input?: string }): string | null;
+  visit(ir: SchemaIR, overrides?: { input?: string; discSkipKey?: string }): string | null;
 
   /**
    * A FastGen for emitting a SEPARATE function body (a hand-built preamble
