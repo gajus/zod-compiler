@@ -45,9 +45,13 @@ export function fastDiscriminatedUnion(ir: DiscriminatedUnionIR, g: FastGen): st
   const helperParam = g.temp("dx");
   const cases: string[] = [];
 
+  // The switch body is its own function: size-gate the options against the cap
+  // in a fresh scope, otherwise many small options accumulate into the caller's
+  // scope while this helper itself grows unbounded past the TurboFan budget.
+  const body = g.scoped(helperParam);
   for (const { value, option: index } of ir.cases) {
     const option = ir.options[index] as SchemaIR;
-    const check = g.visit(option, { input: helperParam });
+    const check = body.visit(option);
     if (check === null) return null;
     cases.push(`case ${literalToJs(value)}:return ${check};`);
   }

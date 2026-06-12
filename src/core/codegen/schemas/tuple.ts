@@ -101,10 +101,12 @@ export function fastTuple(ir: TupleIR, g: FastGen): string | null {
     if (itemCheck !== "true") parts.push(itemCheck);
   }
 
-  // Rest element validation via preamble helper (avoids .slice().every() allocation)
+  // Rest element validation via preamble helper (avoids .slice().every()
+  // allocation). Fresh scope: the helper is its own function, size-gated
+  // independently. (Fixed items above stay inline in the caller's && chain.)
   if (ir.rest !== null) {
     const rv = g.temp("tr");
-    const restCheck = g.visit(ir.rest, { input: rv });
+    const restCheck = g.scoped(rv).visit(ir.rest);
     if (restCheck === null) return null;
     if (restCheck !== "true") {
       const helperName = g.temp("te");

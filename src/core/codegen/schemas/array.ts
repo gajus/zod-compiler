@@ -74,9 +74,10 @@ export function fastArray(ir: ArrayIR, g: FastGen): string | null {
     }
   }
 
-  // Element validation via preamble helper (avoids .every() closure allocation)
+  // Element validation via preamble helper (avoids .every() closure allocation).
+  // Fresh scope: the helper is its own function, size-gated independently.
   const elemVar = g.temp("ae");
-  const elemCheck = g.visit(ir.element, { input: elemVar });
+  const elemCheck = g.scoped(elemVar).visit(ir.element);
   if (elemCheck === null) return null;
   if (elemCheck !== "true") {
     const helperName = g.temp("af");

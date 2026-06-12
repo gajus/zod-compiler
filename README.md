@@ -536,6 +536,7 @@ compiles; `z.string().transform((s) => s + suffix)` falls back (it captures
 | large object (100 items)                          | 13K    | 18K    | **1.4M**         | 1.3M  | 126K  | **77x**   |
 | recursive tree (7 nodes)                          | 579K   | 2.0M   | **11.2M**        | 10.9M | 4.6M  | 5.5x      |
 | recursive tree (121 nodes)                        | 32K    | 140K   | **2.3M**         | 1.9M  | 352K  | **17x**   |
+| deeply nested object (243 leaves)                 | 11K    | 19K    | **1.2M**         | 1.1M  | 123K  | **61x**   |
 | event log (combined)                              | 374K   | 580K   | **5.6M**         | —     | —     | 9.6x      |
 | object with transform (zero-capture)              | 1.2M   | 1.9M   | **6.2M**         | —     | —     | 3.2x      |
 | array 10 × transform (zero-capture)               | 123K   | 216K   | **3.2M**         | —     | —     | **15x**   |
@@ -544,7 +545,7 @@ compiles; `z.string().transform((s) => s + suffix)` falls back (it captures
 
 _ops/s, higher is better. "—" = not supported by the library. Measured with `vitest bench` on Apple M4 Max (zod 4.3.6, zod v3 3.23.8, typia 12, ajv 8)._
 
-Performance scales with schema complexity. Nested objects and arrays see the biggest gains because zod-compiler eliminates per-node traversal overhead. `discriminatedUnion` uses O(1) `switch` dispatch instead of Zod's sequential trial. The invalid-input row is large because failed `safeParse` defers error materialization until `.error` is read. Zero-capture `transform`/`refine` callbacks are compiled (3-19x); schemas with captured callbacks fall back per-field and roughly match Zod.
+Performance scales with schema complexity. Nested objects and arrays see the biggest gains because zod-compiler eliminates per-node traversal overhead. Deeply nested schemas (the 243-leaf dashboard row) stay fast because oversized fast-check functions are split into smaller boolean helpers, each kept within V8's optimizing-compiler budget. `discriminatedUnion` uses O(1) `switch` dispatch instead of Zod's sequential trial. The invalid-input row is large because failed `safeParse` defers error materialization until `.error` is read. Zero-capture `transform`/`refine` callbacks are compiled (3-19x); schemas with captured callbacks fall back per-field and roughly match Zod.
 
 `parse()` (throwing API) rides a zero-allocation fast path: medium object 2.4M → 9.6M ops/s (4.0x), large object (100 items) 18K → 1.4M ops/s (78x).
 

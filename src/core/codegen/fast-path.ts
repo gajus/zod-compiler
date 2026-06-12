@@ -8,8 +8,16 @@
  */
 
 import type { SchemaIR } from "../types.js";
-import type { CodeGenContext, FastGen, FastGenerator } from "./context.js";
+import type { CodeGenContext, FastGen, FastGenerator, FastScope } from "./context.js";
 import { emitRegex, emitTemp } from "./context.js";
+import {
+  CALL_COST,
+  EXTRACT_CAP,
+  estimateFastCost,
+  HOISTABLE,
+  MIN_EXTRACT,
+  predictedInlineSize,
+} from "./fast-size.js";
 import { fastAny } from "./schemas/any.js";
 import { fastArray } from "./schemas/array.js";
 import { fastBigInt } from "./schemas/bigint.js";
@@ -97,13 +105,30 @@ const fastRegistry = {
 
 // ─── Factory ─────────────────────────────────────────────────────────────────
 
-export function createFastGen(inputExpr: string, ctx: CodeGenContext): FastGen {
+/**
+ * @param inputExpr  the input expression this node validates
+ * @param ctx        shared codegen context
+ * @param extractable whether THIS node may be hoisted (false for the root and a
+ *   helper's own top node — see generateFast); children are always extractable
+ * @param scope      size accumulator for the function being assembled (a child
+ *   visit shares the parent's scope; a hoisted helper body gets a fresh one)
+ */
+export function createFastGen(
+  inputExpr: string,
+  ctx: CodeGenContext,
+  extractable = false,
+  scope: FastScope = { used: 0 },
+): FastGen {
   return {
     input: inputExpr,
     ctx,
+    extractable,
+    scope,
     visit(ir, overrides) {
-      return generateFast(ir, createFastGen(overrides?.input ?? inputExpr, ctx));
+      // A child shares this function's scope and is itself extractable.
+      return generateFast(ir, createFastGen(overrides?.input ?? inputExpr, ctx, true, scope));
     },
+    scoped: (input) => createFastGen(input, ctx, true, { used: 0 }),
     temp: (prefix) => emitTemp(ctx, prefix),
     regex: (prefix, pattern, flags) => emitRegex(ctx, prefix, pattern, flags),
   };
@@ -114,10 +139,58 @@ export function createFastGen(inputExpr: string, ctx: CodeGenContext): FastGen {
 /**
  * Generate a boolean expression string that validates input against the schema.
  * Returns `null` if the schema (or any nested part) is not eligible for fast checking.
+ *
+ * Size-gated extraction: when inlining `ir` would push the function being
+ * assembled past EXTRACT_CAP, it is hoisted into its own boolean helper
+ * `function __fo_N(p){return <expr over p>;}` and replaced by a call. This keeps
+ * every emitted function under V8's TurboFan optimization budget — a single
+ * giant fast-check otherwise drops to the slower Maglev tier (measured ~3-4.5x
+ * on deeply-nested schemas). The running total `g.scope.used` is EXACT emitted
+ * chars (the returned string's length); only the extract look-ahead is an
+ * estimate, scaled for access-path length. Small schemas never approach the
+ * cap, so their output is byte-identical to the fully-inlined form; large
+ * aggregates do split (still semantically identical — only the boolean's shape
+ * changes).
  */
 export function generateFast(ir: SchemaIR, g: FastGen): string | null {
   const gen = fastRegistry[ir.type];
   if (gen === null) return null;
+
+  if (g.extractable && HOISTABLE.has(ir.type)) {
+    const cache = fastSizeCache(g.ctx);
+    const overBudget = g.scope.used + predictedInlineSize(ir, g.input.length, cache) > EXTRACT_CAP;
+    // Extract a sub-schema big enough to be worth a call; but once the function
+    // is ALREADY over budget, extract any hoistable child regardless of size —
+    // otherwise a crowd of small siblings (e.g. a discriminated union of many
+    // small options) grows the function unbounded since none alone clears
+    // MIN_EXTRACT.
+    if (overBudget && (g.scope.used > EXTRACT_CAP || estimateFastCost(ir, cache) >= MIN_EXTRACT)) {
+      const param = emitTemp(g.ctx, "op");
+      // Generate the body relative to the helper's parameter, in a fresh scope;
+      // the top node is non-extractable (it IS this helper) while its children
+      // stay extractable, so an oversized helper splits further recursively.
+      const inner = generateFast(ir, createFastGen(param, g.ctx, false, { used: 0 }));
+      if (inner === null) return null; // ineligible sub-schema disables the whole fast path
+      const fnName = emitTemp(g.ctx, "fo");
+      g.ctx.preamble.push(`function ${fnName}(${param}){return ${inner};}`);
+      g.scope.used += CALL_COST;
+      return `${fnName}(${g.input})`;
+    }
+  }
+
+  // Inlined: charge the enclosing function this node's EXACT emitted size. The
+  // node's own text plus its inlined descendants is exactly the returned string;
+  // children mutated the shared scope as they were visited, but the parent's
+  // length is authoritative, so overwrite rather than add.
+  const before = g.scope.used;
   // oxlint-disable-next-line typescript/no-explicit-any -- registry dispatch requires type erasure at call site
-  return (gen as any)(ir, g);
+  const out = (gen as any)(ir, g) as string | null;
+  if (out === null) return null;
+  g.scope.used = before + out.length;
+  return out;
+}
+
+/** Per-compile memo for estimateFastCost, stashed on the shared context. */
+function fastSizeCache(ctx: CodeGenContext): WeakMap<SchemaIR, number> {
+  return (ctx.fastSizeCache ??= new WeakMap<SchemaIR, number>());
 }

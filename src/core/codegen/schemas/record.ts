@@ -54,11 +54,14 @@ export function fastRecord(ir: RecordIR, g: FastGen): string | null {
 
   const kv = g.temp("rk");
   const vv = g.temp("rv");
-  const keyCheck = plainStringKey ? "true" : g.visit(ir.keyType, { input: kv });
+  // Key + value checks share one fresh scope — they live in the same emitted
+  // helper function, size-gated independently of the caller.
+  const body = g.scoped(kv);
+  const keyCheck = plainStringKey ? "true" : body.visit(ir.keyType, { input: kv });
   // Hoist o[k] into a loop variable: computed-key lookups don't get V8's load
   // elimination across check boundaries, so each repeated o[k] would re-walk
   // the (often dictionary-mode) object.
-  const valCheck = g.visit(ir.valueType, { input: vv });
+  const valCheck = body.visit(ir.valueType, { input: vv });
   if (keyCheck === null || valCheck === null) return null;
 
   const conditions: string[] = [];

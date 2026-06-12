@@ -1,4 +1,5 @@
 export * from "./collections/index.js";
+export * from "./deep-nesting/index.js";
 export * from "./effects/index.js";
 export * from "./objects/index.js";
 export * from "./primitives/index.js";

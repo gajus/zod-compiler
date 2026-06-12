@@ -109,6 +109,7 @@
     "@jridgewell/trace-mapping": "^0.3.31",
     "@types/node": "catalog:",
     "@types/picomatch": "^4.0.3",
+    "@vitest/coverage-v8": "4.1.4",
     "knip": "^6.16.1",
     "oxfmt": "^0.54.0",
     "oxlint": "^1.69.0",

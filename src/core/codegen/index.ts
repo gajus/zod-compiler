@@ -68,9 +68,30 @@ export function generateValidator(
     };
   }
 
-  // Fast Path: generate a boolean expression for eligible schemas
+  // Fast Path: generate a boolean expression for eligible schemas.
+  //
+  // generateFast mutates ctx as it walks (extracted __fo_ helpers + regex/effect
+  // decls pushed to the preamble, a recursive __fcr_ name reserved, dedup caches
+  // populated). The walk is all-or-nothing: a later fast-ineligible node makes it
+  // return null AFTER those side effects already landed. Without a rollback the
+  // discarded fast path leaves dead __fo_ helpers in the output — and, when one
+  // referenced the recursive __fcr_ host that the `fastExpr !== null` branch below
+  // never emits, a dangling reference to an undefined identifier. Snapshot the
+  // mutable state and restore it on abort so the slow path re-declares from clean.
+  const fastPreambleLen = ctx.preamble.length;
+  const fastRegexCache = new Map(ctx.regexCache);
+  const fastEffectCache = ctx.effectFnCache && new Map(ctx.effectFnCache);
+  const fastRecName = ctx.recFastName;
   const fg = createFastGen("input", ctx);
   let fastExpr = generateFast(ir, fg);
+  if (fastExpr === null) {
+    ctx.preamble.length = fastPreambleLen;
+    ctx.regexCache = fastRegexCache;
+    if (fastEffectCache === undefined) delete ctx.effectFnCache;
+    else ctx.effectFnCache = fastEffectCache;
+    if (fastRecName === undefined) delete ctx.recFastName;
+    else ctx.recFastName = fastRecName;
+  }
 
   // Host the fast expression in a named boolean helper. Self-recursive
   // schemas need it so recursive refs can call it; every other eligible

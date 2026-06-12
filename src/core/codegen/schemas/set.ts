@@ -81,9 +81,10 @@ export function fastSet(ir: SetIR, g: FastGen): string | null {
     }
   }
 
-  // Element validation via preamble helper (Set has no .every())
+  // Element validation via preamble helper (Set has no .every()).
+  // Fresh scope: the helper is its own function, size-gated independently.
   const elemVar = g.temp("sv");
-  const elemCheck = g.visit(ir.valueType, { input: elemVar });
+  const elemCheck = g.scoped(elemVar).visit(ir.valueType);
   if (elemCheck === null) return null;
   if (elemCheck !== "true") {
     const helperName = g.temp("se");

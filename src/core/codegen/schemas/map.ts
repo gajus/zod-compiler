@@ -33,11 +33,14 @@ export function fastMap(ir: MapIR, g: FastGen): string | null {
   const x = g.input;
   const parts: string[] = [`${x} instanceof Map`];
 
-  // Key/value validation via preamble helper (Map has no .every())
+  // Key/value validation via preamble helper (Map has no .every()).
+  // Key + value share one fresh scope — same emitted helper, size-gated
+  // independently of the caller.
   const entryVar = g.temp("me");
-  const keyCheck = g.visit(ir.keyType, { input: `${entryVar}[0]` });
+  const body = g.scoped(`${entryVar}[0]`);
+  const keyCheck = body.visit(ir.keyType, { input: `${entryVar}[0]` });
   if (keyCheck === null) return null;
-  const valCheck = g.visit(ir.valueType, { input: `${entryVar}[1]` });
+  const valCheck = body.visit(ir.valueType, { input: `${entryVar}[1]` });
   if (valCheck === null) return null;
 
   if (keyCheck !== "true" || valCheck !== "true") {

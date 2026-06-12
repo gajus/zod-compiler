@@ -59,6 +59,8 @@ export interface CodeGenContext {
   recFastName?: string;
   /** Dedup cache for hosted zero-capture effect functions: source text → preamble var. */
   effectFnCache?: Map<string, string>;
+  /** Memo for estimateFastCost (size-gated fast-check extraction). Lazily created. */
+  fastSizeCache?: WeakMap<SchemaIR, number>;
   /**
    * File-level shared slow-walk plan. Set only when generating a mutation-free
    * schema (so shared walks stay on the deferred cold path); the slow-path
@@ -110,16 +112,45 @@ export type SlowGenerator<T extends SchemaIR = SchemaIR> = (ir: T, g: SlowGen) =
 
 // ─── Fast Path context ────────────────────────────────────────────────────────
 
+/**
+ * Per-emitted-function size accumulator for size-gated fast-check extraction.
+ * Shared by every node inlined into the same function; a fresh instance starts
+ * each hosted helper (and the root). See fast-size.ts / generateFast.
+ */
+export interface FastScope {
+  used: number;
+}
+
 /** Context object for fast-path (boolean expression) generator functions. */
 export interface FastGen {
   readonly input: string;
   readonly ctx: CodeGenContext;
 
   /**
+   * Whether the CURRENT node may be hoisted into its own boolean helper when it
+   * (with the already-emitted siblings) would overflow the function size cap.
+   * False for the root and for a helper's own top node — those are already their
+   * own function — but their children are extractable. See generateFast.
+   */
+  readonly extractable: boolean;
+
+  /** Accumulated size (≈ chars) of the function currently being assembled. */
+  readonly scope: FastScope;
+
+  /**
    * Recursively generate fast-check expression for a child IR node.
    * Returns null if any child is ineligible for fast path.
    */
   visit(ir: SchemaIR, overrides?: { input?: string }): string | null;
+
+  /**
+   * A FastGen for emitting a SEPARATE function body (a hand-built preamble
+   * helper such as a discriminated-union switch or an array-element loop). It
+   * carries a FRESH size accumulator, so the helper's own content is size-gated
+   * against the cap independently of the caller — without this, a helper's body
+   * accrues to the caller's scope while the helper itself grows unbounded.
+   */
+  scoped(input: string): FastGen;
 
   /** Generate a unique temp variable name. */
   temp(prefix: string): string;
