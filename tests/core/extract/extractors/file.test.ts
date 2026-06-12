@@ -48,6 +48,24 @@ describe("extractSchema — file", () => {
     expect(ir).not.toHaveProperty("checks");
   });
 
+  it("preserves custom messages on size and mime checks", () => {
+    const ir = extractSchema(
+      z.file().min(100, "too small").max(1000, "too big").mime(["text/plain"], "bad type"),
+    ) as FileIR;
+    expect(ir.checks).toEqual([
+      { kind: "min_size", minimum: 100, message: "too small" },
+      { kind: "max_size", maximum: 1000, message: "too big" },
+      { kind: "mime_type", mime: ["text/plain"], message: "bad type" },
+    ]);
+  });
+
+  it("falls back when a file check has a dynamic (input-dependent) error map", () => {
+    const ir = extractSchema(
+      z.file().min(100, { error: (iss) => `too small: ${(iss as { input: unknown }).input}` }),
+    );
+    expect(ir.type).toBe("fallback");
+  });
+
   it("falls back when file has refine check", () => {
     const schema = z.file().refine((f) => f.name.endsWith(".pdf"), "Must be PDF");
     const ir = extractSchema(schema);

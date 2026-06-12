@@ -265,6 +265,20 @@ describe("feature matrix — collections", () => {
       new File([], "empty.txt", { type: "text/plain" }),
     ]);
   });
+  it("file custom messages (regression: extractor dropped them)", () =>
+    expectParity(
+      z
+        .file()
+        .min(100, "file too small")
+        .max(1000, "file too big")
+        .mime(["text/plain"], "bad type"),
+      [
+        new File(["x"], "a.txt", { type: "text/plain" }), // too small
+        new File(["x".repeat(2000)], "a.txt", { type: "text/plain" }), // too big
+        new File(["x".repeat(500)], "a.png", { type: "image/png" }), // in range, bad mime
+        new File(["x".repeat(500)], "a.txt", { type: "text/plain" }), // valid
+      ],
+    ));
 });
 
 describe("feature matrix — wrappers", () => {
