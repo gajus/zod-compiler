@@ -61,7 +61,7 @@ describe("extractSchema — file", () => {
 
   it("falls back when a file check has a dynamic (input-dependent) error map", () => {
     const ir = extractSchema(
-      z.file().min(100, { error: (iss) => `too small: ${(iss as { input: unknown }).input}` }),
+      z.file().min(100, { error: (iss) => `too small: ${(iss as { input: string }).input}` }),
     );
     expect(ir.type).toBe("fallback");
   });
