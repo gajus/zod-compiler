@@ -548,6 +548,51 @@ describe("feature matrix — union message fidelity", () => {
     expectParity(z.union([z.string().min(2, "too short!"), z.number()]), ["a"]));
 });
 
+// Custom-message parity across every check-bearing type. Before this sweep only
+// `string` and `union` asserted custom-message parity, yet number/bigint/date/
+// set/array/record all bake messages too — and `file` silently dropped them
+// (the bug fixed alongside this suite). Each input below fails exactly one
+// check so the baked message is the first surfaced issue.
+describe("feature matrix — custom message parity", () => {
+  it("number checks", () => {
+    expectParity(z.number().gt(0, "must be positive"), [-1, 0, 1]);
+    expectParity(z.number().gte(5, "min 5"), [4, 5]);
+    expectParity(z.number().lt(10, "too big"), [10, 9]);
+    expectParity(z.number().lte(10, "max 10"), [11, 10]);
+    expectParity(z.number().multipleOf(5, "must be /5"), [7, 10]);
+    expectParity(z.int("must be int"), [1.5, 2]);
+  });
+  it("bigint checks", () => {
+    expectParity(z.bigint().gte(0n, "no negatives"), [-1n, 0n]);
+    expectParity(z.bigint().lte(10n, "too big"), [11n, 10n]);
+    expectParity(z.bigint().multipleOf(3n, "by three"), [7n, 9n]);
+  });
+  it("date checks", () => {
+    expectParity(z.date().min(new Date("2020-01-01"), "too early"), [
+      new Date("2019-01-01"),
+      new Date("2020-06-01"),
+    ]);
+    expectParity(z.date().max(new Date("2020-01-01"), "too late"), [
+      new Date("2021-01-01"),
+      new Date("2019-06-01"),
+    ]);
+  });
+  it("set checks", () => {
+    expectParity(z.set(z.string()).min(2, "need two"), [new Set(["a"]), new Set(["a", "b"])]);
+    expectParity(z.set(z.string()).max(1, "too many"), [new Set(["a", "b"]), new Set(["a"])]);
+  });
+  it("array checks", () => {
+    expectParity(z.array(z.number()).min(2, "need 2"), [[1], [1, 2]]);
+    expectParity(z.array(z.number()).max(3, "max 3"), [[1, 2, 3, 4], [1]]);
+    expectParity(z.array(z.number()).length(2, "exactly 2"), [[1], [1, 2]]);
+  });
+  it("record key check", () =>
+    expectParity(z.record(z.string().min(3, "key too short"), z.number()), [
+      { ab: 1 },
+      { abc: 1 },
+    ]));
+});
+
 describe("feature matrix — parse-mode edge cases", () => {
   it("async refinement throws identically in sync parse", () =>
     expectParity(
