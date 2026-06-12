@@ -530,6 +530,7 @@ compiles; `z.string().transform((s) => s + suffix)` falls back (it captures
 | pipe (non-transform)                              | 8.8M   | 5.9M   | **16.1M**        | —     | —     | 2.7x      |
 | discriminatedUnion (3 variants)                   | 3.3M   | 4.0M   | **16.1M**        | 15.8M | 8.0M  | 4.0x      |
 | discriminatedUnion (8 variants, rotating)         | 2.7M   | 3.5M   | **9.6M**         | —     | —     | 2.7x      |
+| plain union of 8 tagged objects (auto-discrim.)   | 368K   | 655K   | **8.6M**         | —     | —     | **13x**   |
 | strict object (DB row)                            | 1.8M   | 3.2M   | **7.3M**         | —     | —     | 2.3x      |
 | medium object (valid)                             | 2.0M   | 2.4M   | **10.3M**        | 11.4M | 7.7M  | 4.3x      |
 | medium object (invalid)                           | 536K   | 80K    | **15.5M**        | 2.9M  | 7.9M  | **194x**  |
@@ -546,7 +547,7 @@ compiles; `z.string().transform((s) => s + suffix)` falls back (it captures
 
 _ops/s, higher is better. "—" = not supported by the library. Measured with `vitest bench` on Apple M4 Max (zod 4.3.6, zod v3 3.23.8, typia 12, ajv 8)._
 
-Performance scales with schema complexity. Nested objects and arrays see the biggest gains because zod-compiler eliminates per-node traversal overhead. Deeply nested schemas (the 243-leaf dashboard row) stay fast because oversized fast-check functions are split into smaller boolean helpers, each kept within V8's optimizing-compiler budget. `discriminatedUnion` uses O(1) `switch` dispatch instead of Zod's sequential trial, and each case validates only its variant's distinctive fields — the object type-guard and the discriminator are checked once before dispatch, never re-checked inside the matched case (a redundancy the engine only elides on unions small enough to inline, so large unions get a measured ~1.5x on the fast check). The invalid-input row is large because failed `safeParse` defers error materialization until `.error` is read. Zero-capture `transform`/`refine` callbacks are compiled (3-19x); schemas with captured callbacks fall back per-field and roughly match Zod.
+Performance scales with schema complexity. Nested objects and arrays see the biggest gains because zod-compiler eliminates per-node traversal overhead. Deeply nested schemas (the 243-leaf dashboard row) stay fast because oversized fast-check functions are split into smaller boolean helpers, each kept within V8's optimizing-compiler budget. `discriminatedUnion` uses O(1) `switch` dispatch instead of Zod's sequential trial, and each case validates only its variant's distinctive fields — the object type-guard and the discriminator are checked once before dispatch, never re-checked inside the matched case (a redundancy the engine only elides on unions small enough to inline, so large unions get a measured ~1.5x on the fast check). A **plain `z.union`** of objects that all pin a shared key to disjoint literals is auto-detected and lowered to the same switch dispatch — so an untagged union written without `discriminatedUnion` still validates in O(1) (13x faster than Zod here), as long as it has enough options to outweigh the switch's setup cost; below that it keeps the fully-inlined `||`-chain. The invalid-input row is large because failed `safeParse` defers error materialization until `.error` is read. Zero-capture `transform`/`refine` callbacks are compiled (3-19x); schemas with captured callbacks fall back per-field and roughly match Zod.
 
 `parse()` (throwing API) rides a zero-allocation fast path: medium object 2.3M → 9.7M ops/s (4.1x), large object (100 items) 17K → 1.4M ops/s (79x).
 
@@ -561,7 +562,7 @@ For eligible schemas, zod-compiler generates a **two-phase validator**:
 1. **Fast Path** — A single `&&` expression chain that validates the entire input with zero allocations. Valid input returns immediately.
 2. **Slow Path** — Error-collecting validation that only runs when the Fast Path fails.
 
-Additional optimizations: check ordering (cheap checks first), pre-compiled regex, Set-based enum lookups, small enum inlining (`===` for up to 5 values), and discriminated-union cases that skip the now-redundant object-guard and discriminator re-check after `switch` dispatch.
+Additional optimizations: check ordering (cheap checks first), pre-compiled regex, Set-based enum lookups, small enum inlining (`===` for up to 5 values), discriminated-union cases that skip the now-redundant object-guard and discriminator re-check after `switch` dispatch, and auto-discrimination of plain `z.union`s of tagged objects into the same switch dispatch.
 
 Run `npx zod-compiler check --json` to see which schemas qualify for Fast Path.
 

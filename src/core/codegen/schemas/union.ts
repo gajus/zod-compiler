@@ -2,6 +2,7 @@ import type { SchemaIR, UnionIR } from "../../types.js";
 import type { FastGen, SlowGen } from "../context.js";
 import { hasMutation } from "../context.js";
 import { emit } from "../emit.js";
+import { detectUnionDiscriminator, emitFastDiscriminatedSwitch } from "./discriminated-union.js";
 
 export function slowUnion(ir: SchemaIR & { type: "union" }, g: SlowGen): string {
   const resultVar = g.temp("u");
@@ -89,6 +90,22 @@ export function slowUnion(ir: SchemaIR & { type: "union" }, g: SlowGen): string 
 }
 
 export function fastUnion(ir: UnionIR, g: FastGen): string | null {
+  // A plain `z.union` of objects that all pin a shared key to disjoint literals
+  // is structurally a discriminated union: dispatch on that key with an O(1)
+  // switch instead of probing every arm in sequence. detectUnionDiscriminator
+  // returns non-null only when the switch provably accepts exactly what the
+  // ||-chain would (disjoint required literals). The slow path is untouched, so
+  // error output stays identical to Zod's plain-union behavior.
+  const discriminated = detectUnionDiscriminator(ir.options);
+  if (discriminated !== null) {
+    return emitFastDiscriminatedSwitch(
+      g,
+      discriminated.discriminator,
+      discriminated.cases,
+      ir.options,
+    );
+  }
+
   const optionChecks: string[] = [];
   for (const option of ir.options) {
     const check = g.visit(option);

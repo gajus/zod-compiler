@@ -3,11 +3,14 @@ import {
   ajvDiscriminatedUnion,
   aotDiscUnion,
   aotLargeDiscUnion,
+  aotPlainTaggedUnion,
   DiscriminatedUnionSchema,
   LargeDiscriminatedUnionSchema,
+  PlainTaggedUnionSchema,
   typiaValidateDiscriminatedUnion,
   v3DiscriminatedUnionSchema,
   v3LargeDiscriminatedUnionSchema,
+  v3PlainTaggedUnionSchema,
   validClickEvent,
   validLargeEvents,
 } from "../../fixtures/schemas/index.js";
@@ -45,6 +48,24 @@ describe("safeParse: discriminatedUnion (8 options, rotating input)", () => {
   });
   bench("zod-compiler", () => {
     aotLargeDiscUnion.safeParse(next());
+  });
+});
+
+describe("safeParse: plain union of 8 tagged objects (auto-discriminated)", () => {
+  // An untagged z.union Zod validates by sequential trial, but zod-compiler
+  // detects the disjoint literal `type` and dispatches via O(1) switch. Same
+  // rotating inputs as the discriminated case.
+  let i = 0;
+  const next = () => validLargeEvents[i++ % validLargeEvents.length];
+
+  bench("zod", () => {
+    PlainTaggedUnionSchema.safeParse(next());
+  });
+  bench("zod v3", () => {
+    v3PlainTaggedUnionSchema.safeParse(next());
+  });
+  bench("zod-compiler", () => {
+    aotPlainTaggedUnion.safeParse(next());
   });
 });
 
