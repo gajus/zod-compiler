@@ -178,7 +178,7 @@ export async function runGenerate(options: GenerateOptions): Promise<void> {
       logger.warn("No Zod schemas exported from any source file.");
     } else {
       logger.warn(
-        "No compile() calls found in any source file. Use --auto-discover to scan plain Zod exports.",
+        "No compile() calls found in any source file. Use --schemas auto to scan plain Zod exports.",
       );
     }
   } else {
