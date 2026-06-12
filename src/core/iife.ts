@@ -104,9 +104,16 @@ export const FIN_DEFERRED_DECL = "function __zcFinD(f,inp){return new __ZcFail(n
  * path runs with zero allocations — calling fn would allocate an intermediate
  * SafeParseResult that escape analysis cannot remove (fn never inlines).
  * Fast-path-eligible schemas never mutate, so fc(input) ⟹ data === input.
+ *
+ * is is the TOTAL fast-check predicate (fc when the fast path is total, else
+ * null). Installed as `.is()` — a zero-allocation boolean type guard. When
+ * null (partial fast path or none) `.is()` derives from fn(input).success: a
+ * partial fc can pass-through valid input but its `false` does not imply
+ * rejection (a default/catch may still succeed), so it would be unsound as a
+ * standalone guard.
  */
 export const MK_VALIDATOR_DECL =
-  "function __zcMkv(fn,schema,fc){var w=schema||{};w.parse=fc?function(input){if(fc(input))return input;var r=fn(input);if(r.success)return r.data;throw r.error;}:function(input){var r=fn(input);if(r.success)return r.data;throw r.error;};w.safeParse=fn;w.safeParseAsync=function(input){return Promise.resolve(fn(input));};w.parseAsync=fc?function(input){if(fc(input))return Promise.resolve(input);var r=fn(input);if(r.success)return Promise.resolve(r.data);return Promise.reject(r.error);}:function(input){var r=fn(input);if(r.success)return Promise.resolve(r.data);return Promise.reject(r.error);};return w;}";
+  "function __zcMkv(fn,schema,fc,is){var w=schema||{};w.parse=fc?function(input){if(fc(input))return input;var r=fn(input);if(r.success)return r.data;throw r.error;}:function(input){var r=fn(input);if(r.success)return r.data;throw r.error;};w.safeParse=fn;w.safeParseAsync=function(input){return Promise.resolve(fn(input));};w.parseAsync=fc?function(input){if(fc(input))return Promise.resolve(input);var r=fn(input);if(r.success)return Promise.resolve(r.data);return Promise.reject(r.error);}:function(input){var r=fn(input);if(r.success)return Promise.resolve(r.data);return Promise.reject(r.error);};w.is=is||function(input){return fn(input).success;};return w;}";
 
 function extractFunctionName(functionDef: string): string {
   const match = /^function\s+(\w+)\s*\(/.exec(functionDef);
@@ -134,6 +141,9 @@ export function generateIIFE(
   const zodCompat = options?.zodCompat !== false;
   const schemaArg = zodCompat ? schemaExpr : "null";
   const fcArg = codegenResult.fastFnName ?? "null";
+  // `.is()` gets the fast-check directly only when it is a total predicate;
+  // partial/none falls back to safeParse().success inside __zcMkv.
+  const isArg = codegenResult.fastTotal ? fcArg : "null";
 
   return [
     "/* @__PURE__ */ (() => {",
@@ -144,7 +154,7 @@ export function generateIIFE(
       .split("\n")
       .filter((l) => l.trim() !== "" && l.trim() !== "/* zod-compiler */"),
     codegenResult.functionDef,
-    `return __zcMkv(${fnName},${schemaArg},${fcArg});`,
+    `return __zcMkv(${fnName},${schemaArg},${fcArg},${isArg});`,
     "})()",
   ].join("\n");
 }

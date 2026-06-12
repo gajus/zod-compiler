@@ -64,7 +64,7 @@ describe("generateIIFE()", () => {
     const iife = generateIIFE("NumSchema", info);
 
     // throw/parse logic lives in __zcMkv now; IIFE just calls __zcMkv
-    expect(iife).toMatch(/return __zcMkv\(safeParse_validateNum,NumSchema,__fc_\d+\);/);
+    expect(iife).toMatch(/return __zcMkv\(safeParse_validateNum,NumSchema,__fc_\d+,__fc_\d+\);/);
     expect(iife).not.toContain("throw r.error");
   });
 
@@ -105,7 +105,7 @@ describe("generateIIFE()", () => {
     const info = makeInfo("validateUser", simpleSchema);
     const iife = generateIIFE("UserSchema", info);
 
-    expect(iife).toMatch(/return __zcMkv\(safeParse_validateUser,UserSchema,__fc_\d+\);/);
+    expect(iife).toMatch(/return __zcMkv\(safeParse_validateUser,UserSchema,__fc_\d+,__fc_\d+\);/);
     expect(iife).not.toContain("var __w=");
     expect(iife).not.toContain("__w.schema=");
   });
@@ -116,7 +116,7 @@ describe("generateIIFE()", () => {
       const iife = generateIIFE("UserSchema", info, { zodCompat: false });
 
       expect(iife).toContain("/* @__PURE__ */");
-      expect(iife).toMatch(/return __zcMkv\(safeParse_validateUser,null,__fc_\d+\);/);
+      expect(iife).toMatch(/return __zcMkv\(safeParse_validateUser,null,__fc_\d+,__fc_\d+\);/);
       expect(iife).not.toContain("Object.create");
       expect(iife).not.toContain("var __w=");
     });
@@ -269,6 +269,62 @@ describe("generateIIFE() — runtime execution", () => {
 
     expect(validator.safeParse({ name: "Alice", age: 30 }).success).toBe(true);
     expect(validator.safeParse({ name: "", age: -1 }).success).toBe(false);
+  });
+
+  describe("is() — boolean type guard", () => {
+    it("returns a bare boolean matching safeParse().success (total fast path)", () => {
+      const validator = executeIIFE(makeInfo("validateUser", simpleSchema));
+      const inputs = [
+        { name: "Alice", age: 30 },
+        { name: "", age: 30 },
+        { name: "Bob", age: -1 },
+        { name: 123, age: 30 },
+        "not an object",
+        null,
+        undefined,
+        [],
+      ];
+      for (const input of inputs) {
+        const got = validator.is(input);
+        expect(typeof got).toBe("boolean");
+        expect(got).toBe(simpleSchema.safeParse(input).success);
+      }
+    });
+
+    it("is the compiled fast-check itself for total schemas (zero allocation)", () => {
+      const info = makeInfo("validateUser", simpleSchema);
+      const validator = executeIIFE(info);
+      // The IIFE wires fc as the 4th __zcMkv arg, so `.is` IS that function —
+      // not a closure over safeParse. Identity-check via the generated source.
+      const iife = generateIIFE("Schema", info);
+      const fcName = /,(__fc_\d+),\1\)/.exec(iife)?.[1];
+      expect(fcName, "total schema should pass fc as the is arg").toBeTruthy();
+      expect(validator.is({ name: "Alice", age: 30 })).toBe(true);
+    });
+
+    it("does NOT install a partial fast path as the guard (soundness, source-level)", () => {
+      // A default/catch fast path only shortcuts present-and-valid input: a
+      // `false` result does not imply rejection (the default may rescue a
+      // missing key), so it is unsound as a standalone guard. The IIFE must
+      // pass `null` as the is-arg → `.is()` derives from safeParse().success.
+      const schema = z.object({ page: z.number().default(1), name: z.string() });
+      const iife = generateIIFE("Schema", makeInfoWithFallback("withDefault", schema));
+      expect(iife).toMatch(/__zcMkv\(safeParse_withDefault,Schema,(?:__fc_\d+|null),null\)/);
+    });
+
+    it("works for schemas with no fast path (mutating effect)", () => {
+      const schema = z.object({ slug: z.string().transform((s) => s.toLowerCase()) });
+      const validator = executeIIFE(makeInfo("withTransform", schema));
+      expect(validator.is({ slug: "ABC" })).toBe(true);
+      expect(validator.is({ slug: 123 })).toBe(false);
+      expect(validator.is(null)).toBe(false);
+    });
+
+    it("is installed under zodCompat: false too", () => {
+      const validator = executeIIFE(makeInfo("validateUser", simpleSchema), { zodCompat: false });
+      expect(validator.is({ name: "Alice", age: 30 })).toBe(true);
+      expect(validator.is({ name: "", age: -1 })).toBe(false);
+    });
   });
 });
 

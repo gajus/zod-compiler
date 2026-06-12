@@ -54,3 +54,8 @@ export const typiaValidateApiResponse = typia.createValidate<ApiResponse>();
 
 export const typiaAssertUser = typia.createAssert<User>();
 export const typiaAssertApiResponse = typia.createAssert<ApiResponse>();
+
+// ─── createIs (bare boolean type guard, zero allocation) ────────────────────
+
+export const typiaIsUser = typia.createIs<User>();
+export const typiaIsApiResponse = typia.createIs<ApiResponse>();

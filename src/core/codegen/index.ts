@@ -64,6 +64,7 @@ export function generateValidator(
       refCount: options?.refCount ?? 0,
       usedHelpers: ctx.usedHelpers,
       fastFnName: null,
+      fastTotal: false,
     };
   }
 
@@ -106,6 +107,8 @@ export function generateValidator(
       refCount: options?.refCount ?? 0,
       usedHelpers: ctx.usedHelpers,
       fastFnName: null,
+      // any/unknown always succeed; `.is()` derives `true` from the fn fallback.
+      fastTotal: false,
     };
   }
 
@@ -161,6 +164,9 @@ export function generateValidator(
       refCount: options?.refCount ?? 0,
       usedHelpers: ctx.usedHelpers,
       fastFnName,
+      // Total predicate: mutation-free fast path, fc(input) ⟺ accepts(input).
+      // generateIIFE installs fc directly as the zero-allocation `.is()`.
+      fastTotal: true,
     };
   }
 
@@ -191,5 +197,8 @@ export function generateValidator(
     refCount: options?.refCount ?? 0,
     usedHelpers: ctx.usedHelpers,
     fastFnName,
+    // Partial fast path (default/catch/coerce) or none: a false fc result does
+    // not imply rejection, so `.is()` derives from safeParse(input).success.
+    fastTotal: false,
   };
 }

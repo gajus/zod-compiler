@@ -19,6 +19,18 @@ function createFallback<T>(zodSchema: unknown): CompiledSchema<T> {
   if (!("schema" in (facade as object))) {
     Object.defineProperty(facade, "schema", { value: zodSchema, enumerable: false });
   }
+  // Dev-time `.is`: delegates to zod's own safeParse so the boolean guard works
+  // before `zod-compiler generate` runs. The build replaces this with the
+  // compiled fast-check (zero-allocation) via __zcMkv. Non-enumerable to keep
+  // the augmentation invisible on the identity-preserved schema object.
+  if (!("is" in (facade as object))) {
+    Object.defineProperty(facade, "is", {
+      value: (input: unknown): boolean => facade.safeParse(input).success,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  }
   return facade;
 }
 

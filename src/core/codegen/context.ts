@@ -27,6 +27,16 @@ export interface CodeGenResult {
    * intermediate SafeParseResult.
    */
   fastFnName: string | null;
+  /**
+   * True when `fastFnName` is a TOTAL predicate: `fc(input) === true` iff the
+   * schema accepts `input` (mutation-free schemas, where a fast-check failure
+   * can never become a slow-path success). generateIIFE installs it as the
+   * zero-allocation `.is()` guard. False for partial fast paths
+   * (default/catch/coerce — `fc` only shortcuts present-and-valid input, so a
+   * `false` result does NOT imply rejection) and for schemas with no fast path;
+   * `.is()` then derives from `safeParse(input).success`.
+   */
+  fastTotal: boolean;
 }
 
 /** Shared mutable state for code generation. Fast and slow paths share the same instance. */

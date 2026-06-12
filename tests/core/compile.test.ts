@@ -33,6 +33,17 @@ describe("compile()", () => {
     const result = await compiled.safeParseAsync({ name: "Alice" });
     expect(result).toHaveProperty("success", true);
   });
+
+  it("exposes a dev-time .is() guard delegating to Zod safeParse", () => {
+    const compiled = compile(z.object({ name: z.string().min(1) }));
+
+    expect(typeof compiled.is).toBe("function");
+    expect(compiled.is({ name: "Alice" })).toBe(true);
+    expect(compiled.is({ name: "" })).toBe(false);
+    expect(compiled.is(null)).toBe(false);
+    // Non-enumerable augmentation: must not surface as a schema key.
+    expect(Object.keys(compiled as object)).not.toContain("is");
+  });
 });
 
 describe("compile() — parse/safeParse validation", () => {

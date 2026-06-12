@@ -22,7 +22,7 @@ describe("generateCompiledFileContent()", () => {
     expect(content).toContain("function safeParse_test(input)");
     // Uses __zcMkv factory for Zod compatibility (installs methods on the source schema)
     expect(content).toMatch(
-      /__zcMkv\(safeParse_test,\(__src_validateTest as any\)\.schema,(?:__fc_\d+|null)\)/,
+      /__zcMkv\(safeParse_test,\(__src_validateTest as any\)\.schema,(?:__fc_\d+|null),(?:__fc_\d+|null)\)/,
     );
     // Imports source schema (needed for zodCompat)
     expect(content).toContain('import { validateTest as __src_validateTest } from "./test"');
@@ -74,7 +74,7 @@ describe("generateCompiledFileContent()", () => {
     );
     // __zcMsg, __zcMkv, __zcFin are declared at file level (once per file)
     expect(content).toContain("var __zcMsg=__zodCompilerConfig().localeError;");
-    expect(content).toContain("function __zcMkv(fn,schema,fc)");
+    expect(content).toContain("function __zcMkv(fn,schema,fc,is)");
     expect(content).toContain("function __zcFin(e,d)");
   });
 
@@ -138,7 +138,7 @@ describe("generateCompiledFileContent() — zodCompat: false", () => {
 
     expect(content).toContain('import { validateUser as __src_validateUser } from "./schemas"');
     expect(content).toContain("export const validateUser = /* @__PURE__ */");
-    expect(content).toMatch(/__zcMkv\(safeParse_test,null,(?:__fc_\d+|null)\)/);
+    expect(content).toMatch(/__zcMkv\(safeParse_test,null,(?:__fc_\d+|null),(?:__fc_\d+|null)\)/);
   });
 });
 
