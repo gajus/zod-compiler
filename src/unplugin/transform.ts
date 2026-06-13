@@ -320,8 +320,11 @@ export async function transformCodeWithMap(
   }
   if (schemas.length === 0) return finishHoistOnly();
 
-  // Lean mode (Vite/Rollup/etc.) uses virtual:zod-compiler/runtime imports for cross-file dedup.
-  // Inline mode (webpack/rspack) emits self-contained file-level helpers.
+  // Lean mode (every bundler in VIRTUAL_MODULE_FRAMEWORKS — Vite/Rollup/webpack/rspack/etc.)
+  // imports shared helpers from a runtime module for cross-file dedup: virtual:zod-compiler/runtime
+  // on virtual-friendly bundlers, the __zod-compiler-runtime__ bare specifier on webpack/rspack.
+  // Inline mode (CLI emitter, and any bundler not in VIRTUAL_MODULE_FRAMEWORKS) emits self-contained
+  // file-level helpers.
   let failedCount = 0;
   const { schemas: compiled, shared } = timePhase("compile", () =>
     compileSchemas(schemas, {
