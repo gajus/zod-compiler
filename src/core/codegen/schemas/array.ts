@@ -15,6 +15,20 @@ export function slowArray(ir: SchemaIR & { type: "array" }, g: SlowGen): string 
     code += `${g.output}=${g.input}.slice();`;
   }
 
+  // Element validation precedes the size/refine checks: Zod parses elements
+  // (the base type) first and only then runs its checks, so for an input that
+  // both has an invalid element AND fails a size check, the per-element issue
+  // is surfaced before too_small/too_big. Emitting the checks first would
+  // reverse that order (the slow path collects all issues with no
+  // short-circuit, so insertion order IS issue order).
+  const idxVar = g.temp("i");
+  const elemExpr = `${g.input}[${idxVar}]`;
+  const elemPath = extendPath(g.path, idxVar);
+  code += emit`
+    for(var ${idxVar}=0;${idxVar}<${g.input}.length;${idxVar}++){
+      ${g.visit(ir.element, { input: elemExpr, output: elemExpr, path: elemPath })}
+    }`;
+
   for (const check of ir.checks) {
     switch (check.kind) {
       case "min_length":
@@ -43,14 +57,7 @@ export function slowArray(ir: SchemaIR & { type: "array" }, g: SlowGen): string 
     }
   }
 
-  const idxVar = g.temp("i");
-  const elemExpr = `${g.input}[${idxVar}]`;
-  const elemPath = extendPath(g.path, idxVar);
-  code += emit`
-    for(var ${idxVar}=0;${idxVar}<${g.input}.length;${idxVar}++){
-      ${g.visit(ir.element, { input: elemExpr, output: elemExpr, path: elemPath })}
-    }
-  }`;
+  code += `}`;
   return `${code}\n`;
 }
 

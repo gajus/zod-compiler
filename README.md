@@ -510,6 +510,23 @@ compiles; `z.string().transform((s) => s + suffix)` falls back (it captures
 
 **Tip:** Run `npx zod-compiler check` to see exactly which parts of your schemas are compiled and which fall back.
 
+### Behavioral Differences from Zod
+
+Compiled validators match Zod on accept/reject decisions, output data for the known shape, and error messages — including issue ordering for multi-failure inputs. A few observable behaviors differ **by design**, all stemming from the zero-allocation fast path: a successful parse returns the **input value itself** rather than rebuilding it.
+
+| Behavior                               | Zod                              | zod-compiler                                                                     |
+| -------------------------------------- | -------------------------------- | -------------------------------------------------------------------------------- |
+| Unknown keys on a default `z.object()` | Stripped from the output         | **Kept** — the input object is returned by reference                             |
+| Record key iteration                   | All own keys (`Reflect.ownKeys`) | Own **enumerable string** keys only — symbol and non-enumerable keys are ignored |
+| Array / object output identity         | A fresh value                    | The input value, returned by reference                                           |
+
+What this means in practice:
+
+- **Unknown keys are not stripped.** `z.object({ a: z.string() }).parse({ a: "x", b: 1 })` returns `{ a: "x" }` under Zod but `{ a: "x", b: 1 }` compiled. If you rely on stripping to sanitize untrusted input, use `z.strictObject()` (rejects unknown keys) or `z.looseObject()` (keeps them, making the compiled behavior explicit) — both compile fully. Validation of the declared keys is identical either way.
+- **Records skip symbol / non-enumerable keys.** `z.record(z.string(), …)` validates (and rejects) a symbol-keyed or non-enumerable-keyed entry under Zod; the compiled record never visits it. Plain string-keyed records — the common case — are unaffected.
+
+Matching Zod on these would mean allocating a fresh object (or a `Reflect.ownKeys` array) on every successful parse — the exact cost the fast path exists to avoid.
+
 ## Benchmark
 
 5-way comparison: **Zod v3** vs **Zod v4** vs **zod-compiler** vs **[Typia](https://typia.io/)** vs **[AJV](https://ajv.js.org/)**

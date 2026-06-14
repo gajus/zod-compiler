@@ -18,6 +18,11 @@ export function extractUnion(def: ZodDef, ctx: ExtractorContext): SchemaIR {
       value: string | number | boolean | null | bigint | undefined;
       option: number;
     }[] = [];
+    // A discriminator value claimed by two options is a misconfigured schema:
+    // zod throws "Duplicate discriminator value" at PARSE time. The compiled
+    // switch would instead silently dispatch to the first matching case, so
+    // delegate to zod to reproduce the throw exactly.
+    const seenValues = new Set<string | number | boolean | null | bigint | undefined>();
     for (let i = 0; i < def.options.length; i++) {
       const opt = def.options[i] as ZodSchema;
       const propValues = opt._zod.propValues?.[def.discriminator];
@@ -35,6 +40,10 @@ export function extractUnion(def: ZodDef, ctx: ExtractorContext): SchemaIR {
         ) {
           return ctx.fallback("unsupported");
         }
+        if (seenValues.has(v)) {
+          return ctx.fallback("unsupported");
+        }
+        seenValues.add(v);
         cases.push({
           value: v as string | number | boolean | null | bigint | undefined,
           option: i,

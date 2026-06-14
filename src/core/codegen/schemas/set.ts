@@ -10,7 +10,28 @@ export function slowSet(ir: SchemaIR & { type: "set" }, g: SlowGen): string {
       ${invalidType(g, "set")}
     }else{`;
 
-  // Size checks
+  // Validate each element BEFORE the size checks: Zod parses the elements
+  // first and runs size checks afterward, so an invalid element surfaces ahead
+  // of too_small/too_big when both fail. Mutating element schemas (coerce,
+  // .trim(), url) rewrite the loop variable, which a Set cannot reflect —
+  // rebuild into a fresh Set so the mutated values land in the output.
+  const mutates = hasMutation(ir.valueType);
+  const iterVar = g.temp("set_v");
+  const idxVar = g.temp("set_i");
+  const rebuiltVar = mutates ? g.temp("set_n") : "";
+  if (mutates) {
+    code += `var ${rebuiltVar}=new Set();`;
+  }
+  code += emit`
+    var ${idxVar}=0;
+    for(var ${iterVar} of ${g.input}){
+      ${g.visit(ir.valueType, { input: iterVar, output: iterVar, path: extendPath(g.path, idxVar) })}
+      ${mutates ? `${rebuiltVar}.add(${iterVar});` : ""}
+      ${idxVar}++;
+    }
+    ${mutates ? `${g.output}=${rebuiltVar};` : ""}`;
+
+  // Size checks (run after element validation, mirroring Zod's check order).
   if (ir.checks) {
     for (const check of ir.checks) {
       switch (check.kind) {
@@ -38,25 +59,7 @@ export function slowSet(ir: SchemaIR & { type: "set" }, g: SlowGen): string {
     }
   }
 
-  // Validate each element. Mutating element schemas (coerce, .trim(), url)
-  // rewrite the loop variable, which a Set cannot reflect — rebuild into a
-  // fresh Set so the mutated values land in the output (mirrors Zod).
-  const mutates = hasMutation(ir.valueType);
-  const iterVar = g.temp("set_v");
-  const idxVar = g.temp("set_i");
-  const rebuiltVar = mutates ? g.temp("set_n") : "";
-  if (mutates) {
-    code += `var ${rebuiltVar}=new Set();`;
-  }
-  code += emit`
-    var ${idxVar}=0;
-    for(var ${iterVar} of ${g.input}){
-      ${g.visit(ir.valueType, { input: iterVar, output: iterVar, path: extendPath(g.path, idxVar) })}
-      ${mutates ? `${rebuiltVar}.add(${iterVar});` : ""}
-      ${idxVar}++;
-    }
-    ${mutates ? `${g.output}=${rebuiltVar};` : ""}
-  }`;
+  code += `}`;
   return `${code}\n`;
 }
 
