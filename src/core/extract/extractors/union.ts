@@ -9,6 +9,18 @@ export function extractUnion(def: ZodDef, ctx: ExtractorContext): SchemaIR {
   if (def.inclusive === false && !def.discriminator) {
     return ctx.fallback("unsupported");
   }
+  // A plain union of exactly one option IS that option: zod surfaces the single
+  // option's issues directly (no invalid_union wrapper) and ignores a union-level
+  // `{ error }`. Collapsing union([X]) → X matches that exactly — and avoids the
+  // wrapper the slow path would otherwise emit when the sole option aborts
+  // (invalid_type), which diverged from zod's inner message. When the union
+  // carries its own `error`, delegate to zod instead: dispatch() would re-apply
+  // it as the collapsed node's typeMessage, but zod drops it for a single-option
+  // union — fallback reproduces zod's exact (inner) message.
+  if (!def.discriminator && def.options.length === 1) {
+    if (def.error !== undefined) return ctx.fallback("unsupported");
+    return ctx.visit(def.options[0], "._zod.def.options[0]");
+  }
   if (def.discriminator) {
     // zod's `_zod.propValues[discriminator]` is the authoritative dispatch
     // table — it covers literal AND enum discriminators with typed values.
