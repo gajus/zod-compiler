@@ -1,5 +1,5 @@
 import type { SchemaIR } from "../types.js";
-import type { CodeGenContext, CodeGenResult, CodegenMode } from "./context.js";
+import type { CodeGenContext, CodeGenResult, CodegenMode, RecTargetGen } from "./context.js";
 import { emitRfDelegate, hasMutation } from "./context.js";
 import type { SharedSchemaPlan } from "./dedupe.js";
 import { createFastGen, generateFast } from "./fast-path.js";
@@ -68,6 +68,26 @@ export function generateValidator(
     };
   }
 
+  // Recursion-target table. The root (refId 0) reuses the schema's own
+  // `safeParse_<name>` / hosted fast-check, so it needs no separate helper and
+  // its fast name is allocated lazily during the walk (recFastName). Non-root
+  // targets — recursive sub-schemas nested in a larger root, multiple distinct
+  // recursive shapes, mutual recursion — are each hosted as a standalone
+  // `__rsp_N` (slow) / `__fcr_N` (fast) validator the cycle calls by name.
+  // Common directly-self-recursive schemas have no non-root targets, so this
+  // leaves their generated output byte-identical.
+  const nonRootTargets = collectRecursionTargets(ir);
+  ctx.recTargets = new Map<number, RecTargetGen>([[0, { isRoot: true, slowName: fnName }]]);
+  for (const [refId, inner] of nonRootTargets) {
+    ctx.recTargets.set(refId, {
+      isRoot: false,
+      inner,
+      slowName: `__rsp_${ctx.counter++}`,
+      fastName: `__fcr_${ctx.counter++}`,
+    });
+  }
+  const hasNonRootTargets = nonRootTargets.size > 0;
+
   // Fast Path: generate a boolean expression for eligible schemas.
   //
   // generateFast mutates ctx as it walks (extracted __fo_ helpers + regex/effect
@@ -84,6 +104,22 @@ export function generateValidator(
   const fastRecName = ctx.recFastName;
   const fg = createFastGen("input", ctx);
   let fastExpr = generateFast(ir, fg);
+  if (fastExpr !== null && hasNonRootTargets) {
+    // Host each non-root recursion target as a boolean fast-check helper. A
+    // single fast-ineligible target (e.g. one whose recursive shape contains a
+    // fallback) disables the WHOLE fast path: the root expression already emits
+    // calls to these names, so a missing body would dangle. The shared
+    // rollback below then restores clean state for the slow-only path.
+    for (const t of ctx.recTargets.values()) {
+      if (t.isRoot) continue;
+      const body = generateFast(t.inner as SchemaIR, createFastGen("input", ctx, false));
+      if (body === null) {
+        fastExpr = null;
+        break;
+      }
+      ctx.preamble.push(`function ${t.fastName}(input){return ${body};}`);
+    }
+  }
   if (fastExpr === null) {
     ctx.preamble.length = fastPreambleLen;
     ctx.regexCache = fastRegexCache;
@@ -104,6 +140,23 @@ export function generateValidator(
     fastFnName = ctx.recFastName ?? `__fc_${ctx.counter++}`;
     ctx.preamble.push(`function ${fastFnName}(input){return ${fastExpr};}`);
     fastExpr = `${fastFnName}(input)`;
+  }
+
+  // Host each non-root recursion target as a safeParse-shaped slow validator,
+  // mirroring the root's eager body: collect issues, return success+data or a
+  // deferred-error result. Always emitted (the slow path always exists); the
+  // recursion call sites read `.success` / `.error.issues` / `.data`. Hoisted
+  // function declarations, so their order relative to the root is irrelevant.
+  if (hasNonRootTargets) {
+    for (const t of ctx.recTargets.values()) {
+      if (t.isRoot) continue;
+      const body = generateSlow(t.inner as SchemaIR, createSlowGen("_d", "_d", "[]", "_e", ctx));
+      ctx.usedHelpers.add("__zcFin");
+      ctx.preamble.push(
+        `function ${t.slowName}(input){var _e=[];\nvar _d=input;\n${body}\n` +
+          `if(_e.length===0){return{success:true,data:_d};}\nreturn __zcFin(_e,_d);}`,
+      );
+    }
   }
 
   const sg = createSlowGen("_d", "_d", "[]", "_e", ctx);
@@ -222,4 +275,61 @@ export function generateValidator(
     // not imply rejection, so `.is()` derives from safeParse(input).success.
     fastTotal: false,
   };
+}
+
+/**
+ * Find every non-root recursion target (a `recursionTarget` node, refId ≥ 1)
+ * reachable from `root`, mapping refId → the inner IR to host as a standalone
+ * validator. The root target (refId 0) is the schema's own function and is
+ * never wrapped, so it never appears here. The same target may be wrapped at
+ * several sites (a recursive schema reached from sibling positions); the first
+ * inner wins — they are structurally identical extractions of one schema.
+ */
+function collectRecursionTargets(root: SchemaIR): Map<number, SchemaIR> {
+  const out = new Map<number, SchemaIR>();
+  const seen = new Set<SchemaIR>();
+  const walk = (ir: SchemaIR): void => {
+    if (seen.has(ir)) return;
+    seen.add(ir);
+    if (ir.type === "recursionTarget" && !out.has(ir.refId)) {
+      out.set(ir.refId, ir.inner);
+    }
+    for (const child of childIRs(ir)) walk(child);
+  };
+  walk(root);
+  return out;
+}
+
+/** Direct child SchemaIR nodes, covering every node type (including the new wrapper). */
+function childIRs(ir: SchemaIR): readonly SchemaIR[] {
+  switch (ir.type) {
+    case "object":
+      return Object.values(ir.properties);
+    case "array":
+      return [ir.element];
+    case "tuple":
+      return ir.rest === null ? ir.items : [...ir.items, ir.rest];
+    case "record":
+    case "map":
+      return [ir.keyType, ir.valueType];
+    case "set":
+      return [ir.valueType];
+    case "union":
+    case "discriminatedUnion":
+      return ir.options;
+    case "intersection":
+      return [ir.left, ir.right];
+    case "optional":
+    case "nullable":
+    case "readonly":
+    case "default":
+    case "catch":
+    case "effect":
+    case "recursionTarget":
+      return [ir.inner];
+    case "pipe":
+      return [ir.in, ir.out];
+    default:
+      return [];
+  }
 }

@@ -1,6 +1,6 @@
 import type { SchemaIR } from "../types.js";
 import { dispatch } from "./registry.js";
-import type { RefEntry } from "./types.js";
+import type { RecursionState, RefEntry } from "./types.js";
 
 export type { RefEntry } from "./types.js";
 
@@ -15,6 +15,12 @@ export function extractSchema(
   refs?: RefEntry[],
   currentPath?: string,
   visiting?: Set<unknown>,
+  recursion?: RecursionState,
 ): SchemaIR {
-  return dispatch(zodSchema, currentPath ?? "", refs, visiting ?? new Set<unknown>());
+  const rec: RecursionState = recursion ?? {
+    root: zodSchema,
+    targets: new Map<unknown, number>(),
+    next: 1,
+  };
+  return dispatch(zodSchema, currentPath ?? "", refs, visiting ?? new Set<unknown>(), rec);
 }

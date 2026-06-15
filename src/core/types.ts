@@ -411,6 +411,29 @@ export interface CatchIR {
 
 export interface RecursiveRefIR {
   type: "recursiveRef";
+  /**
+   * Identifies which recursion target this back-edge re-invokes. Absent (or 0)
+   * means the ROOT schema — the directly self-recursive case, whose validator
+   * is the schema's own `safeParse_<name>` / hosted fast-check. A value ≥ 1
+   * targets a non-root sub-schema hosted as a standalone validator (see
+   * {@link RecursionTargetIR}); used for recursive schemas nested inside a
+   * larger root, multiple distinct recursive sub-schemas, and mutual recursion.
+   */
+  refId?: number;
+}
+
+/**
+ * Marks a sub-schema that is the target of one or more {@link RecursiveRefIR}
+ * back-edges (refId ≥ 1) — a recursive schema that is NOT the compiled root.
+ * Codegen hosts `inner` as a standalone fast-check + safeParse-shaped slow
+ * validator so the recursive cycle can call it by name, instead of re-invoking
+ * the (wrong-shaped) root validator. The root target needs no wrapper: it IS
+ * the root function, so it is never wrapped and uses the implicit refId 0.
+ */
+export interface RecursionTargetIR {
+  type: "recursionTarget";
+  refId: number;
+  inner: SchemaIR;
 }
 
 export interface StringBoolIR {
@@ -476,6 +499,7 @@ export type SchemaIR = TypeMessageCarrier &
     | CatchIR
     | FallbackIR
     | RecursiveRefIR
+    | RecursionTargetIR
     | StringBoolIR
   );
 

@@ -36,6 +36,7 @@ import { makeFallback } from "./fallback.js";
 import type {
   Extractor,
   ExtractorContext,
+  RecursionState,
   RefEntry,
   SupportedZodDefType,
   ZodSchema,
@@ -96,15 +97,17 @@ function createExtractorContext(
   path: string,
   refs: RefEntry[] | undefined,
   visiting: Set<unknown>,
+  recursion: RecursionState,
 ): ExtractorContext {
   return {
     schema,
     path,
     refs,
     visiting,
+    recursion,
     visit(childSchema: unknown, pathSuffix?: string): SchemaIR {
       const childPath = pathSuffix ? `${path}${pathSuffix}` : path;
-      return dispatch(childSchema, childPath, refs, visiting);
+      return dispatch(childSchema, childPath, refs, visiting, recursion);
     },
     fallback(reason: FallbackIR["reason"]) {
       return makeFallback(reason, schema, refs, path);
@@ -142,6 +145,7 @@ export function dispatch(
   path: string,
   refs: RefEntry[] | undefined,
   visiting: Set<unknown>,
+  recursion: RecursionState,
 ): SchemaIR {
   const schema = zodSchema as ZodSchema;
   const def = schema._zod.def;
@@ -149,7 +153,7 @@ export function dispatch(
   visiting.add(zodSchema);
   try {
     const extractor = extractRegistry[def.type as SupportedZodDefType];
-    const ctx = createExtractorContext(zodSchema, path, refs, visiting);
+    const ctx = createExtractorContext(zodSchema, path, refs, visiting, recursion);
     let ir = extractor ? extractor(def, ctx) : makeFallback("unsupported", zodSchema, refs, path);
     if (ir.type === "fallback") return ir;
 
@@ -169,6 +173,19 @@ export function dispatch(
       if (resolved.kind === "static") {
         ir = { ...ir, typeMessage: resolved.message };
       }
+    }
+
+    // This schema is the target of a non-root recursive cycle (a `recursiveRef`
+    // with refId ≥ 1 was emitted for it deeper in the walk): wrap its IR as the
+    // OUTERMOST transformation so codegen hosts it as a standalone validator.
+    // Done last — after the fallback post-processing above — so a target that
+    // delegates to Zod returns its fallback leaf, discarding the whole subtree
+    // (including the inner `recursiveRef`) instead of leaving a dangling ref.
+    // The root target (refId 0) is the schema's own function and is never
+    // wrapped.
+    const refId = recursion.targets.get(zodSchema);
+    if (refId !== undefined) {
+      return { type: "recursionTarget", refId, inner: ir };
     }
     return ir;
   } finally {

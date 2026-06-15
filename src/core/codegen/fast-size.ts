@@ -108,6 +108,10 @@ function shallowFastCost(ir: SchemaIR): number {
     case "default":
       return 22;
     case "recursiveRef":
+    case "recursionTarget":
+      // Both emit just a call to a hosted helper; the target's `inner` is sized
+      // independently when its own helper body is generated, so it is NOT
+      // counted against the enclosing function here (see fastChildren).
       return 15;
     default:
       return 18;

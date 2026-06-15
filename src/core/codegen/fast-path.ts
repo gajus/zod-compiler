@@ -41,7 +41,7 @@ import { fastOptional } from "./schemas/optional.js";
 import { fastPipe } from "./schemas/pipe.js";
 import { fastReadonly } from "./schemas/readonly.js";
 import { fastRecord } from "./schemas/record.js";
-import { fastRecursiveRef } from "./schemas/recursive-ref.js";
+import { fastRecursionTarget, fastRecursiveRef } from "./schemas/recursive-ref.js";
 import { fastSet } from "./schemas/set.js";
 import { fastString } from "./schemas/string.js";
 import { fastSymbol } from "./schemas/symbol.js";
@@ -98,6 +98,7 @@ const fastRegistry = {
   catch: fastCatch,
   fallback: null, // statically ineligible
   recursiveRef: fastRecursiveRef,
+  recursionTarget: fastRecursionTarget,
   stringBool: null, // statically ineligible — output type (boolean) differs from input (string)
 } satisfies {
   [K in SchemaIR["type"]]: FastGenerator<Extract<SchemaIR, { type: K }>> | null;

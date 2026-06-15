@@ -73,7 +73,7 @@ const FALLBACK_HINTS: Record<string, string> = {
   refine: "Replace .refine() with built-in checks (e.g. .min(), .max(), .regex())",
   superRefine: "Replace .superRefine() with built-in checks if possible",
   custom: "Replace z.custom() with a supported schema type",
-  lazy: "Use self-recursive lazy for automatic recursiveRef compilation",
+  lazy: "Ensure the lazy getter resolves to a static schema (recursion compiles automatically)",
   unsupported: "This schema type is not yet supported by zod-compiler",
   coalesced:
     "Every property falls back to Zod, so the whole object is delegated once (faster than per-field delegation)",
@@ -138,6 +138,11 @@ function* iterChildren(ir: SchemaIR, parentPath: string): Generator<[string, Sch
       break;
     case "effect":
       yield [`${parentPath}[inner]`, ir.inner];
+      break;
+    case "recursionTarget":
+      // Transparent wrapper around a non-root recursive sub-schema: descend so
+      // coverage and any inner fallbacks are reported at the same path.
+      yield [parentPath, ir.inner];
       break;
   }
 }

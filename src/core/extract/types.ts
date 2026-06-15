@@ -134,6 +134,24 @@ export type SupportedZodDefType =
   | "template_literal"
   | "file";
 
+// ─── Recursion state ──────────────────────────────────────────────────────
+
+/**
+ * Shared, mutable recursion-target bookkeeping for one {@link extractSchema}
+ * call. Lazy cycle detection assigns each NON-root recursion target a stable
+ * refId (≥ 1) keyed by Zod schema identity; the root schema is identified
+ * separately and uses the implicit refId 0. `dispatch` wraps a schema's IR in
+ * a `recursionTarget` node when that schema turns out to be a non-root target.
+ */
+export interface RecursionState {
+  /** The root schema of this extraction (first dispatched), for root detection. */
+  readonly root: unknown;
+  /** Non-root recursion targets: Zod schema → assigned refId (≥ 1). */
+  readonly targets: Map<unknown, number>;
+  /** Next refId to hand out (starts at 1; 0 is reserved for the root). */
+  next: number;
+}
+
 // ─── Extractor context ──────────────────────────────────────────────────────
 
 /** Context object for extractor functions. Unifies the varied parameter patterns. */
@@ -146,6 +164,8 @@ export interface ExtractorContext {
   readonly refs: RefEntry[] | undefined;
   /** Cycle detection set for lazy resolution. */
   readonly visiting: Set<unknown>;
+  /** Recursion-target bookkeeping (shared across the whole extraction). */
+  readonly recursion: RecursionState;
 
   /** Recursively extract a child schema. Manages visiting set automatically. */
   visit(childSchema: unknown, pathSuffix?: string): import("../types.js").SchemaIR;

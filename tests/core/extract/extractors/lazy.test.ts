@@ -104,6 +104,42 @@ describe("extractSchema — lazy (recursive / cycle detection)", () => {
     expect(bIR.properties["a"]?.type).toBe("recursiveRef");
   });
 
+  it("wraps a NON-root recursive sub-schema (nested in a wrapper) as recursionTarget", () => {
+    const Inner: z.ZodType = z.object({
+      val: z.string(),
+      self: z.array(z.lazy(() => Inner)),
+    });
+    const Wrapper = z.object({ meta: z.string(), node: Inner });
+    const refs: RefEntry[] = [];
+    const ir = extractSchema(Wrapper, refs) as ObjectIR;
+    expect(ir.type).toBe("object");
+    // The nested recursive schema compiles now instead of delegating to Zod.
+    expect(refs).toHaveLength(0);
+
+    // `node` is hosted: recursionTarget(refId 1) wrapping the Inner object, with
+    // its self-reference becoming a recursiveRef carrying the same refId.
+    const node = ir.properties["node"] as { type: string; refId: number; inner: ObjectIR };
+    expect(node.type).toBe("recursionTarget");
+    expect(node.refId).toBe(1);
+    expect(node.inner.type).toBe("object");
+    const selfArr = node.inner.properties["self"] as ArrayIR;
+    expect(selfArr.element).toEqual({ type: "recursiveRef", refId: 1 });
+  });
+
+  it("assigns distinct refIds to multiple distinct recursive sub-schemas", () => {
+    const TreeA: z.ZodType = z.object({ a: z.string(), kids: z.array(z.lazy(() => TreeA)) });
+    const TreeB: z.ZodType = z.object({ b: z.number(), kids: z.array(z.lazy(() => TreeB)) });
+    const Root = z.object({ x: TreeA, y: TreeB });
+    const refs: RefEntry[] = [];
+    const ir = extractSchema(Root, refs) as ObjectIR;
+    expect(refs).toHaveLength(0);
+    const x = ir.properties["x"] as { type: string; refId: number };
+    const y = ir.properties["y"] as { type: string; refId: number };
+    expect(x.type).toBe("recursionTarget");
+    expect(y.type).toBe("recursionTarget");
+    expect(x.refId).not.toBe(y.refId);
+  });
+
   it("does not falsely detect cycle for DAG (same schema referenced from siblings)", () => {
     const Shared = z.object({ x: z.number() });
     const Parent = z.object({

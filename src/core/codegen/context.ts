@@ -39,6 +39,25 @@ export interface CodeGenResult {
   fastTotal: boolean;
 }
 
+/** Hosted-validator names for one recursion target (see CodeGenContext.recTargets). */
+export interface RecTargetGen {
+  /** True for the root target (refId 0) — reuses the schema's own functions. */
+  isRoot: boolean;
+  /**
+   * safeParse-shaped slow validator name: `safeParse_<name>` for the root,
+   * `__rsp_N` for a non-root target. `slowRecursiveRef` calls this.
+   */
+  slowName: string;
+  /**
+   * Boolean fast-check name (`__fcr_N`). Allocated lazily for the root (mirrors
+   * recFastName), eagerly for non-root targets. Absent until the fast path
+   * reaches a ref to this target.
+   */
+  fastName?: string;
+  /** Inner IR hosted as the standalone validator body (non-root targets only). */
+  inner?: SchemaIR;
+}
+
 /** Shared mutable state for code generation. Fast and slow paths share the same instance. */
 export interface CodeGenContext {
   preamble: string[];
@@ -51,12 +70,22 @@ export interface CodeGenContext {
   /** Names of helpers from "virtual:zod-compiler/runtime" referenced in this schema (lean mode only). */
   usedHelpers: Set<string>;
   /**
-   * Name of the fast-path boolean helper for self-recursive schemas, allocated
-   * on first fastRecursiveRef visit. generateValidator wraps the root fast
-   * expression as `function <name>(input){return <expr>;}` so recursive refs
-   * can call it. undefined = schema has no recursion on the fast path.
+   * Name of the fast-path boolean helper for the ROOT recursion target
+   * (refId 0), allocated on first fastRecursiveRef visit. generateValidator
+   * wraps the root fast expression as `function <name>(input){return <expr>;}`
+   * so recursive refs can call it. undefined = root has no recursion on the
+   * fast path.
    */
   recFastName?: string;
+  /**
+   * Hosted-validator name table for recursion targets, keyed by refId. Entry 0
+   * is the root (the schema's own `safeParse_<name>` / `recFastName`); entries
+   * ≥ 1 are non-root targets hosted as standalone `__rsp_N` (slow) / `__fcr_N`
+   * (fast) helpers. `recursiveRef`/`recursionTarget` generators look up the
+   * call target here. Undefined when not generating a full validator (e.g. unit
+   * tests calling a single generator) — treated as root-only.
+   */
+  recTargets?: Map<number, RecTargetGen>;
   /** Dedup cache for hosted zero-capture effect functions: source text → preamble var. */
   effectFnCache?: Map<string, string>;
   /** Memo for estimateFastCost (size-gated fast-check extraction). Lazily created. */
@@ -429,6 +458,7 @@ export function hasMutation(ir: SchemaIR): boolean {
     case "optional":
     case "nullable":
     case "readonly":
+    case "recursionTarget":
       return hasMutation(ir.inner);
     case "union":
     case "discriminatedUnion":

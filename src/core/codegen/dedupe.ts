@@ -185,6 +185,7 @@ function childSchemas(ir: SchemaIR): SchemaIR[] {
     case "pipe":
       return [ir.in, ir.out];
     case "effect":
+    case "recursionTarget":
       return [ir.inner];
     default:
       return [];

@@ -482,7 +482,7 @@ npx zod-compiler check src/schemas.ts --json --fail-under 80
 
 ### Fully Compiled (2-75x faster)
 
-`string`, `number`, `bigint`, `boolean`, `null`, `undefined`, `any`, `unknown`, `literal`, `enum`, `stringbool`, `date`, `file`, `object`, `strictObject` / `.strict()`, `looseObject`, `array`, `tuple`, `record`, `set`, `map`, `union`, `discriminatedUnion`, `intersection`, `pipe` (non-transform), `optional`, `nullable`, `readonly`, `default`, `catch`, `coerce`, `templateLiteral`, `symbol`, `void`, `nan`, `never`, `lazy` (self-recursive), `transform` / `refine` (zero-capture — see below)
+`string`, `number`, `bigint`, `boolean`, `null`, `undefined`, `any`, `unknown`, `literal`, `enum`, `stringbool`, `date`, `file`, `object`, `strictObject` / `.strict()`, `looseObject`, `array`, `tuple`, `record`, `set`, `map`, `union`, `discriminatedUnion`, `intersection`, `pipe` (non-transform), `optional`, `nullable`, `readonly`, `default`, `catch`, `coerce`, `templateLiteral`, `symbol`, `void`, `nan`, `never`, `lazy` (recursive — self-, mutual, and nested), `transform` / `refine` (zero-capture — see below)
 
 All standard Zod checks are supported: `min`, `max`, `length`, `email`, `url`, `uuid`, `regex`, `int`, `positive`, `negative`, `multipleOf`, `int32`, `uint32`, `float32`, `float64`, `includes`, `startsWith`, `endsWith`, and more.
 
@@ -490,14 +490,14 @@ All standard Zod checks are supported: `min`, `max`, `length`, `email`, `url`, `
 
 These contain JavaScript callbacks that cannot be reproduced in generated code:
 
-| Type                                 | Why                                                           | Alternative                                   |
-| ------------------------------------ | ------------------------------------------------------------- | --------------------------------------------- |
-| `transform` / `refine` with captures | Callback captures outer variables (or is async / takes `ctx`) | Use zero-capture callbacks or built-in checks |
-| `superRefine`                        | Callback needs `ctx` for issue collection                     | Use `refine` or built-in checks               |
-| `custom`                             | Arbitrary validation logic                                    | —                                             |
-| `preprocess`                         | Input preprocessing function                                  | Use `z.coerce` when possible                  |
-| `lazy` (non-recursive)               | Cannot resolve inner type                                     | Use self-referencing lazy for recursion       |
-| `.catchall(schema)`                  | Unknown keys validated against a value schema                 | `strictObject` and `looseObject` both compile |
+| Type                                 | Why                                                           | Alternative                                    |
+| ------------------------------------ | ------------------------------------------------------------- | ---------------------------------------------- |
+| `transform` / `refine` with captures | Callback captures outer variables (or is async / takes `ctx`) | Use zero-capture callbacks or built-in checks  |
+| `superRefine`                        | Callback needs `ctx` for issue collection                     | Use `refine` or built-in checks                |
+| `custom`                             | Arbitrary validation logic                                    | —                                              |
+| `preprocess`                         | Input preprocessing function                                  | Use `z.coerce` when possible                   |
+| `lazy` (unresolvable inner)          | Getter throws / inner type can't be resolved at compile time  | Ensure the lazy getter returns a static schema |
+| `.catchall(schema)`                  | Unknown keys validated against a value schema                 | `strictObject` and `looseObject` both compile  |
 
 **Zero-capture effects compile:** a `transform`/`refine` callback that takes a
 single argument and references only its own parameters, locals, and safe
@@ -507,6 +507,8 @@ compiles; `z.string().transform((s) => s + suffix)` falls back (it captures
 `suffix`).
 
 **Partial fallback:** If an object has 10 properties and 1 uses `transform`, the other 9 are still compiled. Only the `transform` property falls back to Zod.
+
+**Recursive schemas compile** — whether directly self-recursive (`z.lazy(() => Self)`), mutually recursive (`A` ↔ `B`), or **nested as a field of a larger root** (a recursive `Comment` inside `z.object({ thread, root: Comment })`). Each distinct recursive shape is hosted once as a dedicated validator and reached by reference, so the whole structure stays on the fast path instead of delegating to Zod — a recursive type nested in an API envelope runs **12–33x faster than Zod** (see the benchmark table). A `lazy` schema only falls back when its getter can't be resolved at compile time.
 
 **Tip:** Run `npx zod-compiler check` to see exactly which parts of your schemas are compiled and which fall back.
 
@@ -555,6 +557,8 @@ Matching Zod on these would mean allocating a fresh object (or a `Reflect.ownKey
 | large object (100 items)                          | 13K    | 19K    | **1.4M**         | 1.3M  | 127K  | **73x**   |
 | recursive tree (7 nodes)                          | 547K   | 2.0M   | **11.8M**        | 11.7M | 4.7M  | 5.8x      |
 | recursive tree (121 nodes)                        | 32K    | 142K   | **2.3M**         | 1.9M  | 356K  | **16x**   |
+| nested recursion (7 nodes)                        | 389K   | 1.0M   | **11.7M**        | 10.8M | 3.0M  | 12x       |
+| nested recursion (121 nodes)                      | 24K    | 61K    | **2.0M**         | 1.6M  | 220K  | **33x**   |
 | deeply nested object (243 leaves)                 | 11K    | 19K    | **1.2M**         | 1.0M  | 122K  | **64x**   |
 | event log (combined)                              | 382K   | 618K   | **5.8M**         | —     | —     | 9.4x      |
 | object with transform (zero-capture)              | 1.2M   | 1.9M   | **6.1M**         | —     | —     | 3.3x      |
