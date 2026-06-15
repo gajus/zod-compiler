@@ -56,7 +56,7 @@ import { applyEdits, type Edit, type Insertion } from "./edits.js";
 const SCHEMA_NAME_PATTERN = /ZodSchema$/;
 
 /** Module specifiers whose bindings count as the zod namespace. */
-const ZOD_MODULES = new Set(["zod", "zod/v4", "zod/mini", "zod/v4/mini"]);
+const ZOD_MODULES = new Set(["zod", "zod/v3", "zod/v4", "zod/mini", "zod/v4/mini"]);
 
 /** How an imported local binding maps onto its source module. */
 export interface ImportDetail {
