@@ -83,7 +83,7 @@ class StagedTransform {
 }
 
 /** Matches a runtime (non-type-only) import from "zod". */
-const HAS_RUNTIME_ZOD_IMPORT = /import\s+(?!type\s)[^;]*from\s+["']zod["']/;
+const HAS_RUNTIME_ZOD_IMPORT = /import\s+(?!type\s)[^;]*from\s+["']zod(?:\/v\d+)?["']/;
 
 /**
  * Opt-in phase timing (ZOD_COMPILER_TIMING=1): accumulates per-phase wall time

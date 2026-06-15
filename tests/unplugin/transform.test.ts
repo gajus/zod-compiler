@@ -801,6 +801,37 @@ describe("transformCode() — autoDiscover", () => {
     expect(result).toBeNull();
   });
 
+  it("returns null for type-only zod/v4 subpath import in autoDiscover mode", async () => {
+    const code = `import type { z } from "zod/v4";\nexport const x = 1;`;
+    const result = await transformCode(code, "/fake/path.ts", { mode: "lean", autoDiscover: true });
+
+    expect(result).toBeNull();
+  });
+
+  it("recognizes runtime zod/v4 subpath import as a candidate in autoDiscover mode", async () => {
+    // Before the regex fix, `import { z } from "zod/v4"` would fail HAS_RUNTIME_ZOD_IMPORT
+    // and bail out early — the file-load step was never reached.
+    // After the fix it passes the check, so with verbose mode and a bad path we
+    // see the "Skipping" warning emitted at the file-load failure point, not silence.
+    const code = `import { z } from "zod/v4";\nexport const v = z.string();`;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(vi.fn());
+
+    try {
+      const result = await transformCode(code, "/nonexistent/bad-file.ts", {
+        mode: "lean",
+        autoDiscover: true,
+        verbose: true,
+      });
+
+      expect(result).toBeNull();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Skipping /nonexistent/bad-file.ts"),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("returns null (does not throw) when file loading fails in autoDiscover mode", async () => {
     const code = `import { z } from "zod";\nexport const v = z.string();`;
     const result = await transformCode(code, "/nonexistent/bad-file.ts", {
