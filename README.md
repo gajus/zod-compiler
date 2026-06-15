@@ -147,8 +147,9 @@ npx zod-compiler generate src/ --schemas explicit --emit bag
 | `output`  | `"schema" \| "bag"`           | `"schema"`      | What a compiled export evaluates to. `"schema"`: the original Zod schema with compiled methods installed (full API preserved). `"bag"`: a minimal methods-only object — smaller bundles, breaks Zod-schema consumers                   |
 | `verbose` | `boolean`                     | `false`         | Log per-schema compilation status during build                                                                                                                                                                                         |
 | `hoist`   | `boolean`                     | `true`          | Hoist Zod schemas defined inside function bodies to module scope so they're constructed once instead of per call (babel-plugin-zod-hoist equivalent). Only expressions built purely from imports and literals are hoisted              |
-| `apply`   | `"build" \| "serve" \| "all"` | builds + Vitest | **Vite only**: when the plugin runs. By default, production builds and test runs are compiled (so tests exercise what ships); plain dev servers use the Zod fallback. `"all"` also compiles the dev server; `"build"` also skips tests |
-| `cache`   | `boolean \| string`           | `true`          | Persistent transform cache (`node_modules/.cache/zod-compiler`, or a custom directory). Skips discovery + codegen across processes when nothing changed; entries self-validate against dependency content hashes                       |
+| `apply`        | `"build" \| "serve" \| "all"`  | builds + Vitest | **Vite only**: when the plugin runs. By default, production builds and test runs are compiled (so tests exercise what ships); plain dev servers use the Zod fallback. `"all"` also compiles the dev server; `"build"` also skips tests |
+| `codegenMode` | `"lean" \| "inline"`           | auto            | Override the codegen mode. `"lean"` (default for all supported bundlers): shared runtime helpers are imported from `virtual:zod-compiler/runtime`, which the bundler resolves via its module hooks. `"inline"`: helpers are emitted directly into each transformed file — use this for transpile-only esbuild builds (no `--bundle`) or similar setups where the bundler's hooks never fire for already-transformed output and the `virtual:` specifier would survive into `dist/` |
+| `cache`        | `boolean \| string`            | `true`          | Persistent transform cache (`node_modules/.cache/zod-compiler`, or a custom directory). Skips discovery + codegen across processes when nothing changed; entries self-validate against dependency content hashes                       |
 
 ```typescript
 zodCompiler({
@@ -293,6 +294,13 @@ Rollup, Rolldown, esbuild, Farm, and Bun, or the bare-specifier alias
 `__zod-compiler-runtime__` on webpack and rspack (which reject the `virtual:`
 URI scheme) — so the bundler emits a single bundle-wide copy regardless of how
 many files reference them.
+
+**Transpile-only esbuild builds** (no `--bundle`, e.g. `astro-scripts build`) never invoke the bundler's `onResolve`/`onLoad` hooks for already-transformed files, so the `virtual:` specifier survives verbatim into `dist/` and Node.js rejects it at runtime with `ERR_UNSUPPORTED_ESM_URL_SCHEME`. Set `codegenMode: "inline"` to emit helpers directly into each file instead:
+
+```typescript
+import zodCompiler from "zod-compiler/esbuild";
+export default [zodCompiler({ schemas: "explicit", codegenMode: "inline" })];
+```
 
 The result: a 5-file project with 10 schemas all using `z.email()` and
 `z.uuid()` produces a bundle where each shared regex appears exactly **once**.

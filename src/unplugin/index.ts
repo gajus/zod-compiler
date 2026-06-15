@@ -58,7 +58,8 @@ export const unplugin = createUnplugin(
       { code: string; result: string | null; map?: TransformSourceMap | null }
     >();
     const verbose = options?.verbose === true;
-    const mode: CodegenMode = VIRTUAL_MODULE_FRAMEWORKS.has(meta.framework) ? "lean" : "inline";
+    const mode: CodegenMode =
+      options?.codegenMode ?? (VIRTUAL_MODULE_FRAMEWORKS.has(meta.framework) ? "lean" : "inline");
     const runtimeId = WP_FRAMEWORKS.has(meta.framework) ? WP_RUNTIME_ID : VIRTUAL_RUNTIME_ID;
     // Persistent transform-result cache: discovery executes schema files (and
     // their import graphs) in-process, and the in-memory caches die with the

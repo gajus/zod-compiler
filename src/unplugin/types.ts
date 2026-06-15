@@ -141,6 +141,22 @@ export interface ZodCompilerPluginOptions {
    */
   apply?: "build" | "serve" | "all" | undefined;
   /**
+   * Override the codegen mode used by the plugin.
+   *
+   * - `"lean"` (default for bundlers): runtime helpers are imported from
+   *   `virtual:zod-compiler/runtime`, which the bundler resolves via its
+   *   `onResolve`/`onLoad` hooks. Produces smaller per-file output and lets
+   *   the bundler tree-shake unused helpers.
+   * - `"inline"`: runtime helpers are emitted directly into each transformed
+   *   file. Use this for transpile-only builds (e.g. `esbuild` without
+   *   `--bundle`, `astro-scripts build`) where the bundler's module hooks
+   *   never fire for already-transformed output and the `virtual:` specifier
+   *   would survive into `dist/` causing `ERR_UNSUPPORTED_ESM_URL_SCHEME`.
+   *
+   * @default determined by bundler
+   */
+  codegenMode?: "lean" | "inline" | undefined;
+  /**
    * Persistent transform-result cache (Node.js only).
    *
    * Schema discovery executes schema files (and their import graphs) inside
