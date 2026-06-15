@@ -1,4 +1,4 @@
-import type { CodegenMode } from "#src/core/codegen/context.js";
+import type { CodegenMode } from "../core/codegen/context.js";
 import type { HoistOptions } from "./hoist.js";
 
 export interface TransformOptions {

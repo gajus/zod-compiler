@@ -75,6 +75,7 @@ export function expectParity(schema: ZodLikeSchema, inputs: unknown[], name?: st
     } catch (e) {
       zodThrew = e instanceof Error ? e.constructor.name : "unknown";
     }
+    // oxlint-disable-next-line typescript/no-redundant-type-constituents -- false positive: SafeParseSuccess<unknown> is not a top type
     let compiledResult: SafeParseResult<unknown> | undefined;
     let compiledThrew: string | undefined;
     try {

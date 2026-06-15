@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { compileSchemas } from "#src/core/pipeline.js";
-import type { DiscoveredSchema } from "#src/core/types.js";
-import { discoverSchemas } from "#src/discovery.js";
-import { mayExportSchemas } from "#src/static-filter.js";
+import { compileSchemas } from "../../core/pipeline.js";
+import type { DiscoveredSchema } from "../../core/types.js";
+import { discoverSchemas } from "../../discovery.js";
+import { mayExportSchemas } from "../../static-filter.js";
 import { generateCompiledFileContent, resolveOutputPath, writeCompiledFile } from "../emitter.js";
 import { getErrorMessage } from "../errors.js";
 import { logger } from "../logger.js";

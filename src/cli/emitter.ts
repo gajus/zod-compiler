@@ -8,8 +8,8 @@ import {
   MK_VALIDATOR_DECL,
   ZOD_CONFIG_IMPORT,
   ZOD_MSG_DECLARATION,
-} from "#src/core/iife.js";
-import type { CompiledSchemaInfo } from "#src/core/pipeline.js";
+} from "../core/iife.js";
+import type { CompiledSchemaInfo } from "../core/pipeline.js";
 
 /**
  * Generate the content of a .compiled.ts file from multiple schemas.

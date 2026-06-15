@@ -2,8 +2,8 @@ import remapping from "@jridgewell/remapping";
 import { parseExpressionAt } from "acorn";
 import MagicString from "magic-string";
 import picomatch from "picomatch";
-import type { CodegenMode } from "#src/core/codegen/context.js";
-import { SHARED_BLOCK_MARKER } from "#src/core/codegen/dedupe.js";
+import type { CodegenMode } from "../core/codegen/context.js";
+import { SHARED_BLOCK_MARKER } from "../core/codegen/dedupe.js";
 import {
   FAIL_CLASS_DECL,
   FIN_DECL,
@@ -12,15 +12,11 @@ import {
   MK_VALIDATOR_DECL,
   ZOD_CONFIG_IMPORT,
   ZOD_MSG_DECLARATION,
-} from "#src/core/iife.js";
-import {
-  aggregateUsedHelpers,
-  type CompiledSchemaInfo,
-  compileSchemas,
-} from "#src/core/pipeline.js";
-import type { DiscoveredSchema } from "#src/core/types.js";
-import { discoverSchemas } from "#src/discovery.js";
-import { mayExportSchemas } from "#src/static-filter.js";
+} from "../core/iife.js";
+import { aggregateUsedHelpers, type CompiledSchemaInfo, compileSchemas } from "../core/pipeline.js";
+import type { DiscoveredSchema } from "../core/types.js";
+import { discoverSchemas } from "../discovery.js";
+import { mayExportSchemas } from "../static-filter.js";
 import { applyEdits, type Edit, type Insertion } from "./edits.js";
 import { hoistZodSchemasMeta } from "./hoist.js";
 import { compileHoistedSchemas } from "./hoist-compile.js";

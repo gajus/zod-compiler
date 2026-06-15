@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { invalidateModuleCache } from "#src/loader.js";
+import { invalidateModuleCache } from "../../loader.js";
 import { getErrorMessage } from "../errors.js";
 import { logger } from "../logger.js";
 import {

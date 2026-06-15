@@ -1,7 +1,7 @@
 import process from "node:process";
 import { createUnplugin, type UnpluginContextMeta } from "unplugin";
-import type { CodegenMode } from "#src/core/codegen/context.js";
-import { getFirstPartyModulePaths, invalidateModuleCache } from "#src/loader.js";
+import type { CodegenMode } from "../core/codegen/context.js";
+import { getFirstPartyModulePaths, invalidateModuleCache } from "../loader.js";
 import { collectStaticDeps, resetDepGraphMemo } from "./dep-graph.js";
 import { DiskCache, resetDepValidationMemo } from "./disk-cache.js";
 import {

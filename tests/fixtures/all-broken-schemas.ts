@@ -1,7 +1,7 @@
 // oxlint-disable-next-line no-unused-vars -- needed in source text for readFixtureAsUserCode bail-out
 import { z } from "zod";
 // oxlint-disable-next-line no-unused-vars -- needed in source text for readFixtureAsUserCode bail-out
-import { compile } from "#src/core/compile.js";
+import { compile } from "zod-compiler";
 
 // Manually create broken compiled schemas that pass isCompiledSchema
 // but fail during extractSchema (schema property is null)

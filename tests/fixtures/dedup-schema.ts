@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { compile } from "#src/core/compile.js";
+import { compile } from "zod-compiler";
 
 // A shared nested shape reused across two exported schemas — the dedup pass
 // should hoist its slow walk into one shared __zcSw_N function.

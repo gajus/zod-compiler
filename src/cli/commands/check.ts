@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import type { DiagnosticNode, DiagnosticResult } from "#src/core/diagnostic.js";
-import { diagnoseSchema } from "#src/core/diagnostic.js";
-import { extractSchema } from "#src/core/extract/index.js";
-import type { DiscoveredSchema, SchemaIR } from "#src/core/types.js";
-import { discoverSchemas } from "#src/discovery.js";
+import type { DiagnosticNode, DiagnosticResult } from "../../core/diagnostic.js";
+import { diagnoseSchema } from "../../core/diagnostic.js";
+import { extractSchema } from "../../core/extract/index.js";
+import type { DiscoveredSchema, SchemaIR } from "../../core/types.js";
+import { discoverSchemas } from "../../discovery.js";
 import { getErrorMessage } from "../errors.js";
 import type { Colors } from "../logger.js";
 import { createColors, logger } from "../logger.js";

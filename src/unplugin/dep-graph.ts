@@ -40,7 +40,7 @@
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import { resolveTsconfigAliases } from "#src/loader.js";
+import { resolveTsconfigAliases } from "../loader.js";
 
 export interface StaticDeps {
   /** Absolute real paths of first-party files reachable from the entry. */

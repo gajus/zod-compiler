@@ -30,11 +30,11 @@
  * expression and runtime behavior is unchanged.
  */
 
-import type { CodegenMode } from "#src/core/codegen/context.js";
-import { generateValidator } from "#src/core/codegen/index.js";
-import { extractSchema, type RefEntry } from "#src/core/extract/index.js";
-import type { CompiledSchemaInfo } from "#src/core/pipeline.js";
-import { loadModule } from "#src/loader.js";
+import type { CodegenMode } from "../core/codegen/context.js";
+import { generateValidator } from "../core/codegen/index.js";
+import { extractSchema, type RefEntry } from "../core/extract/index.js";
+import type { CompiledSchemaInfo } from "../core/pipeline.js";
+import { loadModule } from "../loader.js";
 import {
   analyzeHoistedExpression,
   collectImportBindings,

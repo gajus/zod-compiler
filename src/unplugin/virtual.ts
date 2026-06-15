@@ -12,8 +12,8 @@
  * static (no per-build state), so caching the source string is safe.
  */
 
-import { ISSUE_DECLS, RUNTIME_HELPER_DECLS } from "#src/core/codegen/issue-decls.js";
-import { WELL_KNOWN_REGEXES } from "#src/core/codegen/well-known-regex.js";
+import { ISSUE_DECLS, RUNTIME_HELPER_DECLS } from "../core/codegen/issue-decls.js";
+import { WELL_KNOWN_REGEXES } from "../core/codegen/well-known-regex.js";
 import {
   FAIL_CLASS_DECL,
   FIN_DECL,
@@ -21,7 +21,7 @@ import {
   MK_VALIDATOR_DECL,
   ZOD_CONFIG_IMPORT,
   ZOD_MSG_DECLARATION,
-} from "#src/core/iife.js";
+} from "../core/iife.js";
 
 /** Public virtual module ID used by Vite / Rollup / esbuild and other `virtual:`-compatible bundlers. */
 export const VIRTUAL_RUNTIME_ID = "virtual:zod-compiler/runtime";

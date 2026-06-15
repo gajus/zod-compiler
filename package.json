@@ -24,13 +24,6 @@
     "LICENSE"
   ],
   "type": "module",
-  "imports": {
-    "#src/*": {
-      "types": "./dist/*",
-      "source": "./src/*",
-      "default": "./dist/*"
-    }
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

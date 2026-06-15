@@ -1,5 +1,5 @@
-import { isCompiledSchema } from "#src/core/compile.js";
-import type { DiscoveredSchema } from "#src/core/types.js";
+import { isCompiledSchema } from "./core/compile.js";
+import type { DiscoveredSchema } from "./core/types.js";
 import { loadSourceFile } from "./loader.js";
 
 export interface DiscoverOptions {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { compile } from "#src/core/compile.js";
+import { compile } from "zod-compiler";
 
 const UserSchema = z.object({
   name: z.string().min(1),

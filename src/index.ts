@@ -1,4 +1,4 @@
-export { compile, isCompiledSchema } from "#src/core/compile.js";
+export { compile, isCompiledSchema } from "./core/compile.js";
 export type {
   CompiledSchema,
   SafeParseError,
@@ -6,5 +6,5 @@ export type {
   SafeParseSuccess,
   ZodErrorLike,
   ZodIssueLike,
-} from "#src/core/types.js";
-export type { ZodCompilerPluginOptions } from "#src/unplugin/types.js";
+} from "./core/types.js";
+export type { ZodCompilerPluginOptions } from "./unplugin/types.js";

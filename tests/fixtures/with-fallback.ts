@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { compile } from "#src/core/compile.js";
+import { compile } from "zod-compiler";
 
 // Use a captured variable to ensure fallback (zero-capture transforms are now compiled)
 const radix = 10;
