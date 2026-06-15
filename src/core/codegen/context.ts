@@ -339,6 +339,11 @@ export function escapeString(s: string | number): string {
 export function literalToJs(v: string | number | boolean | null | bigint | undefined): string {
   if (typeof v === "bigint") return `${v}n`;
   if (v === undefined) return "undefined";
+  // JSON.stringify maps NaN/±Infinity to "null"; emit them as JS expressions so a
+  // non-finite numeric literal round-trips (z.literal(Infinity) must compare
+  // against Infinity, not null). String(NaN)="NaN", String(Infinity)="Infinity",
+  // String(-Infinity)="-Infinity" — all valid JS that evaluate to the value.
+  if (typeof v === "number" && !Number.isFinite(v)) return String(v);
   return JSON.stringify(v);
 }
 

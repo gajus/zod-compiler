@@ -78,6 +78,25 @@ describe("known divergence — z.object() does not strip unknown keys", () => {
     expect(r.data).toBe(input); // compiler passes the input through unchanged
     expect(Object.keys(r.data)).toEqual(["a", "b"]); // including the unknown key
   });
+
+  // A `__proto__` own ENUMERABLE data property (as produced by JSON.parse, which
+  // never sets the prototype) is just another unknown key: Zod strips it, the
+  // compiler retains it by reference. Pinned explicitly because the retained key
+  // is named `__proto__` — but this is NOT prototype pollution: the compiler only
+  // returns the input untouched, it never assigns `obj.__proto__ = …`, so the
+  // result's prototype stays Object.prototype and no global is mutated.
+  it("__proto__ own-key is retained by reference but does not pollute the prototype", () => {
+    const schema = z.object({ a: z.string() });
+    const input = JSON.parse('{"a":"x","__proto__":{"polluted":true}}') as Record<string, unknown>;
+    const compiled = compileLikeProduction(schema, "protoDoc");
+    const r = compiled(input) as { success: true; data: Record<string, unknown> };
+    expect(z.object({ a: z.string() }).parse(input)).toEqual({ a: "x" }); // Zod strips __proto__
+    expect(r.data).toBe(input); // compiler retains it (same reference)
+    expect(Object.prototype.hasOwnProperty.call(r.data, "__proto__")).toBe(true);
+    // No pollution: the prototype is untouched and no stray global leaked.
+    expect(Object.getPrototypeOf(r.data)).toBe(Object.prototype);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
 });
 
 /**

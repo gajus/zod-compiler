@@ -411,3 +411,102 @@ describe("edge cases — error-map shapes (static bake vs dynamic fallback)", ()
   it("error map probing the issue via Object.keys falls back", () =>
     expectParity(z.string({ error: (iss) => (Object.keys(iss).length ? "k" : "n") }), [42]));
 });
+
+// Regression: a mutating schema inside a discriminated-union OPTION (default,
+// catch, coerce, transform, .trim()/.toLowerCase() overwrite, stringbool, or a
+// nested object default) must apply and surface its mutation. slowDiscriminatedUnion
+// visits each option writing to a fresh local (objVar); without a write-back the
+// mutated clone was stranded there and the caller returned the ORIGINAL input by
+// reference, silently dropping the mutation. The same mutations applied correctly
+// in every other position (plain object, array, record, tuple, non-discriminated
+// union) — only the discriminated dispatch lost them. See discriminated-union.ts.
+describe("edge cases — discriminated-union options apply their mutations", () => {
+  const optA = (inner: z.ZodTypeAny) => z.object({ t: z.literal("a"), x: inner });
+  const other = z.object({ t: z.literal("b") });
+  it("option field default fires on a missing key", () =>
+    expectParity(z.discriminatedUnion("t", [optA(z.number().default(0)), other]), [
+      { t: "a" },
+      { t: "a", x: 5 },
+      { t: "b" },
+    ]));
+  it("option field optional().default() and default().optional() both fire", () => {
+    expectParity(z.discriminatedUnion("t", [optA(z.string().default("d").optional()), other]), [
+      { t: "a" },
+      { t: "a", x: "y" },
+    ]);
+    expectParity(z.discriminatedUnion("t", [optA(z.string().optional().default("d")), other]), [
+      { t: "a" },
+    ]);
+  });
+  it("option field catch substitutes on failure", () =>
+    expectParity(z.discriminatedUnion("t", [optA(z.number().catch(7)), other]), [
+      { t: "a", x: "bad" },
+      { t: "a", x: 5 },
+    ]));
+  it("option field coercion converts the value", () =>
+    expectParity(z.discriminatedUnion("t", [optA(z.coerce.number()), other]), [
+      { t: "a", x: "5" },
+      { t: "a", x: 5 },
+    ]));
+  it("option field overwrite checks (.trim / .toLowerCase) rewrite the value", () => {
+    expectParity(z.discriminatedUnion("t", [optA(z.string().trim()), other]), [
+      { t: "a", x: "  hi  " },
+    ]);
+    expectParity(z.discriminatedUnion("t", [optA(z.string().toLowerCase()), other]), [
+      { t: "a", x: "HI" },
+    ]);
+  });
+  it("option field zero-capture transform applies", () =>
+    expectParity(z.discriminatedUnion("t", [optA(z.string().transform((s) => s.length)), other]), [
+      { t: "a", x: "hello" },
+    ]));
+  it("option field stringbool converts string→boolean", () =>
+    expectParity(z.discriminatedUnion("t", [optA(z.stringbool()), other]), [
+      { t: "a", x: "true" },
+      { t: "a", x: "off" },
+    ]));
+  it("nested object default inside an option fires", () =>
+    expectParity(
+      z.discriminatedUnion("t", [optA(z.object({ y: z.string().default("d") })), other]),
+      [{ t: "a", x: {} }],
+    ));
+  it("both options mutate — each branch applies its own default", () =>
+    expectParity(
+      z.discriminatedUnion("t", [
+        optA(z.number().default(1)),
+        z.object({ t: z.literal("b"), y: z.string().default("z") }),
+      ]),
+      [{ t: "a" }, { t: "b" }],
+    ));
+  it("mutation propagates when the DU is nested in a container", () => {
+    const du = z.discriminatedUnion("t", [optA(z.number().default(0)), other]);
+    expectParity(z.array(du), [[{ t: "a" }, { t: "b" }]]);
+    expectParity(z.object({ item: du }), [{ item: { t: "a" } }]);
+    expectParity(z.record(z.string(), du), [{ k: { t: "a" } }]);
+  });
+});
+
+// Regression: z.literal() with a non-finite numeric value. literalToJs baked the
+// value with JSON.stringify, which maps NaN/Infinity/-Infinity all to `null`, so
+// z.literal(Infinity) silently behaved like z.literal(null) — rejecting Infinity,
+// accepting null, and reporting `expected null`. literalToJs now emits the value
+// as a JS expression, and the NaN literal compares via Number.isNaN (NaN === NaN
+// is false). See literal.ts / context.ts literalToJs.
+describe("edge cases — literal with NaN / Infinity / -Infinity", () => {
+  it("literal(NaN) accepts only NaN (not null), with the right message", () =>
+    expectParity(z.literal(Number.NaN as unknown as number), [Number.NaN, null, 1, "NaN"]));
+  it("literal(Infinity) accepts only Infinity", () =>
+    expectParity(z.literal(Infinity as unknown as number), [Infinity, -Infinity, null, 1]));
+  it("literal(-Infinity) accepts only -Infinity", () =>
+    expectParity(z.literal(-Infinity as unknown as number), [-Infinity, Infinity, null, 1]));
+  it("multi-value literal mixing finite and non-finite values", () => {
+    expectParity(z.literal([1, Infinity as unknown as number]), [1, Infinity, 2, null]);
+    expectParity(z.literal([Number.NaN as unknown as number, "x"]), [Number.NaN, "x", "y", null]);
+  });
+  it("non-finite literal nested in an object field", () =>
+    expectParity(z.object({ v: z.literal(Infinity as unknown as number) }), [
+      { v: Infinity },
+      { v: null },
+      { v: 1 },
+    ]));
+});
