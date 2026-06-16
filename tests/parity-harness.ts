@@ -6,7 +6,7 @@
 import { expect } from "vitest";
 import { ZodRealError, z } from "zod";
 import { generateValidator } from "#src/core/codegen/index.js";
-import type { RefEntry } from "#src/core/extract/index.js";
+import type { ExtractOptions, RefEntry } from "#src/core/extract/index.js";
 import { extractSchema } from "#src/core/extract/index.js";
 import { FAIL_CLASS_DECL, FIN_DECL, FIN_DEFERRED_DECL } from "#src/core/iife.js";
 import type { SafeParseResult } from "#src/core/types.js";
@@ -28,9 +28,10 @@ export interface ZodLikeSchema {
 export function compileLikeProduction(
   schema: unknown,
   name = "parity",
+  extractOptions?: ExtractOptions,
 ): (input: unknown) => SafeParseResult<unknown> {
   const refEntries: RefEntry[] = [];
-  const ir = extractSchema(schema, refEntries);
+  const ir = extractSchema(schema, refEntries, extractOptions);
   const generated = generateValidator(ir, name, { refCount: refEntries.length });
   const factory = new Function(
     "__zcMsg",
@@ -65,8 +66,13 @@ function describeInput(input: unknown): string {
  * every input. Schemas that throw synchronously (async refinements, function
  * schemas) must throw identically on both sides.
  */
-export function expectParity(schema: ZodLikeSchema, inputs: unknown[], name?: string): void {
-  const compiled = compileLikeProduction(schema, name);
+export function expectParity(
+  schema: ZodLikeSchema,
+  inputs: unknown[],
+  name?: string,
+  extractOptions?: ExtractOptions,
+): void {
+  const compiled = compileLikeProduction(schema, name, extractOptions);
   for (const input of inputs) {
     let zodResult: ReturnType<ZodLikeSchema["safeParse"]> | undefined;
     let zodThrew: string | undefined;

@@ -39,6 +39,8 @@ Options:
                              exported Zod schema; "explicit" only compile()-wrapped ones
   --emit <schema|bag>        Compiled export shape: "schema" (default, full Zod API) or
                              "bag" (minimal methods-only object, smaller output)
+  --strip-unknown-keys       Strip unknown keys from z.object() output (matches Zod's
+                             default .parse(); off by default, generate only)
   --json                     Output diagnosis as JSON (check only)
   --fail-under <pct>         Exit with code 1 if any schema's coverage < pct (check only)
   --no-color                 Disable colored output (check only)
@@ -95,6 +97,7 @@ function parseArgs(argv: string[]): Command {
     let zodCompat: boolean | undefined;
     // Default "auto": every exported Zod schema compiles, matching the plugin.
     let autoDiscover = true;
+    let stripUnknownKeys = false;
 
     for (let i = 0; i < rest.length; i++) {
       const arg = rest[i] as string;
@@ -114,6 +117,8 @@ function parseArgs(argv: string[]): Command {
       } else if (arg === "--emit") {
         i++;
         zodCompat = parseEmitValue(rest[i]);
+      } else if (arg === "--strip-unknown-keys") {
+        stripUnknownKeys = true;
       } else if (arg.startsWith("-")) {
         logger.error(`Unknown option: ${arg}`);
         process.exit(1);
@@ -135,6 +140,7 @@ function parseArgs(argv: string[]): Command {
         watch,
         zodCompat,
         autoDiscover,
+        stripUnknownKeys,
       },
     };
   }

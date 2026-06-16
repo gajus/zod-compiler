@@ -3,6 +3,7 @@ import type { FastGen, SlowGen } from "../context.js";
 import {
   ENUM_INLINE_THRESHOLD,
   emitEffectFn,
+  emitRuntimeHelper,
   emitSet,
   escapeString,
   extendStaticPath,
@@ -10,6 +11,7 @@ import {
 } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType, unrecognizedKeys } from "../emit-issue.js";
+import { ZC_HOP_DECL } from "../issue-decls.js";
 import { refineCheck } from "./effect.js";
 
 /**
@@ -36,16 +38,35 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
       ${invalidType(g, "object")}
     }else{`;
 
-  const needsClone = Object.values(ir.properties).some(hasMutation);
+  // Strip mode (zod's default z.object() output) rebuilds a FRESH object from
+  // only the declared own keys, so it always writes back. Otherwise clone only
+  // when a property mutates the value.
+  const strip = ir.stripUnknownKeys === true;
+  const needsClone = strip || Object.values(ir.properties).some(hasMutation);
   const objVar = g.temp("o");
-  // Spread, not Object.assign: V8's CloneObjectIC makes `{...x}` ~25% faster
-  // on the whole safeParse call for mutation-bearing schemas.
-  code += needsClone ? `var ${objVar}={...${g.input}};` : `var ${objVar}=${g.input};`;
+  if (strip) {
+    code += `var ${objVar}={};`;
+  } else {
+    // Spread, not Object.assign: V8's CloneObjectIC makes `{...x}` ~25% faster
+    // on the whole safeParse call for mutation-bearing schemas.
+    code += needsClone ? `var ${objVar}={...${g.input}};` : `var ${objVar}=${g.input};`;
+  }
+  // Own-property guard for the strip copy (matches zod's own-key read and the
+  // {...input} clone — symbol, inherited, and unknown keys never carry over).
+  const hop = strip ? emitRuntimeHelper(g.ctx, "__zcHop", ZC_HOP_DECL) : "";
 
   const suppressAbsent = new Set(ir.suppressAbsentKeys ?? []);
   for (const [key, propIR] of Object.entries(ir.properties)) {
-    const propExpr = `${objVar}[${escapeString(key)}]`;
+    const keyStr = escapeString(key);
+    const propExpr = `${objVar}[${keyStr}]`;
     const propPath = extendStaticPath(g.path, key);
+    if (strip) {
+      // Copy the present own key into the fresh object BEFORE its in-place
+      // validation, so the existing per-property logic (plain copy, defaults,
+      // overwrites, nested rebuilds) runs unchanged on `objVar`. Absent keys
+      // stay absent; a default fills them in via its own `===undefined` branch.
+      code += `if(${hop}.call(${g.input},${keyStr})){${propExpr}=${g.input}[${keyStr}];}`;
+    }
     const propCode = g.visit(propIR, { input: propExpr, output: propExpr, path: propPath });
     if (suppressAbsent.has(key)) {
       // Mirrors zod's handlePropertyResult: optional-out fallback props run,
@@ -54,7 +75,7 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
       code += emit`
         var ${beforeVar}=${g.issues}.length;
         ${propCode}
-        if(!(${escapeString(key)} in ${objVar})&&${g.issues}.length>${beforeVar}){
+        if(!(${keyStr} in ${objVar})&&${g.issues}.length>${beforeVar}){
           ${g.issues}.length=${beforeVar};
         }`;
     } else {
@@ -145,6 +166,11 @@ function fastObjectBody(ir: ObjectIR, g: FastGen, skipKey?: string): string[] | 
 }
 
 export function fastObject(ir: ObjectIR, g: FastGen): string | null {
+  // Strip rebuilds a fresh output, so there is no by-reference fast path: fall
+  // to the eager slow build (mirrors how .trim()/overwrite disables fastString).
+  // Disabling it here also propagates up — any container holding a strip object
+  // loses its fast path too, and `.is()` derives from safeParse(input).success.
+  if (ir.stripUnknownKeys) return null;
   const x = g.input;
   const body = fastObjectBody(ir, g, g.discSkipKey);
   if (body === null) return null;

@@ -7,6 +7,7 @@ export interface TransformOptions {
   zodCompat?: boolean | undefined;
   verbose?: boolean | undefined;
   autoDiscover?: boolean | undefined;
+  stripUnknownKeys?: boolean | undefined;
   hoist?: boolean | HoistOptions | undefined;
   onBuildStats?: (stats: BuildStats) => void;
   /** Fired when discovery (file execution) is about to run — used by the disk cache to decide which results are worth persisting. */
@@ -156,6 +157,28 @@ export interface ZodCompilerPluginOptions {
    * @default determined by bundler
    */
   codegenMode?: "lean" | "inline" | undefined;
+  /**
+   * Strip unknown keys from `z.object()` output, matching Zod's default
+   * `.parse()` behavior.
+   *
+   * By default the compiler returns a valid object **by reference** — unknown
+   * keys are kept (the zero-allocation fast path). Enable this to instead
+   * rebuild a fresh object containing only the declared keys, exactly as Zod's
+   * default `z.object()` does. Use it when you rely on stripping to sanitize
+   * untrusted input (e.g. forwarding a parsed request body to an ORM) and want
+   * protection against mass-assignment / overposting.
+   *
+   * Scope: only genuine `z.object()` schemas are affected. `z.looseObject()`
+   * still keeps unknown keys and `z.strictObject()` still rejects them — both
+   * already match Zod. Validation of declared keys is identical either way.
+   *
+   * Trade-off: a stripped object is rebuilt on every successful parse, so these
+   * schemas no longer take the by-reference fast path (`.is()` for them derives
+   * from `safeParse`). Intersections of plain objects delegate to Zod under
+   * this option (matching Zod's parse-both-sides-then-merge semantics).
+   * @default false
+   */
+  stripUnknownKeys?: boolean | undefined;
   /**
    * Persistent transform-result cache (Node.js only).
    *

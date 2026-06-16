@@ -16,6 +16,7 @@ interface WatchOptions {
   output: string | undefined;
   zodCompat?: boolean | undefined;
   autoDiscover?: boolean | undefined;
+  stripUnknownKeys?: boolean | undefined;
 }
 
 /** Dependencies for runWatch, injectable for testing. */
@@ -106,6 +107,7 @@ export async function runWatch(
       const result = await generateFile(filePath, options.output, {
         zodCompat: options.zodCompat,
         autoDiscover: options.autoDiscover,
+        stripUnknownKeys: options.stripUnknownKeys,
       });
       if (result) {
         logResult(result);
@@ -148,6 +150,7 @@ export async function runWatch(
         const result = await generateFile(filePath, options.output, {
           zodCompat: options.zodCompat,
           autoDiscover: options.autoDiscover,
+          stripUnknownKeys: options.stripUnknownKeys,
         });
         if (result) {
           logResult(result);

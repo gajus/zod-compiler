@@ -277,6 +277,19 @@ export interface ObjectIR {
    * data === input and the schema stays Fast Path eligible.
    */
   strict?: boolean;
+  /**
+   * Strip unknown keys from the output (zod's DEFAULT `z.object()` behavior),
+   * set only when the `stripUnknownKeys` build option is enabled AND this is a
+   * genuine `z.object()` (no catchall) — never on `z.looseObject()` (keep) or
+   * `z.strictObject()` (reject). Compiled by rebuilding a fresh object from
+   * only the declared own keys, mirroring zod's strip exactly. Because the
+   * output is a fresh value, a strip object counts as a {@link hasMutation}
+   * node: it never takes the zero-allocation by-reference fast path, and parent
+   * containers clone before it writes back (so intersections of strip objects
+   * delegate to zod, matching zod's merge-then-strip semantics). Mutually
+   * exclusive with `strict`.
+   */
+  stripUnknownKeys?: boolean;
   /** Object-level refine effects from z.object({...}).refine(fn) */
   checks?: RefineEffectCheckIR[];
   /**

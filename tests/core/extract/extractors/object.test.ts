@@ -63,6 +63,7 @@ describe("extractObject", () => {
       path: "",
       refs: undefined,
       visiting: new Set(),
+      options: {},
       visit: () => ({ type: "string" as const, checks: [] }),
       fallback: (reason: string) => ({ type: "fallback" as const, reason }),
     };

@@ -31,6 +31,11 @@ import { compileLikeProduction, expectParity } from "./parity-harness.js";
  * straight through. Observable, security-relevant (overposting), and systemic:
  * it affects every plain object in every position. Closing it means rebuilding
  * the object from only the known keys on every successful parse.
+ *
+ * This is the DEFAULT behavior. The opt-in `stripUnknownKeys` build option
+ * rebuilds from the known keys for full Zod parity; these pins compile with the
+ * option OFF, so they stay valid. tests/strip-unknown-keys.test.ts is the
+ * opted-in parity suite covering the same positions.
  */
 describe("known divergence — z.object() does not strip unknown keys", () => {
   it.fails("top-level object strips extra string keys", () => {

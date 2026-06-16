@@ -22,6 +22,21 @@ describe("compileSchemas", () => {
     expect(results[1]?.codegenResult.functionDef).toContain("safeParse_validatePost");
   });
 
+  it("threads stripUnknownKeys into extraction", () => {
+    const schemas = [{ exportName: "validateUser", schema: z.object({ a: z.string() }) }];
+
+    const off = compileSchemas(schemas, { mode: "inline" });
+    // Default: mutation-free object takes the by-reference fast path.
+    expect(off.schemas[0]?.codegenResult.functionDef).toContain("data:input");
+    expect(off.schemas[0]?.codegenResult.functionDef).not.toContain("__zcHop.call");
+
+    const on = compileSchemas(schemas, { mode: "inline", stripUnknownKeys: true });
+    // Stripping: rebuild a fresh object, copying own keys via hasOwnProperty;
+    // no by-reference fast path.
+    expect(on.schemas[0]?.codegenResult.functionDef).toContain("__zcHop.call");
+    expect(on.schemas[0]?.codegenResult.functionDef).not.toContain("data:input");
+  });
+
   it("collects refEntries independently per schema", () => {
     // Use captured-variable transforms to ensure fallback (zero-capture transforms are now compiled)
     const external = "prefix_";

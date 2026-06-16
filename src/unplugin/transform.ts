@@ -214,7 +214,7 @@ export async function transformCodeWithMap(
   let hoistCompiledCount = 0;
   if (autoDiscover && hoistedSchemas !== null && hoistedSchemas.schemas.length > 0) {
     const hoistCompiled = await timePhase("hoist-compile", () =>
-      compileHoistedSchemas(hoistedSchemas.schemas, code, id, mode),
+      compileHoistedSchemas(hoistedSchemas.schemas, code, id, mode, options.stripUnknownKeys),
     );
     const spliceEdits: Edit[] = [];
     for (const h of hoistCompiled) {
@@ -325,6 +325,7 @@ export async function transformCodeWithMap(
   const { schemas: compiled, shared } = timePhase("compile", () =>
     compileSchemas(schemas, {
       mode,
+      stripUnknownKeys: options.stripUnknownKeys,
       onError(exportName, error) {
         failedCount++;
         warn(

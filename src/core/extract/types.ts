@@ -134,6 +134,18 @@ export type SupportedZodDefType =
   | "template_literal"
   | "file";
 
+// ─── Extraction options ─────────────────────────────────────────────────────
+
+/** Build-time options that influence IR shape (threaded through extraction). */
+export interface ExtractOptions {
+  /**
+   * Emit `ObjectIR.stripUnknownKeys` for genuine `z.object()` schemas so the
+   * compiled validator strips unknown keys, matching zod's default `.parse()`.
+   * Off by default (the compiler returns the input by reference for speed).
+   */
+  stripUnknownKeys?: boolean | undefined;
+}
+
 // ─── Recursion state ──────────────────────────────────────────────────────
 
 /**
@@ -166,6 +178,8 @@ export interface ExtractorContext {
   readonly visiting: Set<unknown>;
   /** Recursion-target bookkeeping (shared across the whole extraction). */
   readonly recursion: RecursionState;
+  /** Build-time extraction options (shared across the whole extraction). */
+  readonly options: ExtractOptions;
 
   /** Recursively extract a child schema. Manages visiting set automatically. */
   visit(childSchema: unknown, pathSuffix?: string): import("../types.js").SchemaIR;

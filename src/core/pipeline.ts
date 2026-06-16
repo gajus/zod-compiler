@@ -29,6 +29,8 @@ export interface CompileSchemasResult {
 export interface CompileSchemasOptions {
   /** "inline" for CLI .compiled.ts; "lean" for unplugin (imports from virtual:zod-compiler/runtime). */
   mode: CodegenMode;
+  /** Strip unknown keys from z.object() output, matching zod's default .parse(). */
+  stripUnknownKeys?: boolean | undefined;
   /** When provided, per-schema failures call this and continue. Otherwise the first error throws. */
   onError?: (exportName: string, error: Error) => void;
 }
@@ -61,7 +63,9 @@ export function compileSchemas(
   for (const s of schemas) {
     try {
       const refEntries: RefEntry[] = [];
-      const ir = extractSchema(s.schema, refEntries);
+      const ir = extractSchema(s.schema, refEntries, {
+        stripUnknownKeys: options.stripUnknownKeys,
+      });
       extracted.push({ exportName: s.exportName, ir, refEntries });
     } catch (err) {
       handle(s.exportName, err);

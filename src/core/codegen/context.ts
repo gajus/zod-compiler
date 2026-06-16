@@ -420,9 +420,13 @@ export function extendStaticPathIndex(parentPath: string, index: number): string
 }
 
 /**
- * Check if a SchemaIR tree contains any value-mutating operations
- * (coerce, default, catch) that would write back to the input expression.
- * Used by container generators to decide whether to shallow-clone.
+ * Check if a SchemaIR tree produces output that is not the input itself —
+ * either value-mutating operations (coerce, default, catch, overwrite) that
+ * write back to the input expression, or a strip object that rebuilds a fresh
+ * object from its known keys. Used by container generators to decide whether to
+ * clone (so the rebuilt/mutated value never writes through to the caller's
+ * input), by generateValidator to keep such schemas off the by-reference fast
+ * path, and by the shared-walk dedup + intersection extractor to exclude them.
  */
 export function hasMutation(ir: SchemaIR): boolean {
   switch (ir.type) {
@@ -448,7 +452,12 @@ export function hasMutation(ir: SchemaIR): boolean {
     case "stringBool":
       return true;
     case "object":
-      return Object.values(ir.properties).some(hasMutation);
+      // A strip object produces a FRESH output (only the declared keys), so it
+      // mutates: parents must clone before it writes back, it never takes the
+      // by-reference fast path, and intersections of strip objects delegate to
+      // zod (see extractIntersection's hasMutation guard) — matching zod's
+      // parse-both-sides-then-merge semantics instead of over-stripping.
+      return ir.stripUnknownKeys === true || Object.values(ir.properties).some(hasMutation);
     case "array":
       return hasMutation(ir.element);
     case "tuple":

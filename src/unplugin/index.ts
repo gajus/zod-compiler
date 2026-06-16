@@ -58,6 +58,7 @@ export const unplugin = createUnplugin(
       { code: string; result: string | null; map?: TransformSourceMap | null }
     >();
     const verbose = options?.verbose === true;
+    const stripUnknownKeys = options?.stripUnknownKeys === true;
     const mode: CodegenMode =
       options?.codegenMode ?? (VIRTUAL_MODULE_FRAMEWORKS.has(meta.framework) ? "lean" : "inline");
     const runtimeId = WP_FRAMEWORKS.has(meta.framework) ? WP_RUNTIME_ID : VIRTUAL_RUNTIME_ID;
@@ -77,6 +78,7 @@ export const unplugin = createUnplugin(
               runtimeId,
               output: outputMode,
               schemas: schemasMode,
+              stripUnknownKeys,
               hoist:
                 typeof options?.hoist === "object"
                   ? String(options.hoist.schemaNamePattern ?? "default")
@@ -165,6 +167,7 @@ export const unplugin = createUnplugin(
           verbose,
           zodCompat,
           autoDiscover,
+          stripUnknownKeys,
           hoist: options?.hoist,
           onDiscovery() {
             discoveryRan = true;
