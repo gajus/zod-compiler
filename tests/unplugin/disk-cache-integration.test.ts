@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { UnpluginContextMeta, UnpluginOptions } from "unplugin";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetDepValidationMemo } from "#src/unplugin/disk-cache.js";
 import { unplugin } from "#src/unplugin/index.js";
 
@@ -102,6 +102,38 @@ describe("unplugin disk cache integration", () => {
       expect(second?.code).toContain("safeParse_validateUser");
       expect(second?.code).not.toContain("stale-sentinel");
     } finally {
+      fs.rmSync(schemaPath, { force: true });
+    }
+  });
+
+  it("does not persist a result when discovery aborts on process.exit (issue #4)", async () => {
+    // A schema file transitively imports an env module that hard-exits when
+    // secrets are missing. The build is recovered (no crash), but the result —
+    // "nothing compiled" — reflects the missing secrets, not the file content.
+    // Persisting it (keyed on content hashes that are identical with or without
+    // secrets) would let a later secret-ful build serve the stale entry and
+    // silently ship un-optimized schemas, so nothing must reach disk.
+    const fixturesDir = path.resolve(import.meta.dirname, "../fixtures");
+    const envPath = path.join(fixturesDir, ".tmp-cache-env-exit.ts");
+    const schemaPath = path.join(fixturesDir, ".tmp-cache-schema-exit.ts");
+    fs.writeFileSync(envPath, "process.exit(1);\nexport const env: Record<string, string> = {};\n");
+    fs.writeFileSync(
+      schemaPath,
+      'import { z } from "zod";\nimport "./.tmp-cache-env-exit";\n' +
+        "export const UserSchema = z.object({ name: z.string() });\n",
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const code = fs.readFileSync(schemaPath, "utf8");
+      const plugin = makePlugin(cacheDir);
+      // Survives discovery's build-time exit — no throw.
+      await plugin.transform(code, schemaPath);
+      plugin.buildEnd();
+      // Neither an immediate entry nor a deferred-superset one was persisted.
+      expect(entryFiles(cacheDir)).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+      fs.rmSync(envPath, { force: true });
       fs.rmSync(schemaPath, { force: true });
     }
   });

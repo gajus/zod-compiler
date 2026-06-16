@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -520,6 +521,39 @@ describe("transformCode() E2E", () => {
     await expect(transformCode(code, "/nonexistent/bad-file.ts", { mode: "lean" })).rejects.toThrow(
       "[zod-compiler]",
     );
+  });
+
+  // Issue #4: a schema file transitively imports an env module that calls
+  // process.exit() when secrets are missing. In a secret-less CI build the
+  // build must survive (the file falls back to runtime Zod) rather than have
+  // the bundler terminated.
+  it("survives a schema file whose import calls process.exit during discovery", async () => {
+    const envPath = path.join(fixturesDir, "__test_env_exit.ts");
+    const schemaPath = path.join(fixturesDir, "__test_schema_env_exit.ts");
+    await fs.promises.writeFile(
+      envPath,
+      "process.exit(1);\nexport const env: Record<string, string> = {};\n",
+    );
+    await fs.promises.writeFile(
+      schemaPath,
+      'import { z } from "zod";\nimport "./__test_env_exit";\n' +
+        "export const UserSchema = z.object({ name: z.string() });\n",
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(vi.fn());
+    try {
+      const code = await fs.promises.readFile(schemaPath, "utf-8");
+      // Must not reject — the build-time exit is caught, not propagated.
+      const result = await transformCode(code, schemaPath, { mode: "lean", autoDiscover: true });
+      // Discovery never saw the schema, so nothing was compiled into an IIFE.
+      expect(result == null || !result.includes("safeParse_")).toBe(true);
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(warned).toContain("process.exit");
+      expect(warned).toContain("ZOD_COMPILER");
+    } finally {
+      warnSpy.mockRestore();
+      await fs.promises.unlink(envPath).catch(() => undefined);
+      await fs.promises.unlink(schemaPath).catch(() => undefined);
+    }
   });
 });
 

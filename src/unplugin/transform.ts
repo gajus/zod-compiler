@@ -16,6 +16,7 @@ import {
 import { aggregateUsedHelpers, type CompiledSchemaInfo, compileSchemas } from "../core/pipeline.js";
 import type { DiscoveredSchema } from "../core/types.js";
 import { discoverSchemas } from "../discovery.js";
+import { ProcessExitDuringLoadError } from "../loader.js";
 import { mayExportSchemas } from "../static-filter.js";
 import { applyEdits, type Edit, type Insertion } from "./edits.js";
 import { hoistZodSchemasMeta } from "./hoist.js";
@@ -92,6 +93,9 @@ const TIMING = process.env["ZOD_COMPILER_TIMING"] === "1";
 const SLOW_DISCOVERY_WARN_MS = 5_000;
 const phaseTotals = new Map<string, { ms: number; calls: number }>();
 let timingHookInstalled = false;
+
+/** Dedupes the process.exit-during-discovery warning to one per process. */
+let warnedProcessExit = false;
 
 function timePhase<T>(phase: string, fn: () => T): T {
   if (!TIMING) return fn();
@@ -291,6 +295,29 @@ export async function transformCodeWithMap(
     schemas = await timePhase("discover", () => discoverSchemas(id, { autoDiscover }));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    // A module in the import graph called process.exit() during discovery —
+    // typically an env-validation guard in a CI build where secrets are
+    // intentionally absent. The loader converts that exit into a catchable
+    // error so the build survives; the affected files just fall back to
+    // runtime Zod. Handle it in both modes (never crash on a build-time exit)
+    // and surface the cooperative remedy once.
+    if (e instanceof ProcessExitDuringLoadError) {
+      // The result reflects missing secrets, not file content — never persist
+      // it to the content-hashed disk cache (a later secret-ful build would be
+      // served this stale "nothing compiled" entry).
+      options.onUncacheableResult?.();
+      if (!warnedProcessExit) {
+        warnedProcessExit = true;
+        warn(
+          `${id} (or a module it imports) called process.exit during build-time schema ` +
+            `discovery — those files fall back to runtime Zod instead of crashing the build. ` +
+            `This is usually an env-validation guard; wrap it in ` +
+            `\`if (!process.env.ZOD_COMPILER) { ... }\` to keep these schemas compiled, or set ` +
+            `schemas:"explicit" / use include to scope discovery.`,
+        );
+      }
+      return finishHoistOnly();
+    }
     // In autoDiscover mode, files that can't be loaded (JSX components,
     // unresolved path aliases, etc.) are expected — warn and skip.
     if (autoDiscover) {

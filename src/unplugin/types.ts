@@ -22,6 +22,16 @@ export interface TransformOptions {
    * substring check for a disk entry per source file in the project.
    */
   onSubstantialWork?: () => void;
+  /**
+   * Fired when discovery was aborted by a build-time `process.exit` (an
+   * env-validation guard in a secret-less build). The recovered result is a
+   * function of the *environment*, not the file content, so the disk cache
+   * must NOT persist it keyed on content hashes: a later build with secrets
+   * present would otherwise be served the stale "nothing compiled" entry and
+   * silently ship un-optimized schemas. The in-memory (content-keyed, single-
+   * process) cache is unaffected.
+   */
+  onUncacheableResult?: () => void;
 }
 
 export interface BuildStats {
@@ -73,7 +83,11 @@ export interface ZodCompilerPluginOptions {
    *
    * **Note:** in `"auto"` mode, candidate files are executed at build time
    * via `loadSourceFile()`. Use `include` to limit scope if your project
-   * has schema-shaped files with side effects.
+   * has schema-shaped files with side effects. A module that calls
+   * `process.exit()` during this execution (e.g. an env-validation guard in a
+   * secret-less CI build) is caught — the file falls back to runtime Zod
+   * instead of crashing the build. Guard the exit on `process.env.ZOD_COMPILER`
+   * to keep such schemas compiled.
    * @default "auto"
    */
   schemas?: "explicit" | "auto" | undefined;

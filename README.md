@@ -333,6 +333,38 @@ zodCompiler({
 });
 ```
 
+#### Environment validation that calls `process.exit`
+
+A common pattern is an `env.ts` that validates `process.env` and calls
+`process.exit(1)` when required secrets are missing — schema files often import
+it transitively. In a CI build those secrets are intentionally absent, so
+executing the file at build time would otherwise terminate the bundler.
+
+zod-compiler guards against this. While it executes a module for discovery it:
+
+1. Sets `process.env.ZOD_COMPILER` so cooperating modules can skip validation.
+2. Intercepts `process.exit` — an unguarded exit becomes a normal load failure,
+   so the build **does not crash**. The affected files fall back to runtime Zod
+   and a one-time warning names the optimization that was skipped.
+
+To keep those schemas compiled, guard the exit on the marker:
+
+```typescript
+// env.ts
+if (!process.env.ZOD_COMPILER) {
+  const result = envSchema.safeParse(process.env);
+  if (!result.success) {
+    console.error("Missing required environment variables:", result.error.format());
+    process.exit(1);
+  }
+}
+```
+
+If you use `@t3-oss/env-*`, pass `skipValidation: !!process.env.ZOD_COMPILER`.
+
+(Only synchronous exits during module evaluation are intercepted — an exit
+deferred to a `setTimeout` or later event still exits.)
+
 ### schemas: "auto" vs "explicit"
 
 |                              | `"auto"` (default)                                         | `"explicit"` + compile()                    |

@@ -160,6 +160,7 @@ export const unplugin = createUnplugin(
 
         let discoveryRan = false;
         let substantialWork = false;
+        let uncacheable = false;
         let fileStats: BuildStats | null = null;
         const output = await transformCodeWithMap(code, id, {
           mode,
@@ -174,6 +175,9 @@ export const unplugin = createUnplugin(
           },
           onSubstantialWork() {
             substantialWork = true;
+          },
+          onUncacheableResult() {
+            uncacheable = true;
           },
           onBuildStats(s) {
             stats.add(s);
@@ -195,6 +199,7 @@ export const unplugin = createUnplugin(
         if (
           diskCache !== null &&
           diskKey !== null &&
+          !uncacheable &&
           (result !== null || discoveryRan || substantialWork)
         ) {
           // TS narrows fileStats to null here (assignment happens inside a
