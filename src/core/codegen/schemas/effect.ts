@@ -10,13 +10,18 @@ import { emit } from "../emit.js";
 export function slowEffect(ir: TransformEffectIR, g: SlowGen): string {
   const beforeVar = g.temp("ib");
   const innerCode = g.visit(ir.inner);
+  // A transform is `inner.transform(fn)` = a pipe(inner, transform): zod's
+  // handlePipeResult aborts when `inner` produces any issue. Inside a union the
+  // option must therefore count as aborted even if `inner`'s only issue is a
+  // non-aborting `custom`/check-level code (mirrors slowPipe's abort branch).
+  const abortBranch = g.aborted ? `else{${g.aborted}=true;}` : "";
 
   return `${emit`
     var ${beforeVar}=${g.issues}.length;
     ${innerCode}
     if(${g.issues}.length===${beforeVar}){
       ${g.output}=${emitEffectFn(g.ctx, ir.source)}(${g.output});
-    }
+    }${abortBranch}
   `}\n`;
 }
 

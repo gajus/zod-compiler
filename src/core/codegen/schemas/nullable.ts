@@ -3,9 +3,10 @@ import type { FastGen, SlowGen } from "../context.js";
 import { emit } from "../emit.js";
 
 export function slowNullable(ir: SchemaIR & { type: "nullable" }, g: SlowGen): string {
+  // Pass-through wrapper: forward the union abort flag (see slowOptional).
   return `${emit`
     if(${g.input}!==null){
-      ${g.visit(ir.inner)}
+      ${g.visit(ir.inner, { aborted: g.aborted })}
     }
   `}\n`;
 }

@@ -101,27 +101,38 @@ export function createSlowGen(
   pathExpr: string,
   issuesVar: string,
   ctx: CodeGenContext,
+  abortedVar?: string,
 ): SlowGen {
   return {
     input: inputExpr,
     output: outputExpr,
     path: pathExpr,
     issues: issuesVar,
+    aborted: abortedVar,
     ctx,
     visit(ir, overrides) {
       const input = overrides?.input ?? inputExpr;
       const output = overrides?.output ?? outputExpr;
       const path = overrides?.path ?? pathExpr;
       const issues = overrides?.issues ?? issuesVar;
+      // `aborted` is deliberately NOT inherited (see SlowGen.aborted): a child
+      // only tracks abort when the parent explicitly forwards it, so a pipe
+      // buried inside a container never trips its ancestor union's abort flag.
+      const aborted = overrides?.aborted;
       // Shared sub-schema: call the file-level `__zcSw_N(input, path, issues)`
       // walk (signature defined in dedupe.ts) instead of inlining a duplicate.
       // Only mutation-free schemas enable the plan, so the shared walk needs no
       // output write-back and runs on the cold (deferred) path only.
-      const ref = ctx.sharedSchemas?.refFor(ir);
+      //
+      // But the shared walk's 3-arg signature can't carry this call site's
+      // abort flag — a shared pipe option would silently drop it. When we're in
+      // an abort-tracking position (`aborted` set), inline instead of sharing so
+      // the pipe's abort reaches the union. Non-tracking sites still share.
+      const ref = aborted === undefined ? ctx.sharedSchemas?.refFor(ir) : undefined;
       if (ref !== undefined) {
         return `${ref.name}(${input},${path},${issues});`;
       }
-      return generateSlow(ir, createSlowGen(input, output, path, issues, ctx));
+      return generateSlow(ir, createSlowGen(input, output, path, issues, ctx, aborted));
     },
     temp: (prefix) => emitTemp(ctx, prefix),
     regex: (prefix, pattern, flags) => emitRegex(ctx, prefix, pattern, flags),

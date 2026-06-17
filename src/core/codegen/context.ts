@@ -116,14 +116,41 @@ export interface SlowGen {
   readonly typeMsg?: string | undefined;
 
   /**
+   * Name of a boolean variable that this node sets to `true` when it aborts in
+   * the zod sense (`payload.aborted`) — currently only a pipe/codec whose `in`
+   * step fails (zod's `handlePipeResult` sets `left.aborted = true`). A `union`
+   * allocates one per option and reads it during pruning so a pipe option whose
+   * `in` failed counts as aborted even when its only issue is a non-aborting
+   * `custom`/check-level code. Undefined when the node is not inside an
+   * abort-tracking option, in which case the abort is a no-op.
+   *
+   * Unlike input/output/path/issues, this is NOT inherited by `visit()`: it is
+   * cleared at every boundary unless a node explicitly forwards it (the
+   * pass-through wrappers optional/nullable/readonly do), mirroring how zod
+   * propagates `payload.aborted` through transparent wrappers but not across
+   * container boundaries.
+   */
+  readonly aborted?: string | undefined;
+
+  /**
    * Recursively generate validation for a child IR node.
-   * All fields are inherited from parent unless overridden.
+   * input/output/path/issues are inherited from parent unless overridden;
+   * `aborted` is the exception — it is only set when explicitly passed (see the
+   * `aborted` field doc), so it never leaks into container children.
    * Union generators use `{ issues }` to redirect child errors to temporary arrays.
    * Container generators use `{ input, output, path }` for element traversal.
    */
   visit(
     ir: SchemaIR,
-    overrides?: { input?: string; output?: string; path?: string; issues?: string },
+    overrides?: {
+      input?: string;
+      output?: string;
+      path?: string;
+      issues?: string;
+      // `| undefined` (unlike the others): pass-through wrappers forward
+      // `g.aborted` verbatim, which is undefined outside an abort-tracking option.
+      aborted?: string | undefined;
+    },
   ): string;
 
   /** Generate a unique temp variable name: `__${prefix}_${counter++}` */

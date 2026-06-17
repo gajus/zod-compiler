@@ -18,14 +18,17 @@ function innerAppliesDefaultOnUndefined(ir: SchemaIR): boolean {
 }
 
 export function slowOptional(ir: SchemaIR & { type: "optional" }, g: SlowGen): string {
+  // Pass-through wrapper: forward the union abort flag (zod returns the inner
+  // payload unchanged, so a pipe inner's `aborted` must reach the option).
+  const fwd = { aborted: g.aborted };
   // When the inner chain handles undefined (a default), undefined must flow into
   // it so the default applies — the inner code already gates on undefined itself.
   if (innerAppliesDefaultOnUndefined(ir.inner)) {
-    return `${g.visit(ir.inner)}\n`;
+    return `${g.visit(ir.inner, fwd)}\n`;
   }
   return `${emit`
     if(${g.input}!==undefined){
-      ${g.visit(ir.inner)}
+      ${g.visit(ir.inner, fwd)}
     }
   `}\n`;
 }
