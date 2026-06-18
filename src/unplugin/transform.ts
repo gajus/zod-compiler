@@ -6,8 +6,10 @@ import type { CodegenMode } from "../core/codegen/context.js";
 import { SHARED_BLOCK_MARKER } from "../core/codegen/dedupe.js";
 import {
   FAIL_CLASS_DECL,
+  FAILZ_CLASS_DECL,
   FIN_DECL,
   FIN_DEFERRED_DECL,
+  FINZ_DECL,
   generateIIFE,
   MK_VALIDATOR_DECL,
   ZOD_CONFIG_IMPORT,
@@ -353,6 +355,7 @@ export async function transformCodeWithMap(
     compileSchemas(schemas, {
       mode,
       stripUnknownKeys: options.stripUnknownKeys,
+      compact: options.compact,
       onError(exportName, error) {
         failedCount++;
         warn(
@@ -510,6 +513,15 @@ function computeRuntimePrefix(
   }
   if (needsFinD) {
     prefix.push(FIN_DEFERRED_DECL);
+  }
+  // Compact mode (output: "compact") delegates cold errors to zod via __zcFinZ,
+  // which constructs its own __ZcFailZ (distinct from __ZcFail).
+  const needsFinZ = code.includes("__zcFinZ(") && !code.includes("function __zcFinZ(");
+  if (needsFinZ && !code.includes("function __ZcFailZ(")) {
+    prefix.push(FAILZ_CLASS_DECL);
+  }
+  if (needsFinZ) {
+    prefix.push(FINZ_DECL);
   }
   return prefix.length > 0 ? `${prefix.join("\n")}\n` : null;
 }

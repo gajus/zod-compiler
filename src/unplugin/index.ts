@@ -48,7 +48,10 @@ export const unplugin = createUnplugin(
     const schemasMode = options?.schemas ?? "auto";
     const autoDiscover = schemasMode === "auto";
     const outputMode = options?.output ?? "schema";
-    const zodCompat = outputMode === "schema";
+    // "compact" keeps the Zod schema (its safeParse IS the cold error path) — so
+    // it is zod-compatible like "schema"; only "bag" drops the schema object.
+    const zodCompat = outputMode === "schema" || outputMode === "compact";
+    const compact = outputMode === "compact";
     const stats = new BuildStatsAccumulator();
     // Transform results keyed by id, validated by content: bundlers re-run
     // transform for the same file (multiple environments, watch rebuilds) —
@@ -167,6 +170,7 @@ export const unplugin = createUnplugin(
           runtimeId,
           verbose,
           zodCompat,
+          compact,
           autoDiscover,
           stripUnknownKeys,
           hoist: options?.hoist,

@@ -2,8 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   FAIL_CLASS_DECL,
+  FAILZ_CLASS_DECL,
   FIN_DECL,
   FIN_DEFERRED_DECL,
+  FINZ_DECL,
   generateIIFE,
   MK_VALIDATOR_DECL,
   ZOD_CONFIG_IMPORT,
@@ -40,6 +42,10 @@ export function generateCompiledFileContent(
 
   const zodCompat = options?.zodCompat !== false;
 
+  // Compact-mode schemas delegate cold errors to zod via __zcFinZ (its own
+  // __ZcFailZ class), emitted only when some export uses it.
+  const usesFinZ = schemas.some((s) => s.codegenResult.usedHelpers.has("__zcFinZ"));
+
   // A schema needs the source import when:
   //   - zodCompat: true (__zcMkv installs compiled methods on the schema)
   //   - has refEntries (fallback schemas referenced via __rf[])
@@ -69,6 +75,7 @@ export function generateCompiledFileContent(
     MK_VALIDATOR_DECL,
     FIN_DECL,
     FIN_DEFERRED_DECL,
+    ...(usesFinZ ? [FAILZ_CLASS_DECL, FINZ_DECL] : []),
     ...(options?.sharedCode ? ["", options.sharedCode] : []),
     "",
     ...importLine,

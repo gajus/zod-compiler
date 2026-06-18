@@ -16,8 +16,10 @@ import { ISSUE_DECLS, RUNTIME_HELPER_DECLS } from "../core/codegen/issue-decls.j
 import { WELL_KNOWN_REGEXES } from "../core/codegen/well-known-regex.js";
 import {
   FAIL_CLASS_DECL,
+  FAILZ_CLASS_DECL,
   FIN_DECL,
   FIN_DEFERRED_DECL,
+  FINZ_DECL,
   MK_VALIDATOR_DECL,
   ZOD_CONFIG_IMPORT,
   ZOD_MSG_DECLARATION,
@@ -42,9 +44,12 @@ function buildRuntimeSource(): string {
     // Module-local (never imported by generated code) — __zcFin/__zcFinD below
     // construct it. Must precede them; both reference __ZcFail by closure.
     FAIL_CLASS_DECL,
+    // Module-local (never imported by generated code) — __zcFinZ constructs it.
+    FAILZ_CLASS_DECL,
     `export ${MK_VALIDATOR_DECL}`,
     `export ${FIN_DECL}`,
     `export ${FIN_DEFERRED_DECL}`,
+    `export ${FINZ_DECL}`,
     ...Object.values(ISSUE_DECLS).map((decl) => `export ${decl}`),
     ...Object.values(RUNTIME_HELPER_DECLS).map((decl) => `export ${decl}`),
   ];
@@ -77,6 +82,7 @@ export const ALL_HELPER_NAMES: readonly string[] = [
   "__zcMkv",
   "__zcFin",
   "__zcFinD",
+  "__zcFinZ",
   ...Object.keys(ISSUE_DECLS),
   ...Object.keys(RUNTIME_HELPER_DECLS),
   ...WELL_KNOWN_REGEXES.flatMap((r) =>

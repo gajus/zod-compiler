@@ -37,8 +37,10 @@ Options:
   -w, --watch                Watch for changes and regenerate
   --schemas <explicit|auto>  How schemas are found: "auto" (default) compiles every
                              exported Zod schema; "explicit" only compile()-wrapped ones
-  --emit <schema|bag>        Compiled export shape: "schema" (default, full Zod API) or
-                             "bag" (minimal methods-only object, smaller output)
+  --emit <schema|bag|compact>  Compiled export shape: "schema" (default, full Zod API),
+                             "bag" (minimal methods-only object, smaller output), or
+                             "compact" (full Zod API, fast path only — cold errors
+                             delegated to Zod; ~70% smaller output)
   --strip-unknown-keys       Strip unknown keys from z.object() output (matches Zod's
                              default .parse(); off by default, generate only)
   --json                     Output diagnosis as JSON (check only)
@@ -67,13 +69,14 @@ function parseSchemasValue(val: string | undefined): boolean {
   return val === "auto";
 }
 
-/** Parse an `--emit <schema|bag>` value; exits on invalid input. */
-function parseEmitValue(val: string | undefined): boolean {
-  if (val !== "schema" && val !== "bag") {
-    logger.error('--emit must be "schema" or "bag"');
+/** Parse an `--emit <schema|bag|compact>` value; exits on invalid input. */
+function parseEmitValue(val: string | undefined): { zodCompat: boolean; compact: boolean } {
+  if (val !== "schema" && val !== "bag" && val !== "compact") {
+    logger.error('--emit must be "schema", "bag", or "compact"');
     process.exit(1);
   }
-  return val === "schema";
+  // "compact" keeps the Zod schema (its safeParse IS the cold error path).
+  return { zodCompat: val === "schema" || val === "compact", compact: val === "compact" };
 }
 
 function parseArgs(argv: string[]): Command {
@@ -95,6 +98,7 @@ function parseArgs(argv: string[]): Command {
     let output: string | undefined;
     let watch = false;
     let zodCompat: boolean | undefined;
+    let compact = false;
     // Default "auto": every exported Zod schema compiles, matching the plugin.
     let autoDiscover = true;
     let stripUnknownKeys = false;
@@ -116,7 +120,9 @@ function parseArgs(argv: string[]): Command {
         autoDiscover = parseSchemasValue(rest[i]);
       } else if (arg === "--emit") {
         i++;
-        zodCompat = parseEmitValue(rest[i]);
+        const emit = parseEmitValue(rest[i]);
+        zodCompat = emit.zodCompat;
+        compact = emit.compact;
       } else if (arg === "--strip-unknown-keys") {
         stripUnknownKeys = true;
       } else if (arg.startsWith("-")) {
@@ -139,6 +145,7 @@ function parseArgs(argv: string[]): Command {
         output,
         watch,
         zodCompat,
+        compact,
         autoDiscover,
         stripUnknownKeys,
       },

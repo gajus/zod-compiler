@@ -15,6 +15,7 @@ interface WatchOptions {
   inputs: string[];
   output: string | undefined;
   zodCompat?: boolean | undefined;
+  compact?: boolean | undefined;
   autoDiscover?: boolean | undefined;
   stripUnknownKeys?: boolean | undefined;
 }
@@ -106,6 +107,7 @@ export async function runWatch(
     try {
       const result = await generateFile(filePath, options.output, {
         zodCompat: options.zodCompat,
+        compact: options.compact,
         autoDiscover: options.autoDiscover,
         stripUnknownKeys: options.stripUnknownKeys,
       });
@@ -149,6 +151,7 @@ export async function runWatch(
       try {
         const result = await generateFile(filePath, options.output, {
           zodCompat: options.zodCompat,
+          compact: options.compact,
           autoDiscover: options.autoDiscover,
           stripUnknownKeys: options.stripUnknownKeys,
         });

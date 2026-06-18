@@ -121,6 +121,9 @@ npx zod-compiler generate src/ --watch
 # Only compile() calls (skip plain exports); minimal methods-only output
 npx zod-compiler generate src/ --schemas explicit --emit bag
 
+# Compact output: fast path only, cold errors delegated to Zod (~70% smaller)
+npx zod-compiler generate src/ --emit compact
+
 # Strip unknown keys from z.object() output (matches Zod's default .parse())
 npx zod-compiler generate src/ --strip-unknown-keys
 ```
@@ -142,18 +145,18 @@ npx zod-compiler generate src/ --strip-unknown-keys
 
 ### Options
 
-| Option             | Type                          | Default         | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| ------------------ | ----------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `schemas`          | `"auto" \| "explicit"`        | `"auto"`        | How schemas are found. `"auto"`: every exported Zod schema compiles (also enables compiling hoisted in-function schemas). `"explicit"`: only `compile()`-wrapped schemas; only files importing zod-compiler execute at build time                                                                                                                                                                                                                                                  |
-| `include`          | `string[]`                    | —               | Only process files matching these path globs (picomatch, matched anywhere in the path; plain substrings work too)                                                                                                                                                                                                                                                                                                                                                                  |
-| `exclude`          | `string[]`                    | —               | Skip files matching these path globs (same matching rules as `include`)                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `output`           | `"schema" \| "bag"`           | `"schema"`      | What a compiled export evaluates to. `"schema"`: the original Zod schema with compiled methods installed (full API preserved). `"bag"`: a minimal methods-only object — smaller bundles, breaks Zod-schema consumers                                                                                                                                                                                                                                                               |
-| `verbose`          | `boolean`                     | `false`         | Log per-schema compilation status during build                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `hoist`            | `boolean`                     | `true`          | Hoist Zod schemas defined inside function bodies to module scope so they're constructed once instead of per call (babel-plugin-zod-hoist equivalent). Only expressions built purely from imports and literals are hoisted                                                                                                                                                                                                                                                          |
-| `apply`            | `"build" \| "serve" \| "all"` | builds + Vitest | **Vite only**: when the plugin runs. By default, production builds and test runs are compiled (so tests exercise what ships); plain dev servers use the Zod fallback. `"all"` also compiles the dev server; `"build"` also skips tests                                                                                                                                                                                                                                             |
-| `codegenMode`      | `"lean" \| "inline"`          | auto            | Override the codegen mode. `"lean"` (default for all supported bundlers): shared runtime helpers are imported from `virtual:zod-compiler/runtime`, which the bundler resolves via its module hooks. `"inline"`: helpers are emitted directly into each transformed file — use this for transpile-only esbuild builds (no `--bundle`) or similar setups where the bundler's hooks never fire for already-transformed output and the `virtual:` specifier would survive into `dist/` |
-| `stripUnknownKeys` | `boolean`                     | `false`         | Strip unknown keys from `z.object()` output, matching Zod's default `.parse()`. Off by default (a valid object is returned by reference, keeping extras). When on, genuine `z.object()` schemas rebuild a fresh object with only the declared keys; `z.looseObject()` still keeps extras and `z.strictObject()` still rejects them. Use it to sanitize untrusted input against mass-assignment. See [Behavioral Differences](#behavioral-differences-from-zod)                     |
-| `cache`            | `boolean \| string`           | `true`          | Persistent transform cache (`node_modules/.cache/zod-compiler`, or a custom directory). Skips discovery + codegen across processes when nothing changed; entries self-validate against dependency content hashes                                                                                                                                                                                                                                                                   |
+| Option             | Type                             | Default         | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------ | -------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schemas`          | `"auto" \| "explicit"`           | `"auto"`        | How schemas are found. `"auto"`: every exported Zod schema compiles (also enables compiling hoisted in-function schemas). `"explicit"`: only `compile()`-wrapped schemas; only files importing zod-compiler execute at build time                                                                                                                                                                                                                                                  |
+| `include`          | `string[]`                       | —               | Only process files matching these path globs (picomatch, matched anywhere in the path; plain substrings work too)                                                                                                                                                                                                                                                                                                                                                                  |
+| `exclude`          | `string[]`                       | —               | Skip files matching these path globs (same matching rules as `include`)                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `output`           | `"schema" \| "bag" \| "compact"` | `"schema"`      | What a compiled export evaluates to. `"schema"`: the original Zod schema with compiled methods installed (full API preserved). `"bag"`: a minimal methods-only object — smaller bundles, breaks Zod-schema consumers. `"compact"`: like `"schema"` but only the fast path is compiled — cold errors delegate to the retained Zod schema, dropping the slow walk (~70% smaller output, hot path unchanged). See [Compact Output](#compact-output-output-compact)                    |
+| `verbose`          | `boolean`                        | `false`         | Log per-schema compilation status during build                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `hoist`            | `boolean`                        | `true`          | Hoist Zod schemas defined inside function bodies to module scope so they're constructed once instead of per call (babel-plugin-zod-hoist equivalent). Only expressions built purely from imports and literals are hoisted                                                                                                                                                                                                                                                          |
+| `apply`            | `"build" \| "serve" \| "all"`    | builds + Vitest | **Vite only**: when the plugin runs. By default, production builds and test runs are compiled (so tests exercise what ships); plain dev servers use the Zod fallback. `"all"` also compiles the dev server; `"build"` also skips tests                                                                                                                                                                                                                                             |
+| `codegenMode`      | `"lean" \| "inline"`             | auto            | Override the codegen mode. `"lean"` (default for all supported bundlers): shared runtime helpers are imported from `virtual:zod-compiler/runtime`, which the bundler resolves via its module hooks. `"inline"`: helpers are emitted directly into each transformed file — use this for transpile-only esbuild builds (no `--bundle`) or similar setups where the bundler's hooks never fire for already-transformed output and the `virtual:` specifier would survive into `dist/` |
+| `stripUnknownKeys` | `boolean`                        | `false`         | Strip unknown keys from `z.object()` output, matching Zod's default `.parse()`. Off by default (a valid object is returned by reference, keeping extras). When on, genuine `z.object()` schemas rebuild a fresh object with only the declared keys; `z.looseObject()` still keeps extras and `z.strictObject()` still rejects them. Use it to sanitize untrusted input against mass-assignment. See [Behavioral Differences](#behavioral-differences-from-zod)                     |
+| `cache`            | `boolean \| string`              | `true`          | Persistent transform cache (`node_modules/.cache/zod-compiler`, or a custom directory). Skips discovery + codegen across processes when nothing changed; entries self-validate against dependency content hashes                                                                                                                                                                                                                                                                   |
 
 ```typescript
 zodCompiler({
@@ -347,6 +350,59 @@ generated bytes); the zero-allocation fast path stays fully inlined, so valid
 input runs exactly as fast as before. On a realistic schema set where
 `User`/`Company`/`Order`/`Invoice` reuse `Address`/`Money`/`Contact`, generated
 output drops **~50% raw / ~34% gzipped** with no change to validation behavior.
+
+### Compact Output (`output: "compact"`)
+
+Structural dedup only helps when shapes _repeat_. For a large app of mostly
+**distinct** schemas it can't fire, and the per-schema error-collecting walk —
+64–77% of the generated bytes — is emitted in full for every schema. But that
+walk exists only to reproduce Zod's issues on failure, and in `"schema"` mode
+**the original Zod schema is already in your bundle**. `output: "compact"`
+exploits this: it compiles the fast path as usual and, on a fast-check failure,
+delegates the cold error path to the retained schema's own `safeParse` instead
+of emitting a compiled slow walk.
+
+```typescript
+import zodCompiler from "zod-compiler/vite";
+
+export default defineConfig({
+  plugins: [zodCompiler({ output: "compact" })],
+});
+```
+
+On a 50-schema set of distinct shapes (where dedup can't help), generated
+output drops **~73% raw / ~71% gzipped**:
+
+| Mode      |     Raw |   Gzip |
+| --------- | ------: | -----: |
+| `schema`  | 169,599 | 16,645 |
+| `compact` |  45,735 |  4,789 |
+
+The gzip win is far larger than collapsing duplicated code (which gzip already
+compresses well) because the slow walk is **removed**, not re-encoded.
+
+**What it costs — and doesn't:**
+
+- **Hot path unchanged.** `parse`/`safeParse` of valid input and the `.is()`
+  guard run the exact same compiled fast check as `"schema"` mode. Identity is
+  preserved (`.shape`, `.meta()`, `z.toJSONSchema()`, `instanceof`, tRPC/Hono
+  all keep working).
+- **Errors are Zod's own.** A failed `safeParse` reports byte-identical issues
+  to Zod — there is no second validation engine to drift, so correctness is
+  guaranteed by construction.
+- **Cold error reporting runs Zod.** Reading `.error` (or `.parse()` throwing)
+  on _invalid_ input runs Zod's full parse — slower than the compiled slow walk,
+  but it's the cold path. The delegation is **lazy**: `safeParse(x).success` and
+  `.is(x)` never invoke Zod (the fast check alone decides), so the common
+  validation-failure checks stay fast.
+- **Mutation schemas keep the compiled path.** Schemas that transform their
+  input (`default` / `catch` / `coerce` / `transform`) are compiled exactly as
+  in `"schema"` mode — only pure validators delegate.
+
+Use it when bundle size dominates (large schema counts, edge/serverless cold
+starts, memory at scale) and you can afford a slower _error_ path. It requires
+the Zod schema, so it's mutually exclusive with `output: "bag"` (which drops it).
+The CLI exposes it as `--emit compact`.
 
 ### Auto Mode: Side Effects Warning
 

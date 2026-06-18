@@ -119,6 +119,37 @@ describe("unplugin factory", () => {
     expect(String(map?.sources[0])).toContain("simple-schema");
   });
 
+  it('output: "compact" delegates the cold path to zod and drops the slow walk', async () => {
+    const plugin = unplugin.raw({ output: "compact" }, meta) as UnpluginOptions;
+    const transform = plugin.transform as (
+      code: string,
+      id: string,
+    ) => Promise<{ code: string; map: unknown } | undefined>;
+
+    const fixturesDir = path.resolve(import.meta.dirname, "../fixtures");
+    const fixturePath = path.join(fixturesDir, "simple-schema.ts");
+
+    const code = [
+      'import { z } from "zod";',
+      'import { compile } from "zod-compiler";',
+      "const UserSchema = z.object({ name: z.string().min(1), age: z.number().int().positive() });",
+      "export const validateUser = compile(UserSchema);",
+    ].join("\n");
+
+    const result = await transform(code, fixturePath);
+
+    expect(result).toBeDefined();
+    const out = result?.code ?? "";
+    // Schema identity is preserved (zod-compatible, like "schema") and wired via __zcMkv.
+    expect(out).toContain("__zcMkv");
+    // Cold errors delegate to the retained zod schema via __zcFinZ, imported in lean mode.
+    expect(out).toContain("__zcFinZ");
+    expect(out).toMatch(/import\s*\{[^}]*__zcFinZ[^}]*\}\s*from\s*"virtual:zod-compiler\/runtime"/);
+    // The compiled slow walk and its inline issue construction are gone.
+    expect(out).not.toContain("__sw_");
+    expect(out).not.toContain("__zcFinD");
+  });
+
   it("transform returns cached result for the same file id", async () => {
     const plugin = unplugin.raw({}, meta) as UnpluginOptions;
     const transform = plugin.transform as (

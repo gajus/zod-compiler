@@ -76,6 +76,36 @@ export const FIN_DECL =
 export const FIN_DEFERRED_DECL = "function __zcFinD(f,inp){return new __ZcFail(null,f,inp);}";
 
 /**
+ * Compact-mode failure class — a lazy failure that delegates error reporting to
+ * the ORIGINAL Zod schema's `safeParse`. Used by `output: "compact"`, where the
+ * compiled slow walk is dropped entirely: a mutation-free schema's fast check
+ * is the only generated validation, and on a fast-check failure the cold error
+ * path is produced by the retained Zod schema itself (`zod` is the source of
+ * truth, so the issues are byte-identical — no second validation engine).
+ *
+ * `_z` is the schema's PRISTINE bound safeParse (`__rf[N].safeParse.bind(...)`,
+ * captured pre-`__zcMkv` by emitRfDelegate — see context.ts — so it is zod's
+ * own implementation, never the compiled delegate, avoiding infinite
+ * recursion). The zod parse is deferred until `.error` is read and cached, so
+ * the common `safeParse(x).success`/`.is(x)` checks on invalid input cost only
+ * the fast check (zod never runs) — the same deferral boundary `__zcFinD`
+ * establishes for the compiled slow walk. Sound because compact mode is gated
+ * on a TOTAL fast path: `fc(input) === false` ⟹ zod rejects, so `success:false`
+ * holds without consulting zod.
+ *
+ * The getter returns zod's OWN ZodError verbatim (no locale fill / input strip /
+ * re-wrap — zod already finalized it), so a delegated failure is exactly what
+ * the unaltered schema would have produced.
+ */
+export const FAILZ_CLASS_DECL =
+  "function __ZcFailZ(z,i){this.success=false;this._z=z;this._i=i;this._c=undefined;}" +
+  'Object.defineProperty(__ZcFailZ.prototype,"error",{configurable:true,get:function(){' +
+  "return this._c||(this._c=this._z(this._i).error);}});";
+
+/** Compact-mode finalizer: wrap a pristine bound safeParse + input into a lazy delegated failure. */
+export const FINZ_DECL = "function __zcFinZ(z,i){return new __ZcFailZ(z,i);}";
+
+/**
  * Validator factory. Inline mode (CLI emitter) declares it once per compiled
  * file; lean mode (all unplugin bundlers) exports it once per bundle from the
  * plugin-materialized runtime module — generated code never imports it from

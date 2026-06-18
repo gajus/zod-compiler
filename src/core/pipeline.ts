@@ -31,6 +31,14 @@ export interface CompileSchemasOptions {
   mode: CodegenMode;
   /** Strip unknown keys from z.object() output, matching zod's default .parse(). */
   stripUnknownKeys?: boolean | undefined;
+  /**
+   * Compact output (`output: "compact"`). Drop the compiled slow walk for
+   * mutation-free, total-fast-path schemas and delegate their cold error path
+   * to the retained Zod schema. Disables slow-walk sharing (delegated schemas
+   * never emit a walk to share) and appends a root self-RefEntry per delegated
+   * schema so `__rf[N]` resolves to the original Zod schema.
+   */
+  compact?: boolean | undefined;
   /** When provided, per-schema failures call this and continue. Otherwise the first error throws. */
   onError?: (exportName: string, error: Error) => void;
 }
@@ -59,23 +67,33 @@ export function compileSchemas(
   };
 
   // Pass 1: extract IR (and fallback refs) for every schema.
-  const extracted: Array<{ exportName: string; ir: SchemaIR; refEntries: RefEntry[] }> = [];
+  const extracted: Array<{
+    exportName: string;
+    schema: unknown;
+    ir: SchemaIR;
+    refEntries: RefEntry[];
+  }> = [];
   for (const s of schemas) {
     try {
       const refEntries: RefEntry[] = [];
       const ir = extractSchema(s.schema, refEntries, {
         stripUnknownKeys: options.stripUnknownKeys,
       });
-      extracted.push({ exportName: s.exportName, ir, refEntries });
+      extracted.push({ exportName: s.exportName, schema: s.schema, ir, refEntries });
     } catch (err) {
       handle(s.exportName, err);
     }
   }
 
-  const plan = createSharedSchemaPlan(
-    extracted.map((e) => e.ir),
-    options.mode,
-  );
+  // Compact mode delegates the cold error path of total-fast-path schemas to
+  // zod, so they emit no slow walk to share — skip the plan (and the dead
+  // shared functions it would generate for shapes that now only delegate).
+  const plan = options.compact
+    ? undefined
+    : createSharedSchemaPlan(
+        extracted.map((e) => e.ir),
+        options.mode,
+      );
 
   // Pass 2: generate each validator, sharing repeated slow walks via the plan.
   const results: CompiledSchemaInfo[] = [];
@@ -85,14 +103,25 @@ export function compileSchemas(
         refCount: e.refEntries.length,
         mode: options.mode,
         sharedSchemas: plan,
+        compact: options.compact,
       });
+      // Compact delegation appends the schema itself as a fresh root RefEntry
+      // (accessPath "" → __rf[N] = the original Zod schema, whose pristine
+      // safeParse the validator delegates to). The index was reserved as
+      // e.refEntries.length above, so this push lands exactly at it.
+      if (codegenResult.rootDelegateRefIndex !== undefined) {
+        e.refEntries.push({ schema: e.schema, accessPath: "" });
+      }
       results.push({ exportName: e.exportName, codegenResult, refEntries: e.refEntries });
     } catch (err) {
       handle(e.exportName, err);
     }
   }
 
-  return { schemas: results, shared: { code: plan.code, usedHelpers: plan.usedHelpers } };
+  return {
+    schemas: results,
+    shared: { code: plan?.code ?? "", usedHelpers: plan?.usedHelpers ?? new Set() },
+  };
 }
 
 /**

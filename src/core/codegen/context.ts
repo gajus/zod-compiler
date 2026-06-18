@@ -37,6 +37,14 @@ export interface CodeGenResult {
    * `.is()` then derives from `safeParse(input).success`.
    */
   fastTotal: boolean;
+  /**
+   * Compact mode only: the `__rf[N]` index this validator delegates its cold
+   * error path to (the schema itself, captured as a fresh root RefEntry). When
+   * set, the pipeline appends a `{ schema, accessPath: "" }` entry at this index
+   * so `generateIIFE` materializes `__rf[N]` as the original Zod schema. Absent
+   * for every non-compact (fully compiled) validator.
+   */
+  rootDelegateRefIndex?: number;
 }
 
 /** Hosted-validator names for one recursion target (see CodeGenContext.recTargets). */
