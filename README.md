@@ -167,6 +167,33 @@ zodCompiler({
 > including their performance. Pass `apply: "build"` if you want tests to use
 > the plain Zod fallback instead.
 
+### Bun
+
+zod-compiler is a **build-time** tool, so on Bun it compiles wherever your code
+passes through a build step; everywhere else schemas still run as plain Zod
+(correct, just not accelerated). The Bun plugin requires **Bun ≥ 1.2.22**.
+
+**Bundled code** (a frontend, or a server you `bun build --target=bun` first) —
+register the plugin and every exported (and hoisted) schema compiles:
+
+```typescript
+import zodCompiler from "zod-compiler/bun";
+
+await Bun.build({
+  entrypoints: ["./src/index.tsx"],
+  outdir: "./dist",
+  plugins: [zodCompiler()],
+});
+```
+
+**Code run straight from source** (`bun run src/server.ts`) — a `Bun.build` plugin
+doesn't run here, so use the [CLI](#3-cli-no-bundler) to compile ahead of time and
+import the output:
+
+```bash
+bunx zod-compiler generate src/ -o src/compiled/   # add --watch during development
+```
+
 ### Schema Hoisting
 
 Schemas defined inside functions are rebuilt on every call — a hidden cost in
