@@ -41,10 +41,12 @@
       "files": [
         "src/cli/**",
         "src/loader.ts",
+        "src/swc.ts",
         "src/static-filter.ts",
         "tests/cli/**",
         "tests/discovery.test.ts",
         "tests/loader.test.ts",
+        "tests/swc.test.ts",
         "src/unplugin/**",
         "tests/unplugin/**",
         "tests/zod-version.ts"
