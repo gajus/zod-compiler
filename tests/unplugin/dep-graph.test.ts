@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { collectStaticDeps } from "#src/unplugin/dep-graph.js";
+import { collectStaticDeps } from "../../src/unplugin/dep-graph.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Inside the repo so bare specifiers (zod) resolve through node_modules.
@@ -57,6 +57,34 @@ describe("collectStaticDeps()", () => {
     const result = collectStaticDeps(path.join(dir, "entry.ts"));
     expect(result.complete).toBe(true);
     expect(result.deps).toEqual([path.join(dir, "helper.ts")]);
+  });
+
+  it("follows arbitrary tsconfig path aliases", () => {
+    const dir = project({
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+          paths: {
+            "@lib/*": ["src/lib/*"],
+            "~*": ["src/*"],
+            "pkg-*": ["packages/*/index"],
+          },
+        },
+      }),
+      "entry.ts": `import { a } from "@lib/a";\nimport { b } from "~shared/b";\nimport { c } from "pkg-c";\nexport const x = a + b + c;`,
+      "src/lib/a.ts": `export const a = 1;`,
+      "src/shared/b.ts": `export const b = 2;`,
+      "packages/c/index.ts": `export const c = 3;`,
+    });
+    const result = collectStaticDeps(path.join(dir, "entry.ts"));
+    expect(result.complete).toBe(true);
+    expect(new Set(result.deps)).toEqual(
+      new Set([
+        path.join(dir, "src/lib/a.ts"),
+        path.join(dir, "src/shared/b.ts"),
+        path.join(dir, "packages/c/index.ts"),
+      ]),
+    );
   });
 
   it("covers export-from and side-effect imports", () => {
