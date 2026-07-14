@@ -404,6 +404,12 @@ await transform(sourceCode, {
 });
 ```
 
+The bridge honors `include`/`exclude` globs (rejected files pass through to
+SWC without the zod-compiler step) and re-runs schema discovery when a
+file's content changes between calls, so watch-mode hosts pick up schema
+edits. It keeps no persistent disk cache — long-running hosts that want one
+should key cached transform results on file content.
+
 **Structural dedup within a file.** Beyond the shared runtime layer, schemas in
 the same file that contain a structurally identical sub-tree — a reused
 `Address`, a `Money` pair, an exported schema also embedded in another — emit

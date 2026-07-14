@@ -1,16 +1,18 @@
 import fs from "node:fs/promises";
-import type { TransformOptions } from "./unplugin/types.js";
-import type { TransformSourceMap } from "./unplugin/transform.js";
-import { transformCodeWithMap } from "./unplugin/transform.js";
-import type { ZodCompilerPluginOptions } from "./unplugin/types.js";
+import path from "node:path";
+import { invalidateModuleCache } from "./loader.js";
+import { shouldTransform, transformCodeWithMap } from "./unplugin/transform.js";
+import type { TransformOptions, ZodCompilerPluginOptions } from "./unplugin/types.js";
 
 /**
  * Minimal @swc/core option shape. zod-compiler keeps @swc/core optional so
  * non-SWC users do not install a native dependency just by using the package.
+ * `inputSourceMap` matches @swc/core: a JSON string or a boolean — swc does
+ * not accept map objects.
  */
 export interface SwcOptions {
   filename?: string | undefined;
-  inputSourceMap?: boolean | string | TransformSourceMap | undefined;
+  inputSourceMap?: boolean | string | undefined;
   sourceMaps?: boolean | "inline" | undefined;
   [key: string]: unknown;
 }
@@ -25,7 +27,17 @@ export interface SwcCoreLike {
   transform(code: string, options?: SwcOptions): Promise<SwcOutput>;
 }
 
-export type ZodCompilerSwcOptions = Omit<ZodCompilerPluginOptions, "apply" | "codegenMode"> & {
+/**
+ * Plugin options that make sense for a transformer host. `apply` is Vite
+ * lifecycle and `cache` is the bundler disk cache — the bridge keeps no
+ * persistent cache, so hosts that need one must key transform results on
+ * content themselves. `include`/`exclude` are honored: files they reject
+ * pass through to SWC without the zod-compiler step.
+ */
+export type ZodCompilerSwcOptions = Omit<
+  ZodCompilerPluginOptions,
+  "apply" | "cache" | "codegenMode"
+> & {
   /**
    * SWC is a transformer, not a bundler plugin host, so inline is the safe
    * default. Lean mode may emit virtual runtime imports that SWC cannot resolve
@@ -64,6 +76,11 @@ function toTransformOptions(options?: ZodCompilerSwcOptions): TransformOptions {
   };
 }
 
+/**
+ * Per-call options win key-by-key over factory defaults. The merge is
+ * shallow: a per-call `swc.jsc` replaces the default `jsc` wholesale rather
+ * than deep-merging parser/target settings.
+ */
 function mergeOptions(
   defaults: SwcBridgeDefaults | undefined,
   options: SwcBridgeTransformOptions,
@@ -86,16 +103,36 @@ async function loadSwc(): Promise<SwcCoreLike> {
   }
 }
 
+/**
+ * Last content seen per filename. Discovery executes schema files from DISK
+ * through a module cache that outlives transform calls, so when a host (dev
+ * server, watch-mode test runner) re-transforms a file with new content, the
+ * stale executions must be dropped or the compiled validators keep
+ * reflecting the old schema. Same content-diff scheme as the unplugin
+ * transform hook; tracked for every file fed to the bridge — an excluded
+ * file can still be a dependency a schema file executed.
+ */
+const lastSeenCode = new Map<string, string>();
+
+function invalidateOnContentChange(filename: string, code: string): void {
+  const key = path.resolve(filename);
+  const previous = lastSeenCode.get(key);
+  if (previous !== undefined && previous !== code) {
+    invalidateModuleCache();
+  }
+  lastSeenCode.set(key, code);
+}
+
 async function transformWith(
   swc: SwcCoreLike,
   code: string,
   options: SwcBridgeTransformOptions,
 ): Promise<SwcOutput> {
-  const zodResult = await transformCodeWithMap(
-    code,
-    options.filename,
-    toTransformOptions(options.zodCompiler),
-  );
+  invalidateOnContentChange(options.filename, code);
+
+  const zodResult = shouldTransform(options.filename, options.zodCompiler)
+    ? await transformCodeWithMap(code, options.filename, toTransformOptions(options.zodCompiler))
+    : null;
 
   const swcOptions: SwcOptions = {
     ...options.swc,
@@ -130,7 +167,7 @@ export function createSwcCompiler(defaults?: SwcBridgeDefaults): SwcBridge {
     },
     async transformFile(filename, options) {
       const code = await fs.readFile(filename, "utf8");
-      return transformWith(await loadSwc(), code, mergeOptions(defaults, { ...options, filename }));
+      return transform(code, mergeOptions(defaults, { ...options, filename }));
     },
   };
 }
