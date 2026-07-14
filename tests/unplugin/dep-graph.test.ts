@@ -111,6 +111,30 @@ describe("collectStaticDeps()", () => {
     );
   });
 
+  it("degrades instead of throwing on a tsconfig tsc would reject", () => {
+    // createPathsMatcher enforces the same validations tsc does (TS5090
+    // non-relative substitution without baseUrl, multi-star patterns). A
+    // stray invalid tsconfig anywhere in the crawled tree must mark the
+    // graph incomplete, not crash the build.
+    const ts5090 = project({
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { paths: { "@x/*": ["src/x/*"] } },
+      }),
+      "entry.ts": `import { z } from "zod";\nexport const S = z.string();`,
+    });
+    const multiStar = project({
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { baseUrl: ".", paths: { "@x/*/*": ["src/*"] } },
+      }),
+      "entry.ts": `import { z } from "zod";\nexport const S = z.string();`,
+    });
+    for (const dir of [ts5090, multiStar]) {
+      const entry = path.join(dir, "entry.ts");
+      expect(() => collectStaticDeps(entry)).not.toThrow();
+      expect(collectStaticDeps(entry).complete).toBe(false);
+    }
+  });
+
   it("distrusts a paths alias whose targets are all missing", () => {
     const dir = project({
       "tsconfig.json": JSON.stringify({

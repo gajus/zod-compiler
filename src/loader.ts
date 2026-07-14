@@ -20,8 +20,13 @@ function detectRuntime(): Runtime {
 /** Cache: search dir → tsconfig lookup result (getTsconfig walks the fs otherwise). */
 const tsconfigSearchCache: Cache = new Map();
 
-/** Cache: tsconfig.json absolute path → paths matcher */
-const pathsMatcherCache = new Map<string, PathsMatcher | null>();
+/**
+ * Cache: tsconfig.json absolute path → paths matcher. `null`: config has no
+ * baseUrl/paths. `"unusable"`: createPathsMatcher rejected the config (the
+ * same validations tsc enforces — multi-star patterns, TS5090 non-relative
+ * substitutions without baseUrl).
+ */
+const pathsMatcherCache = new Map<string, PathsMatcher | null | "unusable">();
 
 interface LoaderConfig {
   /** Identity key for the shared jiti instance (tsconfig path, or "" if none). */
@@ -67,9 +72,14 @@ function specifierMatchesPathsPattern(tsconfig: TsConfigResult, specifier: strin
   });
 }
 
-const NO_CANDIDATES: { candidates: string[]; viaPathsPattern: boolean } = {
+const NO_CANDIDATES: { candidates: string[]; authoritative: boolean } = {
   candidates: [],
-  viaPathsPattern: false,
+  authoritative: false,
+};
+
+const UNUSABLE_CONFIG: { candidates: string[]; authoritative: boolean } = {
+  candidates: [],
+  authoritative: true,
 };
 
 /**
@@ -77,31 +87,41 @@ const NO_CANDIDATES: { candidates: string[]; viaPathsPattern: boolean } = {
  * from a directory. Used by the static dependency crawler so alias imports
  * resolve the same way discovery resolves them.
  *
- * `viaPathsPattern` distinguishes the two sources of candidates:
- * - an explicit `paths` pattern matched — the mapping is authoritative, so a
- *   caller that finds none of the candidates on disk must treat the import
- *   as unresolvable;
- * - candidates came only from the implicit baseUrl lookup, which proposes
- *   `<baseDir>/<specifier>` for EVERY bare specifier (npm packages and `#`
- *   subpath imports included) and expects the caller to fall back to node
- *   resolution when the candidate does not exist.
+ * `authoritative` tells the caller how to treat a miss (no candidate exists
+ * on disk):
+ * - true — the tsconfig owns this specifier: an explicit `paths` pattern
+ *   matched, or the paths config exists but cannot be interpreted
+ *   (createPathsMatcher rejects what tsc rejects). Resolution must be
+ *   treated as failed rather than falling back to node — which specifiers a
+ *   broken config would have mapped is unknowable.
+ * - false — candidates came only from the implicit baseUrl lookup, which
+ *   proposes `<baseDir>/<specifier>` for EVERY bare specifier (npm packages
+ *   and `#` subpath imports included) and expects the caller to fall back
+ *   to node resolution when the candidate does not exist.
  */
 export function resolveTsconfigPathCandidates(
   fromDir: string,
   specifier: string,
-): { candidates: string[]; viaPathsPattern: boolean } {
+): { candidates: string[]; authoritative: boolean } {
   const tsconfig = getTsconfig(fromDir, "tsconfig.json", tsconfigSearchCache);
   if (!tsconfig) return NO_CANDIDATES;
 
   let matcher = pathsMatcherCache.get(tsconfig.path);
   if (matcher === undefined) {
-    matcher = createPathsMatcher(tsconfig);
+    try {
+      matcher = createPathsMatcher(tsconfig);
+    } catch {
+      // Invalid-per-tsc paths config. A stray tsconfig anywhere in the
+      // crawled tree must degrade the graph, not crash the build.
+      matcher = "unusable";
+    }
     pathsMatcherCache.set(tsconfig.path, matcher);
   }
 
+  if (matcher === "unusable") return UNUSABLE_CONFIG;
   const candidates = matcher?.(specifier) ?? [];
   if (candidates.length === 0) return NO_CANDIDATES;
-  return { candidates, viaPathsPattern: specifierMatchesPathsPattern(tsconfig, specifier) };
+  return { candidates, authoritative: specifierMatchesPathsPattern(tsconfig, specifier) };
 }
 
 /**

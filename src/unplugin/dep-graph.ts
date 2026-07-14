@@ -204,18 +204,19 @@ function resolveSpecifierUncached(
     return hit === null ? UNRESOLVED : firstPartyOrNull(hit);
   }
 
-  const { candidates, viaPathsPattern } = resolveTsconfigPathCandidates(fromDir, spec);
+  const { candidates, authoritative } = resolveTsconfigPathCandidates(fromDir, spec);
   for (const candidate of candidates) {
     const hit = probeFile(candidate);
     if (hit !== null) {
       return firstPartyOrNull(hit);
     }
   }
-  // An explicit `paths` match is authoritative: every candidate missing means
-  // the import cannot be trusted. Implicit baseUrl candidates are proposed
-  // for EVERY bare specifier (npm packages, `#` imports) and only mean "try
-  // baseDir first" — a miss falls through to node resolution below.
-  if (viaPathsPattern) return UNRESOLVED;
+  // An authoritative miss (explicit `paths` pattern matched, or the paths
+  // config is present but uninterpretable) means the import cannot be
+  // trusted. Implicit baseUrl candidates are proposed for EVERY bare
+  // specifier (npm packages, `#` imports) and only mean "try baseDir
+  // first" — a miss falls through to node resolution below.
+  if (authoritative) return UNRESOLVED;
 
   // Bare specifier (package) or package.json "imports" (#...): node
   // resolution from the importing directory. node_modules results are out of
