@@ -137,6 +137,7 @@ npx zod-compiler generate src/ --strip-unknown-keys
 | Vite       | `import zodCompiler from "zod-compiler/vite"`     |
 | webpack    | `import zodCompiler from "zod-compiler/webpack"`  |
 | esbuild    | `import zodCompiler from "zod-compiler/esbuild"`  |
+| SWC        | `import zodCompiler from "zod-compiler/swc"`      |
 | Rollup     | `import zodCompiler from "zod-compiler/rollup"`   |
 | Rolldown   | `import zodCompiler from "zod-compiler/rolldown"` |
 | rspack     | `import zodCompiler from "zod-compiler/rspack"`   |
@@ -340,6 +341,74 @@ The result: a 5-file project with 10 schemas all using `z.email()` and
 `z.uuid()` produces a bundle where each shared regex appears exactly **once**.
 Set `output: "bag"` to additionally drop the original Zod schema reference
 when you don't need `instanceof` / `.shape` access on the compiled output.
+
+### SWC
+
+`zod-compiler/swc` is a **programmatic `@swc/core` bridge**, not a native
+`.swcrc` WASM plugin. Native SWC plugins run inside SWC's Rust/WASM plugin
+runtime; zod-compiler needs Node.js at build time to execute schema modules
+for discovery, so the SWC integration wraps `@swc/core.transform()` instead.
+
+Install `@swc/core` in the consuming project:
+
+```bash
+pnpm add -D @swc/core
+```
+
+Use the default factory when you want shared SWC/zod-compiler defaults:
+
+```typescript
+import zodCompiler from "zod-compiler/swc";
+
+const compiler = zodCompiler({
+  swc: {
+    jsc: {
+      parser: { syntax: "typescript", tsx: true },
+    },
+    sourceMaps: true,
+  },
+  zodCompiler: {
+    schemas: "auto",
+  },
+});
+
+const result = await compiler.transform(sourceCode, {
+  filename: "src/schemas.ts",
+});
+```
+
+Or use the one-shot helper:
+
+```typescript
+import { transform } from "zod-compiler/swc";
+
+const result = await transform(sourceCode, {
+  filename: "src/schemas.ts",
+  swc: {
+    jsc: {
+      parser: { syntax: "typescript" },
+    },
+  },
+});
+```
+
+The bridge defaults `codegenMode` to `"inline"` because SWC does not provide
+Rollup-style virtual module hooks for `virtual:zod-compiler/runtime`. If your
+pipeline runs another bundler after SWC and that bundler resolves the runtime
+specifier, you can opt into smaller lean output:
+
+```typescript
+await transform(sourceCode, {
+  filename: "src/schemas.ts",
+  zodCompiler: { codegenMode: "lean" },
+});
+```
+
+The bridge honors `include`/`exclude` globs (rejected files pass through to
+SWC without the zod-compiler step) and re-runs schema discovery when a
+file's content changes between calls, so watch-mode hosts pick up schema
+edits. It keeps no persistent disk cache — long-running hosts that want one
+should key cached transform results on file content.
 
 **Structural dedup within a file.** Beyond the shared runtime layer, schemas in
 the same file that contain a structurally identical sub-tree — a reused

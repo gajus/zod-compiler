@@ -59,6 +59,93 @@ describe("collectStaticDeps()", () => {
     expect(result.deps).toEqual([path.join(dir, "helper.ts")]);
   });
 
+  it("follows arbitrary tsconfig path aliases", () => {
+    const dir = project({
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+          paths: {
+            "@lib/*": ["src/lib/*"],
+            "~*": ["src/*"],
+            "pkg-*": ["packages/*/index"],
+          },
+        },
+      }),
+      "entry.ts": `import { a } from "@lib/a";\nimport { b } from "~shared/b";\nimport { c } from "pkg-c";\nexport const x = a + b + c;`,
+      "src/lib/a.ts": `export const a = 1;`,
+      "src/shared/b.ts": `export const b = 2;`,
+      "packages/c/index.ts": `export const c = 3;`,
+    });
+    const result = collectStaticDeps(path.join(dir, "entry.ts"));
+    expect(result.complete).toBe(true);
+    expect(new Set(result.deps)).toEqual(
+      new Set([
+        path.join(dir, "src/lib/a.ts"),
+        path.join(dir, "src/shared/b.ts"),
+        path.join(dir, "packages/c/index.ts"),
+      ]),
+    );
+  });
+
+  it("keeps bare and #-subpath imports resolvable under a baseUrl tsconfig", () => {
+    // With baseUrl set, the paths matcher proposes `<baseDir>/<specifier>`
+    // for EVERY bare specifier — npm packages and package.json imports must
+    // still fall through to node resolution instead of poisoning the graph.
+    const dir = project({
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { baseUrl: "." },
+      }),
+      "package.json": JSON.stringify({
+        name: "p",
+        type: "module",
+        imports: { "#util": "./util.ts" },
+      }),
+      "entry.ts": `import { z } from "zod";\nimport { u } from "#util";\nimport { a } from "src/a";\nexport const x = z.number().parse(u + a);`,
+      "util.ts": `export const u = 1;`,
+      "src/a.ts": `export const a = 2;`,
+    });
+    const result = collectStaticDeps(path.join(dir, "entry.ts"));
+    expect(result.complete).toBe(true);
+    expect(new Set(result.deps)).toEqual(
+      new Set([path.join(dir, "util.ts"), path.join(dir, "src/a.ts")]),
+    );
+  });
+
+  it("degrades instead of throwing on a tsconfig tsc would reject", () => {
+    // createPathsMatcher enforces the same validations tsc does (TS5090
+    // non-relative substitution without baseUrl, multi-star patterns). A
+    // stray invalid tsconfig anywhere in the crawled tree must mark the
+    // graph incomplete, not crash the build.
+    const ts5090 = project({
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { paths: { "@x/*": ["src/x/*"] } },
+      }),
+      "entry.ts": `import { z } from "zod";\nexport const S = z.string();`,
+    });
+    const multiStar = project({
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { baseUrl: ".", paths: { "@x/*/*": ["src/*"] } },
+      }),
+      "entry.ts": `import { z } from "zod";\nexport const S = z.string();`,
+    });
+    for (const dir of [ts5090, multiStar]) {
+      const entry = path.join(dir, "entry.ts");
+      expect(() => collectStaticDeps(entry)).not.toThrow();
+      expect(collectStaticDeps(entry).complete).toBe(false);
+    }
+  });
+
+  it("distrusts a paths alias whose targets are all missing", () => {
+    const dir = project({
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { baseUrl: ".", paths: { "@lib/*": ["src/lib/*"] } },
+      }),
+      "entry.ts": `import { a } from "@lib/missing";\nexport const x = a;`,
+    });
+    const result = collectStaticDeps(path.join(dir, "entry.ts"));
+    expect(result.complete).toBe(false);
+  });
+
   it("covers export-from and side-effect imports", () => {
     const dir = project({
       "entry.ts": `export * from "./a";\nimport "./effects";`,

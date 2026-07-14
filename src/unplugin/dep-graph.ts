@@ -40,7 +40,7 @@
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import { resolveTsconfigAliases } from "../loader.js";
+import { resolveTsconfigPathCandidates } from "../loader.js";
 
 export interface StaticDeps {
   /** Absolute real paths of first-party files reachable from the entry. */
@@ -179,16 +179,12 @@ function requireFor(dir: string): ReturnType<typeof createRequire> {
  * - null when the dep is intentionally out of scope (node_modules, builtins)
  * - UNRESOLVED when resolution failed and the graph cannot be trusted
  */
-function resolveSpecifier(
-  rawSpec: string,
-  fromDir: string,
-  aliases: Record<string, string>,
-): string | null | typeof UNRESOLVED {
+function resolveSpecifier(rawSpec: string, fromDir: string): string | null | typeof UNRESOLVED {
   if (SKIP_SPECIFIER.test(rawSpec)) return null;
   const memoKey = `${fromDir}\0${rawSpec}`;
   const memoized = resolveMemo.get(memoKey);
   if (memoized !== undefined) return memoized;
-  const result = resolveSpecifierUncached(rawSpec, fromDir, aliases);
+  const result = resolveSpecifierUncached(rawSpec, fromDir);
   resolveMemo.set(memoKey, result);
   return result;
 }
@@ -196,7 +192,6 @@ function resolveSpecifier(
 function resolveSpecifierUncached(
   rawSpec: string,
   fromDir: string,
-  aliases: Record<string, string>,
 ): string | null | typeof UNRESOLVED {
   // Vite-style resource queries (./logo.svg?url, ./shader.glsl?raw) resolve
   // to the underlying file.
@@ -209,13 +204,19 @@ function resolveSpecifierUncached(
     return hit === null ? UNRESOLVED : firstPartyOrNull(hit);
   }
 
-  for (const [prefix, target] of Object.entries(aliases)) {
-    if (spec === prefix || spec.startsWith(`${prefix}/`)) {
-      const rest = spec === prefix ? "" : spec.slice(prefix.length + 1);
-      const hit = probeFile(path.join(target, rest));
-      return hit === null ? UNRESOLVED : firstPartyOrNull(hit);
+  const { candidates, authoritative } = resolveTsconfigPathCandidates(fromDir, spec);
+  for (const candidate of candidates) {
+    const hit = probeFile(candidate);
+    if (hit !== null) {
+      return firstPartyOrNull(hit);
     }
   }
+  // An authoritative miss (explicit `paths` pattern matched, or the paths
+  // config is present but uninterpretable) means the import cannot be
+  // trusted. Implicit baseUrl candidates are proposed for EVERY bare
+  // specifier (npm packages, `#` imports) and only mean "try baseDir
+  // first" — a miss falls through to node resolution below.
+  if (authoritative) return UNRESOLVED;
 
   // Bare specifier (package) or package.json "imports" (#...): node
   // resolution from the importing directory. node_modules results are out of
@@ -265,11 +266,10 @@ function fileNode(filePath: string): FileNode | null {
   const edges: string[] = [];
   const seen = new Set<string>();
   const dir = path.dirname(filePath);
-  const aliases = resolveTsconfigAliases(dir);
   for (const m of source.matchAll(STATIC_SPECIFIER)) {
     const spec = m[1];
     if (!spec) continue;
-    const resolved = resolveSpecifier(spec, dir, aliases);
+    const resolved = resolveSpecifier(spec, dir);
     if (resolved === UNRESOLVED) {
       incomplete = true;
     } else if (resolved !== null && !seen.has(resolved)) {

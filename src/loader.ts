@@ -1,6 +1,12 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { type Cache, getTsconfig } from "get-tsconfig";
+import {
+  createPathsMatcher,
+  type Cache,
+  getTsconfig,
+  type PathsMatcher,
+  type TsConfigResult,
+} from "get-tsconfig";
 import type { Jiti } from "jiti";
 
 type Runtime = "node" | "bun" | "deno";
@@ -14,60 +20,108 @@ function detectRuntime(): Runtime {
 /** Cache: search dir → tsconfig lookup result (getTsconfig walks the fs otherwise). */
 const tsconfigSearchCache: Cache = new Map();
 
-/** Cache: tsconfig.json absolute path → resolved jiti alias map */
-const aliasCache = new Map<string, Record<string, string>>();
+/**
+ * Cache: tsconfig.json absolute path → paths matcher. `null`: config has no
+ * baseUrl/paths. `"unusable"`: createPathsMatcher rejected the config (the
+ * same validations tsc enforces — multi-star patterns, TS5090 non-relative
+ * substitutions without baseUrl).
+ */
+const pathsMatcherCache = new Map<string, PathsMatcher | null | "unusable">();
 
 interface LoaderConfig {
   /** Identity key for the shared jiti instance (tsconfig path, or "" if none). */
   key: string;
-  alias: Record<string, string>;
+  tsconfigPath: string | undefined;
 }
 
 /**
- * Resolve tsconfig.json path aliases into the format jiti expects.
- * Returns an empty alias map if no tsconfig.json is found or no paths are configured.
+ * Resolve the tsconfig.json visible from a source directory.
  *
- * tsconfig paths use wildcards: { "@/*": ["./src/*"] }
- * jiti uses prefix matching:   { "@": "/absolute/path/to/src" }
- *
- * The trailing "/*" is stripped from both key and value before passing to jiti.
+ * jiti has first-class TypeScript paths support, so runtime discovery uses the
+ * tsconfig path directly instead of translating aliases into jiti's simpler
+ * prefix alias format. The static dependency crawler uses get-tsconfig's own
+ * matcher for the same reason: project aliases are arbitrary TypeScript
+ * `paths` patterns, not a fixed convention like "~" or "@".
  */
 function resolveLoaderConfig(fromDir: string): LoaderConfig {
   const tsconfig = getTsconfig(fromDir, "tsconfig.json", tsconfigSearchCache);
-  if (!tsconfig) return { key: "", alias: {} };
+  if (!tsconfig) return { key: "", tsconfigPath: undefined };
 
-  const cached = aliasCache.get(tsconfig.path);
-  if (cached) return { key: tsconfig.path, alias: cached };
-
-  const alias: Record<string, string> = {};
-  const paths = tsconfig.config.compilerOptions?.paths;
-  if (paths && Object.keys(paths).length > 0) {
-    const tsconfigDir = path.dirname(tsconfig.path);
-    const baseUrl = tsconfig.config.compilerOptions?.baseUrl;
-    const baseDir = baseUrl ? path.resolve(tsconfigDir, baseUrl) : tsconfigDir;
-
-    for (const [pattern, targets] of Object.entries(paths)) {
-      if (!targets || targets.length === 0) continue;
-      const target = targets[0];
-      if (!target) continue;
-      // Strip trailing "/*" — jiti uses prefix matching, not glob wildcards
-      const key = pattern.endsWith("/*") ? pattern.slice(0, -2) : pattern;
-      const val = target.endsWith("/*") ? target.slice(0, -2) : target;
-      alias[key] = path.resolve(baseDir, val);
-    }
-  }
-
-  aliasCache.set(tsconfig.path, alias);
-  return { key: tsconfig.path, alias };
+  return { key: tsconfig.path, tsconfigPath: tsconfig.path };
 }
 
 /**
- * tsconfig path aliases visible from a directory, in jiti's prefix-match
- * format. Used by the static dependency crawler (unplugin/dep-graph.ts) so
- * alias imports resolve the same way the loader resolves them.
+ * Whether an explicit `compilerOptions.paths` pattern matches the specifier.
+ * TS pattern grammar: an exact string, or a single `*` wildcard (prefix +
+ * suffix match). Needed because the matcher's output alone cannot tell an
+ * explicit alias apart from the implicit baseUrl lookup (see below).
  */
-export function resolveTsconfigAliases(fromDir: string): Record<string, string> {
-  return resolveLoaderConfig(fromDir).alias;
+function specifierMatchesPathsPattern(tsconfig: TsConfigResult, specifier: string): boolean {
+  const paths = tsconfig.config.compilerOptions?.paths;
+  if (!paths) return false;
+  return Object.keys(paths).some((pattern) => {
+    const star = pattern.indexOf("*");
+    if (star === -1) return pattern === specifier;
+    const prefix = pattern.slice(0, star);
+    const suffix = pattern.slice(star + 1);
+    return (
+      specifier.length >= prefix.length + suffix.length &&
+      specifier.startsWith(prefix) &&
+      specifier.endsWith(suffix)
+    );
+  });
+}
+
+const NO_CANDIDATES: { candidates: string[]; authoritative: boolean } = {
+  candidates: [],
+  authoritative: false,
+};
+
+const UNUSABLE_CONFIG: { candidates: string[]; authoritative: boolean } = {
+  candidates: [],
+  authoritative: true,
+};
+
+/**
+ * Candidate files for a specifier using the tsconfig path mappings visible
+ * from a directory. Used by the static dependency crawler so alias imports
+ * resolve the same way discovery resolves them.
+ *
+ * `authoritative` tells the caller how to treat a miss (no candidate exists
+ * on disk):
+ * - true — the tsconfig owns this specifier: an explicit `paths` pattern
+ *   matched, or the paths config exists but cannot be interpreted
+ *   (createPathsMatcher rejects what tsc rejects). Resolution must be
+ *   treated as failed rather than falling back to node — which specifiers a
+ *   broken config would have mapped is unknowable.
+ * - false — candidates came only from the implicit baseUrl lookup, which
+ *   proposes `<baseDir>/<specifier>` for EVERY bare specifier (npm packages
+ *   and `#` subpath imports included) and expects the caller to fall back
+ *   to node resolution when the candidate does not exist.
+ */
+export function resolveTsconfigPathCandidates(
+  fromDir: string,
+  specifier: string,
+): { candidates: string[]; authoritative: boolean } {
+  const tsconfig = getTsconfig(fromDir, "tsconfig.json", tsconfigSearchCache);
+  if (!tsconfig) return NO_CANDIDATES;
+
+  let matcher = pathsMatcherCache.get(tsconfig.path);
+  if (matcher === undefined) {
+    try {
+      matcher = createPathsMatcher(tsconfig);
+    } catch {
+      // Invalid-per-tsc paths config. A stray tsconfig anywhere in the
+      // crawled tree must degrade the graph, not crash the build.
+      matcher = "unusable";
+    }
+    pathsMatcherCache.set(tsconfig.path, matcher);
+  }
+
+  if (matcher === "unusable") return UNUSABLE_CONFIG;
+  const candidates = matcher?.(specifier) ?? [];
+  if (candidates.length === 0) return NO_CANDIDATES;
+  return { candidates, authoritative: specifierMatchesPathsPattern(tsconfig, specifier) };
 }
 
 /**
@@ -226,14 +280,14 @@ export function getFirstPartyModulePaths(): string[] | null {
 }
 
 async function getJiti(absPath: string): Promise<Jiti> {
-  const { key, alias } = resolveLoaderConfig(path.dirname(absPath));
+  const { key, tsconfigPath } = resolveLoaderConfig(path.dirname(absPath));
   const existing = jitiInstances.get(key);
   if (existing) return existing;
 
   const { createJiti } = await import("jiti");
   const created = createJiti(pathToFileURL(absPath).href, {
     moduleCache: true,
-    alias,
+    ...(tsconfigPath ? { tsconfigPaths: tsconfigPath } : {}),
     jsx: true,
   });
   jitiInstances.set(key, created);
