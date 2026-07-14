@@ -1,6 +1,12 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createPathsMatcher, type Cache, getTsconfig, type PathsMatcher } from "get-tsconfig";
+import {
+  createPathsMatcher,
+  type Cache,
+  getTsconfig,
+  type PathsMatcher,
+  type TsConfigResult,
+} from "get-tsconfig";
 import type { Jiti } from "jiti";
 
 type Runtime = "node" | "bun" | "deno";
@@ -40,13 +46,52 @@ function resolveLoaderConfig(fromDir: string): LoaderConfig {
 }
 
 /**
+ * Whether an explicit `compilerOptions.paths` pattern matches the specifier.
+ * TS pattern grammar: an exact string, or a single `*` wildcard (prefix +
+ * suffix match). Needed because the matcher's output alone cannot tell an
+ * explicit alias apart from the implicit baseUrl lookup (see below).
+ */
+function specifierMatchesPathsPattern(tsconfig: TsConfigResult, specifier: string): boolean {
+  const paths = tsconfig.config.compilerOptions?.paths;
+  if (!paths) return false;
+  return Object.keys(paths).some((pattern) => {
+    const star = pattern.indexOf("*");
+    if (star === -1) return pattern === specifier;
+    const prefix = pattern.slice(0, star);
+    const suffix = pattern.slice(star + 1);
+    return (
+      specifier.length >= prefix.length + suffix.length &&
+      specifier.startsWith(prefix) &&
+      specifier.endsWith(suffix)
+    );
+  });
+}
+
+const NO_CANDIDATES: { candidates: string[]; viaPathsPattern: boolean } = {
+  candidates: [],
+  viaPathsPattern: false,
+};
+
+/**
  * Candidate files for a specifier using the tsconfig path mappings visible
  * from a directory. Used by the static dependency crawler so alias imports
  * resolve the same way discovery resolves them.
+ *
+ * `viaPathsPattern` distinguishes the two sources of candidates:
+ * - an explicit `paths` pattern matched — the mapping is authoritative, so a
+ *   caller that finds none of the candidates on disk must treat the import
+ *   as unresolvable;
+ * - candidates came only from the implicit baseUrl lookup, which proposes
+ *   `<baseDir>/<specifier>` for EVERY bare specifier (npm packages and `#`
+ *   subpath imports included) and expects the caller to fall back to node
+ *   resolution when the candidate does not exist.
  */
-export function resolveTsconfigPathCandidates(fromDir: string, specifier: string): string[] {
+export function resolveTsconfigPathCandidates(
+  fromDir: string,
+  specifier: string,
+): { candidates: string[]; viaPathsPattern: boolean } {
   const tsconfig = getTsconfig(fromDir, "tsconfig.json", tsconfigSearchCache);
-  if (!tsconfig) return [];
+  if (!tsconfig) return NO_CANDIDATES;
 
   let matcher = pathsMatcherCache.get(tsconfig.path);
   if (matcher === undefined) {
@@ -54,7 +99,9 @@ export function resolveTsconfigPathCandidates(fromDir: string, specifier: string
     pathsMatcherCache.set(tsconfig.path, matcher);
   }
 
-  return matcher?.(specifier) ?? [];
+  const candidates = matcher?.(specifier) ?? [];
+  if (candidates.length === 0) return NO_CANDIDATES;
+  return { candidates, viaPathsPattern: specifierMatchesPathsPattern(tsconfig, specifier) };
 }
 
 /**

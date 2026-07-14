@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { collectStaticDeps } from "../../src/unplugin/dep-graph.js";
+import { collectStaticDeps } from "#src/unplugin/dep-graph.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Inside the repo so bare specifiers (zod) resolve through node_modules.
@@ -85,6 +85,41 @@ describe("collectStaticDeps()", () => {
         path.join(dir, "packages/c/index.ts"),
       ]),
     );
+  });
+
+  it("keeps bare and #-subpath imports resolvable under a baseUrl tsconfig", () => {
+    // With baseUrl set, the paths matcher proposes `<baseDir>/<specifier>`
+    // for EVERY bare specifier — npm packages and package.json imports must
+    // still fall through to node resolution instead of poisoning the graph.
+    const dir = project({
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { baseUrl: "." },
+      }),
+      "package.json": JSON.stringify({
+        name: "p",
+        type: "module",
+        imports: { "#util": "./util.ts" },
+      }),
+      "entry.ts": `import { z } from "zod";\nimport { u } from "#util";\nimport { a } from "src/a";\nexport const x = z.number().parse(u + a);`,
+      "util.ts": `export const u = 1;`,
+      "src/a.ts": `export const a = 2;`,
+    });
+    const result = collectStaticDeps(path.join(dir, "entry.ts"));
+    expect(result.complete).toBe(true);
+    expect(new Set(result.deps)).toEqual(
+      new Set([path.join(dir, "util.ts"), path.join(dir, "src/a.ts")]),
+    );
+  });
+
+  it("distrusts a paths alias whose targets are all missing", () => {
+    const dir = project({
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { baseUrl: ".", paths: { "@lib/*": ["src/lib/*"] } },
+      }),
+      "entry.ts": `import { a } from "@lib/missing";\nexport const x = a;`,
+    });
+    const result = collectStaticDeps(path.join(dir, "entry.ts"));
+    expect(result.complete).toBe(false);
   });
 
   it("covers export-from and side-effect imports", () => {
