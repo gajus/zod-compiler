@@ -76,9 +76,8 @@ function mergeOptions(
 }
 
 async function loadSwc(): Promise<SwcCoreLike> {
-  const swcPackage = "@swc/core";
   try {
-    return (await import(swcPackage)) as SwcCoreLike;
+    return (await import("@swc/core")) as unknown as SwcCoreLike;
   } catch (error) {
     const cause = error instanceof Error ? `: ${error.message}` : "";
     throw new Error(
@@ -148,4 +147,6 @@ export async function transformWithSwc(
   return transformWith(swc, code, options);
 }
 
-export default createSwcCompiler;
+export default function zodCompiler(defaults?: SwcBridgeDefaults): SwcBridge {
+  return createSwcCompiler(defaults);
+}
