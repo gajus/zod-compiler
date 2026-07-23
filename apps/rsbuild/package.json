@@ -1,0 +1,19 @@
+{
+  "name": "@zod-compiler/rsbuild",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rsbuild build",
+    "start": "node dist/index.mjs",
+    "test": "pnpm build && pnpm start"
+  },
+  "dependencies": {
+    "zod": "catalog:",
+    "zod-compiler": "workspace:*"
+  },
+  "devDependencies": {
+    "@rsbuild/core": "^2.1.7",
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  }
+}

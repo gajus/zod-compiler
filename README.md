@@ -140,6 +140,7 @@ npx zod-compiler generate src/ --strip-unknown-keys
 | SWC        | `import zodCompiler from "zod-compiler/swc"`      |
 | Rollup     | `import zodCompiler from "zod-compiler/rollup"`   |
 | Rolldown   | `import zodCompiler from "zod-compiler/rolldown"` |
+| Rsbuild    | `import zodCompiler from "zod-compiler/rsbuild"`  |
 | rspack     | `import zodCompiler from "zod-compiler/rspack"`   |
 | Bun        | `import zodCompiler from "zod-compiler/bun"`      |
 | Farm       | `import zodCompiler from "zod-compiler/farm"`     |
@@ -163,6 +164,17 @@ npx zod-compiler generate src/ --strip-unknown-keys
 zodCompiler({
   include: ["src/schemas"],
   verbose: true,
+});
+```
+
+**rsbuild.config.ts:**
+
+```typescript
+import { defineConfig } from "@rsbuild/core";
+import zodCompiler from "zod-compiler/rsbuild";
+
+export default defineConfig({
+  plugins: [zodCompiler()],
 });
 ```
 
