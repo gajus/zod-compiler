@@ -42,6 +42,7 @@ import {
 } from "./core/iife.js";
 import { compileSchemas } from "./core/pipeline.js";
 import type { CompiledSchema } from "./core/types.js";
+import { isZodSchema } from "./is-zod-schema.js";
 
 /**
  * The declarations `ZOD_CONFIG_IMPORT` supplies to an emitted module, minus the
@@ -226,13 +227,6 @@ export function jitAll(schemas: object, options?: JitOptions): void {
   for (const value of Object.values(schemas)) {
     if (isZodSchema(value)) jit(value, options);
   }
-}
-
-/** Zod schemas carry `_zod.def`; the same probe auto-discovery uses at build time. */
-function isZodSchema(value: unknown): value is ZodType {
-  if (typeof value !== "object" || value === null || !("_zod" in value)) return false;
-  const internal = (value as Record<string, unknown>)["_zod"];
-  return typeof internal === "object" && internal !== null && "def" in internal;
 }
 
 /** Put Zod's own descriptors back, dropping the compile-on-read accessors. */

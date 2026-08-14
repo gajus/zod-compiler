@@ -226,6 +226,49 @@ describe("jitAll()", () => {
     expect(namespace.Other.safeParse([1]).success).toBe(true);
     expect(namespace.notASchema).toBe(42);
   });
+
+  /**
+   * The documented call is `jitAll(moduleNamespace)`, so the probe meets every
+   * export of that module — including values that answer back. A Proxy can trap
+   * `has` and `get` and throw: an ORM model, a strict test double, an i18n
+   * catch-all. `"_zod" in value` fires the first and reading `_zod` the second,
+   * and an uncaught throw there aborts the importing app at boot over a value
+   * that was never a schema candidate.
+   */
+  it.each([
+    [
+      "a catch-all proxy that throws on unknown reads",
+      new Proxy(
+        {},
+        {
+          has: () => true,
+          get: (_t, key) => {
+            throw new Error(`unknown column: ${String(key)}`);
+          },
+        },
+      ),
+    ],
+    [
+      "a proxy whose `has` trap throws",
+      new Proxy(
+        {},
+        {
+          has: () => {
+            throw new Error("has trap exploded");
+          },
+        },
+      ),
+    ],
+  ])("survives %s among the values", (_name, hostile) => {
+    const namespace = Object.freeze({ User: z.object({ a: z.string() }), hostile });
+    expect(() => {
+      jitAll(namespace);
+    }).not.toThrow();
+    // The real schema alongside it is still compiled (reading safeParse first
+    // materializes the lazy accessor, as in the case above).
+    expect(namespace.User.safeParse({ a: "x" }).success).toBe(true);
+    expect(safeParseName(namespace.User)).toBe("safeParse_jit");
+  });
 });
 
 describe("jit() — degradation", () => {

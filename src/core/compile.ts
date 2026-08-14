@@ -56,7 +56,17 @@ export function compile<T extends ZodType>(zodSchema: T): T & CompiledSchema<out
 /**
  * Check if a value is a CompiledSchema created by compile().
  * Used by the CLI to discover schemas in source files.
+ *
+ * Like {@link isZodSchema}, this probes values the caller does not control —
+ * every export of every candidate file — and `COMPILED_MARKER in value` fires a
+ * Proxy's `has` trap. A trap that throws (an ORM model, a strict test double)
+ * must not fail the build over an export that was never a candidate.
  */
 export function isCompiledSchema(value: unknown): value is CompiledSchema<unknown> {
-  return typeof value === "object" && value !== null && COMPILED_MARKER in value;
+  if (typeof value !== "object" || value === null) return false;
+  try {
+    return COMPILED_MARKER in value;
+  } catch {
+    return false;
+  }
 }

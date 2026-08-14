@@ -34,6 +34,7 @@ import type { CodegenMode } from "../core/codegen/context.js";
 import { generateValidator } from "../core/codegen/index.js";
 import { extractSchema, type RefEntry } from "../core/extract/index.js";
 import type { CompiledSchemaInfo } from "../core/pipeline.js";
+import { isZodSchema } from "../is-zod-schema.js";
 import { loadModule } from "../loader.js";
 import {
   analyzeHoistedExpression,
@@ -50,16 +51,6 @@ export interface CompiledHoistedSchema {
   text: string;
   /** Compiled validator for the schema. */
   info: CompiledSchemaInfo;
-}
-
-/** Duck-type check mirroring discovery's isZodSchema. */
-function isZodSchema(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "_zod" in value &&
-    typeof (value as { _zod: unknown })._zod === "object"
-  );
 }
 
 /**

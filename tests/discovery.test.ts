@@ -169,4 +169,91 @@ describe("discoverSchemas()", () => {
       vi.restoreAllMocks();
     });
   });
+
+  /**
+   * Discovery probes EVERY export of every candidate file, including values the
+   * author never offered as schemas. A Proxy can trap `has` and `get` and throw
+   * — an ORM model, a strict test double, an i18n catch-all — and letting that
+   * escape fails the whole build (`zod-compiler generate` throws, the unplugin's
+   * explicit mode throws, autoDiscover silently drops the entire file). The
+   * hostile export must be skipped and its file-mates still found.
+   */
+  describe("exports that resist being probed", () => {
+    const hostile = {
+      catchAll: new Proxy(
+        {},
+        {
+          get: (_t, key) => {
+            throw new Error(`unknown column: ${String(key)}`);
+          },
+          has: () => true,
+        },
+      ),
+      throwingHas: new Proxy(
+        {},
+        {
+          has: () => {
+            throw new Error("has trap exploded");
+          },
+        },
+      ),
+      throwingOwnKeys: new Proxy(
+        {},
+        {
+          ownKeys: () => {
+            throw new Error("ownKeys exploded");
+          },
+        },
+      ),
+    };
+
+    it.each([
+      ["a catch-all proxy", hostile.catchAll],
+      ["a proxy whose `has` trap throws", hostile.throwingHas],
+    ])("skips %s and still finds the schemas beside it", async (_name, value) => {
+      const { compile } = await import("#src/core/compile.js");
+      const { z } = await import("zod");
+      const compiled = compile(z.object({ name: z.string() }));
+
+      vi.spyOn(await import("#src/loader.js"), "loadSourceFile").mockResolvedValueOnce({
+        model: value,
+        validateUser: compiled,
+      });
+
+      const schemas = await discoverSchemas("fake-path.ts");
+      expect(schemas.map((s) => s.exportName)).toStrictEqual(["validateUser"]);
+
+      vi.restoreAllMocks();
+    });
+
+    it("survives a default export that cannot be enumerated", async () => {
+      const { compile } = await import("#src/core/compile.js");
+      const { z } = await import("zod");
+      const compiled = compile(z.object({ name: z.string() }));
+
+      vi.spyOn(await import("#src/loader.js"), "loadSourceFile").mockResolvedValueOnce({
+        default: hostile.throwingOwnKeys,
+        validateUser: compiled,
+      });
+
+      const schemas = await discoverSchemas("fake-path.ts");
+      expect(schemas.map((s) => s.exportName)).toStrictEqual(["validateUser"]);
+
+      vi.restoreAllMocks();
+    });
+
+    it("skips a hostile export in autoDiscover mode too", async () => {
+      const { z } = await import("zod");
+
+      vi.spyOn(await import("#src/loader.js"), "loadSourceFile").mockResolvedValueOnce({
+        UserSchema: z.object({ name: z.string() }),
+        model: hostile.catchAll,
+      });
+
+      const schemas = await discoverSchemas("fake-path.ts", { autoDiscover: true });
+      expect(schemas.map((s) => s.exportName)).toStrictEqual(["UserSchema"]);
+
+      vi.restoreAllMocks();
+    });
+  });
 });
