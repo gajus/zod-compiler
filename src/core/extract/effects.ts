@@ -63,6 +63,38 @@ export function isReferenceablePredicate(fn: unknown): boolean {
   );
 }
 
+/** A parsed callback: the node types whose SOURCE TEXT is a usable expression. */
+type FunctionNode = Node & { params?: Node[]; body?: Node };
+
+/**
+ * Not every callable stringifies to an expression, and acorn parses what it can
+ * rather than refusing. A method shorthand lifted off an object literal —
+ * `normalize(v) { … }` — parses as the CALL `normalize(v)` and stops at the
+ * brace; a getter's source yields a bare Identifier; a class yields a
+ * ClassExpression. None of those carry `params`, so every arity guard below
+ * passes vacuously and `tryCompileEffect` hands back the whole source including
+ * the trailing block, which lands in generated code as
+ * `var __ef_2=(normalize(v) { … });` — a SyntaxError that makes the emitted
+ * module unparseable while the CLI still reports success.
+ *
+ * Only an arrow or a function expression is safe to treat as an inlineable
+ * callback. Rejecting is the conservative answer rather than merely the safe
+ * one: with no parsed params there is nothing to prove the callback ignores
+ * zod's second (parse-context) argument, so a refine/transform degrades to a
+ * call through `__rf[N]` and a preprocess degrades further, to full zod
+ * delegation. Every shape above keeps zod's own behaviour either way — a class
+ * still throws on a call-without-new exactly as it does under zod.
+ *
+ * The parse must also have consumed the whole source. Nothing here can prove
+ * `toString()` returned real source text, and a partial parse would re-open
+ * this same bug class by re-emitting the unconsumed tail.
+ */
+function asFunctionNode(ast: Node, source: string): FunctionNode | null {
+  const isFunction = ast.type === "ArrowFunctionExpression" || ast.type === "FunctionExpression";
+  if (!isFunction) return null;
+  return source.slice(ast.end).trim() === "" ? (ast as FunctionNode) : null;
+}
+
 /**
  * Can a callback be invoked with the value alone without hiding Zod's second
  * parse-context argument? `fn.length` is insufficient here: default and rest
@@ -70,16 +102,18 @@ export function isReferenceablePredicate(fn: unknown): boolean {
  */
 export function isContextFreeUnaryCallback(fn: unknown): boolean {
   if (!isReferenceablePredicate(fn)) return false;
+  const source = (fn as Function).toString();
   let ast: Node;
   try {
-    ast = parseExpressionAt((fn as Function).toString(), 0, {
+    ast = parseExpressionAt(source, 0, {
       ecmaVersion: "latest",
       sourceType: "module",
     });
   } catch {
     return false;
   }
-  const fnNode = ast as { params?: Node[]; body?: Node };
+  const fnNode = asFunctionNode(ast, source);
+  if (fnNode === null) return false;
   if ((fnNode.params?.length ?? 0) > 1) return false;
   if (fnNode.params?.some((param) => param.type === "RestElement")) return false;
   const refs = new Set<string>();
@@ -135,17 +169,17 @@ export function tryCompileEffect(fn: unknown): string | undefined {
     return undefined;
   }
 
+  // Only a fully-consumed arrow or function expression can be re-emitted as
+  // source; see asFunctionNode for the shapes acorn otherwise accepts.
+  const fnNode = asFunctionNode(ast, source);
+  if (fnNode === null) return undefined;
+
   // Reject async and generator functions
   if ("async" in ast && (ast as { async?: boolean }).async) return undefined;
   if ("generator" in ast && (ast as { generator?: boolean }).generator) return undefined;
 
   // Collect parameter names
   const params = new Set<string>();
-  const fnNode = ast as {
-    type: string;
-    params?: Node[];
-    body?: Node;
-  };
 
   // Reject functions with 2+ required parameters (uses Zod ctx argument).
   // transform(value, ctx) and superRefine(value, ctx) rely on ctx for
