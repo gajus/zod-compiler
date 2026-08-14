@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "include": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Glob patterns to include (default: [\"**\\/*.ts\", \"**\\/*.tsx\"])"
+    },
+    "exclude": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Glob patterns to exclude (default: [\"node_modules/**\", \"**\\/*.d.ts\"])"
+    },
+    "schemas": {
+      "type": "string",
+      "enum": [
+        "explicit",
+        "auto"
+      ],
+      "description": "How schemas are found.\n\n- `\"auto\"` (default): every exported plain Zod schema compiles — no   wrappers, no zod-compiler imports in source. Detection scans files   with a runtime `import ... from \"zod\"`, statically pre-filters ones   whose exports provably aren't schemas, and executes the remaining   candidates to check exports for `_zod.def`. Also enables build-time   compilation of hoisted in-function schemas (anonymous schemas like   `sql.type(z.object(...))` — there is no exported name to opt in with).\n- `\"explicit\"`: only schemas wrapped in `compile()` from zod-compiler   are compiled; build-time file execution is limited to files that   import it. Hoisting still applies, but hoisted schemas stay plain Zod.\n\n**Note:** in `\"auto\"` mode, candidate files are executed at build time via `loadSourceFile()`. Use `include` to limit scope if your project has schema-shaped files with side effects. A module that calls `process.exit()` during this execution (e.g. an env-validation guard in a secret-less CI build) is caught — the file falls back to runtime Zod instead of crashing the build. Guard the exit on `process.env.ZOD_COMPILER` to keep such schemas compiled.",
+      "default": "auto"
+    },
+    "hoist": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "schemaNamePattern": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "regex"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ],
+      "description": "Hoist Zod schema construction out of function bodies to module scope (the babel-plugin-zod-hoist optimization). A schema defined inside a function — a React component, a request handler — is otherwise rebuilt on every call:\n\n```typescript function getSchema() {   return z.object({ name: z.string() });  // rebuilt per call } // becomes const _zh_94b7f5c1 = z.object({ name: z.string() }); function getSchema() {   return _zh_94b7f5c1;                     // built once } ```\n\nOnly expressions built purely from imported bindings and literals are hoisted — anything referencing local variables, module-level bindings, `this`, or globals stays put (safe globals like `Number` are allowed inside callbacks, which run per call regardless). Identical schemas dedupe to one binding.\n\nPass an object to configure `schemaNamePattern` (default `/ZodSchema$/`): imported identifiers matching it are hoistable combinator-chain roots even without an inline z.* reference (`UserZodSchema.partial()`). Set it to `null` to disable name-based matching.",
+      "default": true
+    },
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema used by editors.",
+      "default": "./node_modules/zod-compiler/schema.json"
+    },
+    "eager": {
+      "type": "boolean",
+      "description": "Compile immediately instead of when a validation method is first read.",
+      "default": false
+    },
+    "output": {
+      "type": "string",
+      "enum": [
+        "schema",
+        "compact"
+      ],
+      "description": "Preserve the complete compiled validator, or delegate cold error production to the retained Zod schema in compact mode.",
+      "default": "schema"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Configuration loaded by `zod-compiler/register` from the current working directory.",
+  "definitions": {}
+}

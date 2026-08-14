@@ -1,0 +1,4 @@
+{
+  "$schema": "../../../node_modules/zod-compiler/schema.json",
+  "exclude": ["**/esm-schema.mjs"]
+}

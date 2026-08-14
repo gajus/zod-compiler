@@ -1,0 +1,6 @@
+import { UserSchema } from "./tsx-schema.ts";
+
+const before = typeof Object.getOwnPropertyDescriptor(UserSchema, "safeParse")?.get;
+UserSchema.safeParse({ name: "Arthur" });
+const after = Object.getOwnPropertyDescriptor(UserSchema, "safeParse")?.value?.name;
+process.stdout.write(JSON.stringify({ after, before }));

@@ -14,7 +14,7 @@ input. No code changes required.
 
 ## Usage
 
-Four ways to use zod-compiler — pick one:
+Five ways to use zod-compiler — pick one:
 
 ### 1. Automatic Mode (Default)
 
@@ -113,6 +113,46 @@ Libraries should ship plain Zod and let the app decide.
 
 Needs `new Function`, as Zod's own object fast-path does. `z.config({ jitless: true })` and a CSP
 that blocks eval both leave a working plain-Zod schema.
+
+### 5. Node.js Register Hook
+
+Node.js 22.15+ can automatically insert the equivalent of `jit()` for exported schemas as modules
+load, with no source changes and no bundler:
+
+```bash
+node --import zod-compiler/register src/server.js
+```
+
+The same preload handles ESM imports, CommonJS `require()`, and Node's native TypeScript formats. It
+also chains with TypeScript runners:
+
+```bash
+node --import zod-compiler/register --import tsx src/server.ts
+```
+
+This is runtime JIT instrumentation, not the AOT source rewriting performed by the Vite, Rsbuild, and
+other build plugins. The hook identifies exported schema bindings and registers their live Zod objects;
+validators are generated in-process, lazily on first use. It does not execute modules twice and adds no
+transform cache beyond Node's module cache. Use a build plugin or the CLI when generated validator code
+must exist before Node starts or runtime `new Function` is unavailable.
+
+Optional settings come from `zod-compiler.json` in the working directory:
+
+```json
+{
+  "$schema": "./node_modules/zod-compiler/schema.json",
+  "include": ["src/**"],
+  "exclude": ["**/*.test.ts"],
+  "schemas": "auto",
+  "eager": false,
+  "output": "schema",
+  "hoist": true
+}
+```
+
+`output: "compact"` preserves the Zod schema and compiled valid-input fast path while delegating cold
+error production to Zod. Full `"schema"` output remains the default. `"bag"` is unavailable because a
+load hook cannot replace already-linked ESM export bindings safely.
 
 ## Build Plugin
 

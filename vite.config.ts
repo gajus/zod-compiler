@@ -1,5 +1,7 @@
 import * as path from "node:path";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createGenerator } from "ts-json-schema-generator";
 import { defineConfig } from "vite-plus";
 import { ALL_HELPER_NAMES, RUNTIME_SOURCE } from "./src/unplugin/virtual.js";
 
@@ -37,6 +39,25 @@ function emitRuntimeModule() {
   };
 }
 
+/** Keep the editor schema in lockstep with the register config type on every package build. */
+function generateRegisterSchema() {
+  return {
+    name: "zod-compiler:generate-register-schema",
+    buildStart() {
+      const schema = createGenerator({
+        path: path.resolve(__dirname, "src/register/config.ts"),
+        tsconfig: path.resolve(__dirname, "tsconfig.json"),
+        type: "ZodCompilerRegisterConfig",
+        topRef: false,
+      }).createSchema("ZodCompilerRegisterConfig");
+      fs.writeFileSync(
+        path.resolve(__dirname, "schema.json"),
+        `${JSON.stringify(schema, null, 2)}\n`,
+      );
+    },
+  };
+}
+
 export default defineConfig({
   resolve: {
     conditions: ["source"],
@@ -60,7 +81,7 @@ export default defineConfig({
   },
   pack: {
     entry: ["src/**/*.ts"],
-    plugins: [emitRuntimeModule()],
+    plugins: [generateRegisterSchema(), emitRuntimeModule()],
     format: ["esm"],
     unbundle: true,
     sourcemap: true,
@@ -139,6 +160,7 @@ export default defineConfig({
       "dist",
       "**/dist",
       "coverage",
+      "schema.json",
       "*.compiled.ts",
       "*.compiled.js",
       ".agents",
@@ -189,12 +211,14 @@ export default defineConfig({
         files: [
           "src/cli/**",
           "src/loader.ts",
+          "src/register/**",
           "src/swc.ts",
           "src/turbopack.ts",
           "src/static-filter.ts",
           "tests/cli/**",
           "tests/discovery.test.ts",
           "tests/loader.test.ts",
+          "tests/register.test.ts",
           "tests/swc.test.ts",
           "tests/turbopack.test.ts",
           "src/unplugin/**",

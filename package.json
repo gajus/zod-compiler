@@ -22,6 +22,7 @@
   },
   "files": [
     "dist",
+    "schema.json",
     "LICENSE"
   ],
   "type": "module",
@@ -39,6 +40,13 @@
       "import": "./dist/jit.js",
       "default": "./dist/jit.js"
     },
+    "./register": {
+      "types": "./dist/register/index.d.ts",
+      "source": "./src/register/index.ts",
+      "import": "./dist/register/index.js",
+      "default": "./dist/register/index.js"
+    },
+    "./schema.json": "./schema.json",
     "./vite": {
       "types": "./dist/unplugin/vite.d.ts",
       "source": "./src/unplugin/vite.ts",
@@ -125,6 +133,7 @@
   "dependencies": {
     "@jridgewell/remapping": "^2.3.5",
     "acorn": "^8.16.0",
+    "es-module-lexer": "^2.3.1",
     "get-tsconfig": "^4.14.0",
     "jiti": "^2.7.0",
     "magic-string": "^0.30.21",
@@ -141,6 +150,8 @@
     "knip": "^6.29.0",
     "publint": "^0.3.22",
     "semantic-release": "^25.0.3",
+    "ts-json-schema-generator": "^2.9.0",
+    "tsx": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:",

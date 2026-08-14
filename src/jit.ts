@@ -83,6 +83,8 @@ export interface JitOptions {
    * eagerly. Default `false`.
    */
   eager?: boolean | undefined;
+  /** Use compact codegen and delegate cold error production to Zod. @default "schema" */
+  output?: "schema" | "compact" | undefined;
 }
 
 /**
@@ -115,7 +117,7 @@ export function jit<T extends ZodType>(
   seen.add(target);
 
   if (options?.eager === true) {
-    materialize(schema);
+    materialize(schema, options);
     return schema as T & CompiledSchema<output<T>>;
   }
 
@@ -149,7 +151,7 @@ export function jit<T extends ZodType>(
         if (!pending) return;
         pending = false;
         restore(target, original);
-        materialize(schema);
+        materialize(schema, options);
       },
       () => {
         if (!pending) return;
@@ -325,10 +327,10 @@ function codegenAllowed(): boolean {
  * which the caller already has, so there is nothing to report and nothing to
  * break.
  */
-function materialize(schema: unknown): void {
+function materialize(schema: unknown, options?: JitOptions): void {
   if (!codegenAllowed()) return;
   try {
-    buildValidator(schema);
+    buildValidator(schema, options);
   } catch {
     // Left as plain Zod. Deliberately silent: `jit()` is an optimization, and a
     // schema using a construct the compiler declines is a supported outcome,
@@ -342,8 +344,11 @@ function materialize(schema: unknown): void {
  * then the `__zcMkv` IIFE whose `__rf[]` bases and install target are the live
  * schema object passed in as `__schema`.
  */
-function buildValidator(schema: unknown): void {
-  const { schemas, shared } = compileSchemas([{ exportName: "jit", schema }], { mode: "inline" });
+function buildValidator(schema: unknown, options?: JitOptions): void {
+  const { schemas, shared } = compileSchemas([{ exportName: "jit", schema }], {
+    compact: options?.output === "compact",
+    mode: "inline",
+  });
   const compiled = schemas[0];
   if (compiled === undefined) throw new Error("zod-compiler: schema produced no validator");
 
