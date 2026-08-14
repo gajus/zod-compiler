@@ -255,17 +255,40 @@ function extractFunctionName(functionDef: string): string {
 }
 
 /**
+ * Does the IIFE's preamble DEREFERENCE the retained schema at evaluation time?
+ *
+ * Only `__rf` does: every entry is `__zs<accessPath>`, and an access path walks
+ * the schema's structure — `._zod.innerType` fires a `z.lazy()` getter,
+ * `.shape` materializes a `z.object()` shape (zod v4 reads every property
+ * descriptor, so ONE `.shape` read fires ALL of an object's recursion getters).
+ * Binding `__zs` itself does not: constructing the schema leaves deferred
+ * callbacks unforced, and `usesRetainedSchema`'s only read is `__zs.safeParse`,
+ * an own property zod assigns during `ZodType.init`.
+ *
+ * The distinction decides whether the IIFE may be evaluated inside the
+ * INITIALIZER of the binding the schema's own deferred callbacks close over —
+ * see the self-referential path in the unplugin's autoDiscover rewrite.
+ */
+export function iifeDerefsSchema(schema: CompiledSchemaInfo): boolean {
+  return schema.refEntries.length > 0;
+}
+
+/**
  * Generate a `/* @__PURE__ * /` IIFE wrapping a compiled validator.
  *
  * @param schemaExpr - Expression resolving to the original Zod schema
  *   (e.g. `"UserSchema"` in unplugin, `"(__src_X as any).schema"` in CLI)
  * @param schema
- * @param options
+ * @param options - `pure: false` drops the `/* @__PURE__ * /` annotation, for
+ *   the one caller that emits the IIFE as a STATEMENT following the
+ *   declaration rather than as its initializer: there the call's whole point is
+ *   its side effect (`__zcMkv` installing the compiled methods on the schema),
+ *   and a bundler that believed it pure would drop the compilation outright.
  */
 export function generateIIFE(
   schemaExpr: string,
   schema: CompiledSchemaInfo,
-  options?: { zodCompat?: boolean | undefined },
+  options?: { zodCompat?: boolean | undefined; pure?: boolean | undefined },
 ): string {
   const { codegenResult, refEntries } = schema;
   const fnName = extractFunctionName(codegenResult.functionDef);
@@ -284,7 +307,7 @@ export function generateIIFE(
   const isArg = codegenResult.isFnName ?? (codegenResult.fastTotal ? fcArg : "null");
 
   return [
-    "/* @__PURE__ */ (() => {",
+    options?.pure === false ? "(() => {" : "/* @__PURE__ */ (() => {",
     ...(bindsSchema ? [`var ${RETAINED_SCHEMA_VAR}=${schemaExpr};`] : []),
     // Only fallback refs need the array; a compact validator with none of its
     // own reads `__zs` directly rather than allocating `[__zs]` to index into.

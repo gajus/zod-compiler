@@ -282,6 +282,70 @@ export function run() {
 `,
     expectTransformed: true,
   },
+  {
+    // The recursive schema defers its self-reference through the lazy getter,
+    // which the IIFE's `__rf` preamble forces. Emitted as the declaration's
+    // initializer, that read re-enters a binding still under initialization:
+    // TDZ here, and a CACHED `z.array(undefined)` once a bundler lowers the
+    // `const` to `var`. `run()` reaches the poisoned node through PLAIN zod —
+    // the compiled validator emits its own recursion and never consults the
+    // lazy, so it passes either way.
+    name: "self-referential z.lazy union with a retained ref",
+    source: `
+import { z } from "zod";
+
+export const SerializableValueZodSchema: z.ZodType = z.lazy(() =>
+  z.union([
+    z.custom<string>((v) => typeof v === "string"),
+    z.number(),
+    z.boolean(),
+    z.null(),
+    z.record(z.string(), SerializableValueZodSchema),
+    z.array(SerializableValueZodSchema),
+  ]),
+);
+
+export function run() {
+  const outer = z.record(z.string(), SerializableValueZodSchema).nullable();
+  return {
+    direct_ok: SerializableValueZodSchema.safeParse(["a", 1, { b: true }]).success,
+    direct_bad: SerializableValueZodSchema.safeParse(new Date()).success,
+    outer_ok: outer.safeParse({ k: ["a", { n: 1 }] }).success,
+    outer_bad: outer.safeParse({ k: new Date() }).success,
+    outer_null: outer.safeParse(null).success,
+  };
+}
+`,
+    expectTransformed: true,
+  },
+  {
+    // Same defect through zod v4's getter form. The retained ref is not even in
+    // the recursive branch — reading `.shape` for `name` materializes the whole
+    // shape, firing `children`.
+    name: "self-referential object getter with a retained ref",
+    source: `
+import { z } from "zod";
+
+export const CategoryZodSchema: z.ZodType = z.object({
+  name: z.custom<string>((v) => typeof v === "string"),
+  get children() {
+    return z.array(CategoryZodSchema);
+  },
+});
+
+export function run() {
+  const outer = z.record(z.string(), CategoryZodSchema).nullable();
+  const value = { name: "a", children: [{ name: "b", children: [] }] };
+  return {
+    direct_ok: CategoryZodSchema.safeParse(value).success,
+    direct_bad: CategoryZodSchema.safeParse({ name: 1, children: [] }).success,
+    outer_ok: outer.safeParse({ k: value }).success,
+    outer_bad: outer.safeParse({ k: { name: "a", children: [{ name: 2, children: [] }] } }).success,
+  };
+}
+`,
+    expectTransformed: true,
+  },
 ];
 
 describe("execution equivalence — original vs transformed", () => {

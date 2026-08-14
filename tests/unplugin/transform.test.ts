@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { z } from "zod";
 import { generateValidator } from "#src/core/codegen/index.js";
-import { extractSchema } from "#src/core/extract/index.js";
+import { extractSchema, type RefEntry } from "#src/core/extract/index.js";
 import { moduleHeadOffset } from "#src/unplugin/edits.js";
 import { SCHEMA_NAME_PATTERN, ZOD_MODULES } from "#src/unplugin/hoist.js";
 import {
@@ -901,6 +901,71 @@ describe("rewriteSourceAutoDiscover()", () => {
       /__zcMkv\(safeParse_UserSchema,null,(?:__fc_\d+|null),(?:__fc_\d+|null)\)/,
     );
     expect(result).not.toContain("Object.create");
+  });
+
+  // A self-referential schema's deferred callback closes over the binding being
+  // declared, so the IIFE's `__rf` deref cannot run inside its initializer.
+  describe("self-referential exports", () => {
+    const recursive: z.ZodType = z.lazy(() =>
+      z.union([z.custom<string>((v) => typeof v === "string"), z.array(recursive)]),
+    );
+
+    function makeRefInfo(exportName: string, schema: z.ZodType) {
+      const refEntries: RefEntry[] = [];
+      const ir = extractSchema(schema, refEntries);
+      const codegenResult = generateValidator(ir, exportName, { refCount: refEntries.length });
+      return { exportName, codegenResult, refEntries };
+    }
+
+    const decl = `export const NodeZodSchema: z.ZodType = z.lazy(() => z.union([z.custom(), z.array(NodeZodSchema)]))`;
+
+    it("leaves the initializer intact and follows it with an init statement", () => {
+      const code = `import { z } from "zod";\n${decl};`;
+      const result = rewriteSourceAutoDiscover(code, [makeRefInfo("NodeZodSchema", recursive)]);
+
+      // The declaration is byte-identical, so the lazy stays unforced until the
+      // statement below it runs — by which point the binding is assigned.
+      expect(result).toContain(`${decl};\n`);
+      expect(result).toContain("var __zs=NodeZodSchema;");
+      expect(result).toContain("__zcMkv(safeParse_NodeZodSchema,__zs,");
+      // The statement's whole point is __zcMkv's mutation; annotating it pure
+      // would let a bundler drop the compilation.
+      expect(result).not.toContain("/* @__PURE__ */");
+      expect(result.indexOf("var __zs=NodeZodSchema;")).toBeGreaterThan(result.indexOf(decl));
+    });
+
+    it("keeps the in-place pure IIFE when no ref is dereferenced", () => {
+      const code = `import { z } from "zod";\n${decl};`;
+      const plain: z.ZodType = z.lazy(() => z.union([z.string(), z.array(plain)]));
+      const result = rewriteSourceAutoDiscover(code, [makeRefInfo("NodeZodSchema", plain)]);
+
+      expect(result).toContain("/* @__PURE__ */");
+      expect(result).not.toContain("var __zs=NodeZodSchema;");
+    });
+
+    it("skips the export when zodCompat is false", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const code = `import { z } from "zod";\n${decl};`;
+      const result = rewriteSourceAutoDiscover(code, [makeRefInfo("NodeZodSchema", recursive)], {
+        zodCompat: false,
+      });
+
+      expect(result).toBe(code);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("NodeZodSchema"));
+      warnSpy.mockRestore();
+    });
+
+    it("keeps sibling declarators inside the declaration", () => {
+      const code = `import { z } from "zod";\n${decl}, Other = 1;`;
+      const result = rewriteSourceAutoDiscover(code, [makeRefInfo("NodeZodSchema", recursive)]);
+
+      // The split writes the declarator list back verbatim and puts the
+      // statement AFTER it, so `Other` is neither dropped nor orphaned.
+      expect(result).toContain(`${decl}, Other = 1;\n`);
+      expect(result.indexOf("var __zs=NodeZodSchema;")).toBeGreaterThan(
+        result.indexOf("Other = 1;"),
+      );
+    });
   });
 
   it("IIFE references __zcMsg (injection handled by transformCode)", () => {

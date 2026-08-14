@@ -11,6 +11,7 @@ import {
   FIN_DEFERRED_DECL,
   FINZ_DECL,
   generateIIFE,
+  iifeDerefsSchema,
   MK_VALIDATOR_DECL,
   ZOD_CONFIG_IMPORT,
   ZOD_MSG_DECLARATION,
@@ -754,6 +755,20 @@ export function rewriteSourceAutoDiscover(
   return applyEdits(code, collectAutoDiscoverEdits(code, schemas, options));
 }
 
+/**
+ * Does `expr` mention `name` as an identifier?
+ *
+ * Deliberately lexical, and deliberately biased toward YES. A false positive
+ * costs one export its `@__PURE__` annotation; a false negative emits an IIFE
+ * that dereferences a binding still under initialization. The expression text
+ * is often TypeScript (`z.custom<T>(...)`), which no JS parser here can be
+ * trusted to walk, so a word-boundary scan — which cannot miss a real
+ * identifier reference — is the sound direction to be wrong in.
+ */
+function mentionsIdentifier(expr: string, name: string): boolean {
+  return new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(expr);
+}
+
 /** Edits for rewriteSourceAutoDiscover, collected against pristine `code`. */
 function collectAutoDiscoverEdits(
   code: string,
@@ -775,6 +790,49 @@ function collectAutoDiscoverEdits(
     if (rhsEnd === -1) continue;
 
     const originalExpr = code.slice(rhsStart, rhsEnd).trim();
+
+    // A RECURSIVE schema defers its self-reference through a callback —
+    // `z.lazy(() => z.array(Node))`, or zod v4's getter form
+    // `get children() { return z.array(Node) }` — and that callback closes over
+    // the module binding declared here. Replacing the initializer puts the
+    // IIFE's `var __rf=[__zs._zod.innerType...]` preamble INSIDE that binding's
+    // own initializer, so forcing the callback re-enters a binding that is not
+    // yet assigned: a TDZ ReferenceError at module init, or — once a bundler
+    // lowers the top-level `const` to `var`, as esbuild does — a silent
+    // `undefined` that zod's `defineLazy` then CACHES, permanently poisoning
+    // the schema for every consumer (`z.array(undefined)`).
+    //
+    // So the deref moves out of the initializer: the declaration keeps its
+    // original expression and the IIFE follows it as a statement, mutating the
+    // now-assigned schema in place. `__zcMkv` returns its argument (identity is
+    // preserved by design), so the export is the same object either way, and
+    // `__rfp_N`'s pristine-`safeParse` capture still happens before the
+    // trailing `__zcMkv` installs anything. The cost is this export's
+    // `@__PURE__` annotation — a self-referential schema is no longer
+    // droppable when unused.
+    if (iifeDerefsSchema(schema) && mentionsIdentifier(originalExpr, schema.exportName)) {
+      // `output: "bag"` replaces the export with a method bag rather than
+      // mutating the schema, so there is nothing to mutate in place — and the
+      // user's own recursive reference would resolve to the bag regardless.
+      if (options?.zodCompat === false) {
+        warn(
+          `Skipping self-referential export "${schema.exportName}": output "bag" cannot preserve its recursive reference. Keeping the original schema.`,
+        );
+        continue;
+      }
+      // Re-emitting `originalExpr` verbatim is what makes splitting the
+      // declaration safe for `const Schema = <expr>, other = 1;`:
+      // findExpressionEnd parses an Expression, and the comma operator makes
+      // that span the whole declarator list, so the siblings are inside the
+      // text being written back rather than after the statement terminator.
+      edits.push({
+        start: rhsStart,
+        end: rhsEnd,
+        text: `${originalExpr};\n${generateIIFE(schema.exportName, schema, { ...options, pure: false })};`,
+      });
+      continue;
+    }
+
     edits.push({
       start: rhsStart,
       end: rhsEnd,
