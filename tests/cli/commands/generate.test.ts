@@ -25,9 +25,11 @@ import { generateValidator } from "#src/core/codegen/index.js";
 import { extractSchema } from "#src/core/extract/index.js";
 import type { SafeParseResult } from "#src/core/types.js";
 import { discoverSchemas } from "#src/discovery.js";
+import { expectParses } from "../../expect-parses.js";
 
 const fixturesDir = path.resolve(import.meta.dirname, "../../fixtures");
 const tmpOutputDir = fs.mkdtempSync(path.join(os.tmpdir(), "zod-compiler-generate-test-"));
+
 const outputFiles: string[] = [];
 
 afterEach(async () => {
@@ -127,6 +129,7 @@ describe("generateFile", () => {
     expect(result.schemaNames).toEqual(["validateUser"]);
 
     const content = await fs.promises.readFile(result.outputPath, "utf-8");
+    expectParses(content, result.outputPath);
     expect(content).toContain("function safeParse_validateUser");
   });
 
@@ -161,7 +164,22 @@ describe("generateFile", () => {
     expect(result.schemaNames).toEqual(["UserSchema"]);
 
     const content = await fs.promises.readFile(result.outputPath, "utf-8");
+    expectParses(content, result.outputPath);
     expect(content).toContain("function safeParse_UserSchema");
+  });
+
+  it("emits parseable output for a callback whose source is not an expression", async () => {
+    const filePath = path.join(fixturesDir, "method-shorthand-callback.ts");
+    const result = await generateFile(filePath, `${tmpOutputDir}/`, { autoDiscover: true });
+
+    expect(result).not.toBeNull();
+    if (!result) return;
+    outputFiles.push(result.outputPath);
+
+    const content = await fs.promises.readFile(result.outputPath, "utf-8");
+    expectParses(content, result.outputPath);
+    // The callback is CALLED through the schema reference, not spliced in.
+    expect(content).not.toContain("normalize(value)");
   });
 
   it("returns null when autoDiscover is false for plain Zod exports", async () => {
@@ -359,6 +377,7 @@ describe("generate E2E", () => {
     outputFiles.push(outputPath);
 
     const content = generateCompiledFileContent(codegenResults, "./simple-schema.ts");
+    expectParses(content, "simple-schema.compiled.ts");
     await writeCompiledFile(outputPath, content);
 
     // Verify file was written
@@ -407,6 +426,7 @@ describe("generate E2E", () => {
     outputFiles.push(outputPath);
 
     const content = generateCompiledFileContent(codegenResults, "./multi-schema.ts");
+    expectParses(content, "multi-schema.compiled.ts");
     await writeCompiledFile(outputPath, content);
 
     const written = await fs.promises.readFile(outputPath, "utf-8");
