@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
-import { isContextFreeUnaryCallback, tryCompileEffect } from "#src/core/extract/effects.js";
+import {
+  isContextFreeUnaryCallback,
+  observesSecondArgument,
+  tryCompileEffect,
+} from "#src/core/extract/effects.js";
 
 describe("isContextFreeUnaryCallback", () => {
   it("accepts ordinary zero- and one-parameter synchronous callbacks", () => {
@@ -23,6 +27,99 @@ describe("isContextFreeUnaryCallback", () => {
   it("rejects async and non-function values", () => {
     expect(isContextFreeUnaryCallback(async (value: unknown) => value)).toBe(false);
     expect(isContextFreeUnaryCallback(null)).toBe(false);
+  });
+});
+
+/**
+ * The inverse of the above, but answering a narrower question: it reports only
+ * what a READABLE signature proves, so an unreadable one (native, bound) is
+ * false rather than true. Callers rely on that asymmetry — a positive is a
+ * reason to delegate to zod, a negative is not a promise of anything.
+ */
+describe("observesSecondArgument", () => {
+  const shorthand = {
+    unary(this: void, v: unknown) {
+      return v;
+    },
+    rest(this: void, ...args: unknown[]) {
+      return args.length;
+    },
+    binary(this: void, v: unknown, _ctx: unknown) {
+      return v;
+    },
+  };
+
+  it("reports what the parameter list proves", () => {
+    expect(observesSecondArgument((v: unknown) => v)).toBe(false);
+    expect(observesSecondArgument(() => 1)).toBe(false);
+    expect(observesSecondArgument((v: unknown = 1) => v)).toBe(false);
+    expect(observesSecondArgument((v: unknown, _c: unknown) => v)).toBe(true);
+    expect(observesSecondArgument((v: unknown, _c: unknown = null) => v)).toBe(true);
+    expect(observesSecondArgument((...args: unknown[]) => args.length)).toBe(true);
+  });
+
+  /** A destructured rest binds within the FIRST argument, so it proves nothing. */
+  it("does not confuse a destructured rest with a rest parameter", () => {
+    expect(observesSecondArgument(({ a, ...rest }: Record<string, unknown>) => [a, rest])).toBe(
+      false,
+    );
+    expect(observesSecondArgument(([a, ...rest]: unknown[]) => [a, rest])).toBe(false);
+  });
+
+  /** A method shorthand is not an expression; its params come from re-parsing. */
+  it("reads a method shorthand's parameter list", () => {
+    expect(observesSecondArgument(shorthand.unary)).toBe(false);
+    expect(observesSecondArgument(shorthand.rest)).toBe(true);
+    expect(observesSecondArgument(shorthand.binary)).toBe(true);
+  });
+
+  /**
+   * A nested non-arrow function has its OWN `arguments`, so its use of the name
+   * says nothing about the callback. An arrow does not, so it still counts.
+   */
+  it("attributes `arguments` to the function that owns it", () => {
+    expect(
+      observesSecondArgument(function (this: void, v: unknown) {
+        const inner = function () {
+          return arguments.length;
+        };
+        return String(v) + String(inner(1));
+      }),
+    ).toBe(false);
+    expect(
+      observesSecondArgument(function (this: void) {
+        const inner = () => arguments.length;
+        return inner();
+      }),
+    ).toBe(true);
+  });
+
+  it("does not mistake `arguments` in a non-reference position", () => {
+    expect(observesSecondArgument((v: Record<string, unknown>) => v["arguments"])).toBe(false);
+    expect(observesSecondArgument((v: unknown) => ({ arguments: v }))).toBe(false);
+    expect(observesSecondArgument((v: unknown) => `${String(v)} arguments`)).toBe(false);
+  });
+
+  /** An unreadable signature is not evidence of anything either way. */
+  it("stays permissive for signatures it cannot read", () => {
+    expect(observesSecondArgument(Number)).toBe(false);
+    expect(observesSecondArgument(String)).toBe(false);
+    expect(observesSecondArgument(((v: unknown) => v).bind(null))).toBe(false);
+    expect(observesSecondArgument(null)).toBe(false);
+    expect(observesSecondArgument("nope")).toBe(false);
+  });
+
+  /**
+   * The object-literal re-parse must not be steerable: a source that closes the
+   * wrapper early would otherwise hand back an unrelated method's parameters.
+   */
+  it("rejects a source that escapes the object-literal wrapper", () => {
+    const liar = (...args: unknown[]) => args.length;
+    liar.toString = () => "a(){}}); ({b(...x){}";
+    expect(observesSecondArgument(liar)).toBe(false);
+    const tail = (v: unknown) => v;
+    tail.toString = () => "(v) => v; leftover";
+    expect(observesSecondArgument(tail)).toBe(false);
   });
 });
 

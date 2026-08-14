@@ -2,6 +2,7 @@ import type { SchemaIR } from "../../types.js";
 import {
   isContextFreeUnaryCallback,
   isReferenceablePredicate,
+  observesSecondArgument,
   tryCompileEffect,
 } from "../effects.js";
 import type { ExtractorContext, ZodDef } from "../types.js";
@@ -55,25 +56,42 @@ export function extractPipe(def: ZodDef, ctx: ExtractorContext): SchemaIR {
 
   const outDef = def.out?._zod?.def;
   if (outDef && outDef.type === "transform") {
-    const source = tryCompileEffect(outDef.transform);
-    if (source) {
-      const inIR = ctx.visit(def.in, "._zod.def.in");
-      return { type: "effect", effectKind: "transform", source, inner: inIR };
+    // Zod calls `transform(payload.value, payload)`; both compiled routes below
+    // pass the value alone. A callback whose parameter list PROVES it reads that
+    // second argument has to stay with zod — `fn.length` cannot see it, since it
+    // stops at the first default and ignores a rest element, so
+    // `(...args) => args.length` and `(v, ctx = null) => …` both slipped through
+    // and silently computed a different result compiled than under zod.
+    //
+    // A signature that cannot be READ (a native, a bound function) is not
+    // thereby suspect and keeps the reference route. That knowingly retains a
+    // narrow pre-existing hole — a variadic native like `String.fromCharCode`,
+    // or `((...args) => …).bind(null)`, reports length 0 and still sees only one
+    // argument compiled — because closing it would make the far more common
+    // `.transform(Number)` delegate, which measures slower than not compiling.
+    if (!observesSecondArgument(outDef.transform)) {
+      const source = tryCompileEffect(outDef.transform);
+      if (source) {
+        const inIR = ctx.visit(def.in, "._zod.def.in");
+        return { type: "effect", effectKind: "transform", source, inner: inIR };
+      }
+      // Not inlineable (the callback captures, or its source is not an
+      // expression). Call the user's own function through a schema reference
+      // rather than delegating: falling back costs the schema its compiled path
+      // AND adds the delegate wrapper on top, which measured SLOWER than plain
+      // zod.
+      if (ctx.refs && isReferenceablePredicate(outDef.transform)) {
+        const refIndex = ctx.refs.length;
+        ctx.refs.push({
+          schema: outDef.transform,
+          accessPath: `${ctx.path}._zod.def.out._zod.def.transform`,
+        });
+        const inIR = ctx.visit(def.in, "._zod.def.in");
+        return { type: "effect", effectKind: "transform", refIndex, inner: inIR };
+      }
     }
-    // Not inlineable (the callback captures). Call the user's own function
-    // through a schema reference rather than delegating: falling back costs the
-    // schema its compiled path AND adds the delegate wrapper on top, which
-    // measured SLOWER than plain zod. A two-argument transform is zod's `ctx`
-    // protocol and an async one returns a promise, so both still delegate.
-    if (ctx.refs && isReferenceablePredicate(outDef.transform)) {
-      const refIndex = ctx.refs.length;
-      ctx.refs.push({
-        schema: outDef.transform,
-        accessPath: `${ctx.path}._zod.def.out._zod.def.transform`,
-      });
-      const inIR = ctx.visit(def.in, "._zod.def.in");
-      return { type: "effect", effectKind: "transform", refIndex, inner: inIR };
-    }
+    // A ctx-taking transform is zod's issue-collection protocol and an async one
+    // returns a promise, so both delegate.
     return ctx.fallback("transform");
   }
   const inIR = ctx.visit(def.in, "._zod.def.in");

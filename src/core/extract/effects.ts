@@ -96,6 +96,113 @@ function asFunctionNode(ast: Node, source: string): FunctionNode | null {
 }
 
 /**
+ * Recover a callback's parameter list from its source, or null when the source
+ * does not reveal one. An arrow or function expression parses directly; a method
+ * shorthand lifted off an object literal (`normalize(v) { … }`) is not an
+ * expression on its own but becomes one wrapped back in the braces it came from.
+ * A native or bound function reveals nothing — `[native code]` has no parameter
+ * list to read, and skipping it before either parse keeps two thrown acorn
+ * exceptions off the hot path for `.transform(Number)` and friends.
+ */
+function recoverSignature(source: string): FunctionNode | null {
+  if (source.includes("[native code]")) return null;
+  try {
+    const ast = parseExpressionAt(source, 0, { ecmaVersion: "latest", sourceType: "module" });
+    const fnNode = asFunctionNode(ast, source);
+    if (fnNode !== null) return fnNode;
+  } catch {
+    // Not an expression on its own; try the object-literal form below.
+  }
+  try {
+    const wrapped = `({${source}})`;
+    const ast = parseExpressionAt(wrapped, 0, { ecmaVersion: "latest", sourceType: "module" });
+    // Same full-consumption rule asFunctionNode applies: a source that closes
+    // the wrapper early and reopens it would otherwise yield the WRONG method's
+    // parameter list. Acorn returns the inner object expression, so the only
+    // text that may remain is the wrapper's own closing paren.
+    if (wrapped.slice(ast.end).trim() !== ")") return null;
+    const properties = (ast as Node & { properties?: (Node & { value?: Node })[] }).properties;
+    if (properties?.length !== 1) return null;
+    const value = properties[0]?.value;
+    return value !== undefined && value.type === "FunctionExpression"
+      ? (value as FunctionNode)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Does a body reference ITS OWN `arguments`?
+ *
+ * A nested non-arrow function gets a fresh `arguments` binding, so its use of
+ * the name says nothing about the callback being classified — descending into
+ * one would fail a perfectly safe callback and cost it its compiled path. An
+ * arrow has no `arguments` of its own and so is walked.
+ */
+function referencesOwnArguments(node: Node): boolean {
+  if (node.type === "Identifier") return (node as Node & { name: string }).name === "arguments";
+  if (node.type === "FunctionExpression" || node.type === "FunctionDeclaration") return false;
+  // `obj.arguments` and `{ arguments: v }` name a property, not the binding —
+  // the same positions collectIdentifierRefs skips.
+  if (node.type === "MemberExpression") {
+    const member = node as Node & { object: Node; property: Node; computed: boolean };
+    if (referencesOwnArguments(member.object)) return true;
+    return member.computed && referencesOwnArguments(member.property);
+  }
+  if (node.type === "Property") {
+    const property = node as Node & { key: Node; value: Node; computed: boolean };
+    if (property.computed && referencesOwnArguments(property.key)) return true;
+    return referencesOwnArguments(property.value);
+  }
+  for (const key of Object.keys(node)) {
+    if (key === "type" || key === "start" || key === "end") continue;
+    const child = (node as unknown as Record<string, unknown>)[key];
+    if (!child || typeof child !== "object") continue;
+    const children = Array.isArray(child) ? child : [child];
+    for (const item of children) {
+      if (item && typeof item === "object" && "type" in item) {
+        if (referencesOwnArguments(item as Node)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * The three ways a parsed signature can betray zod's second argument. Shared so
+ * that {@link observesSecondArgument} and {@link isContextFreeUnaryCallback},
+ * which are exact inverses of it, cannot drift apart.
+ */
+function signatureObservesSecondArgument(fnNode: FunctionNode): boolean {
+  const params = fnNode.params ?? [];
+  if (params.length > 1) return true;
+  if (params.some((param) => param.type === "RestElement")) return true;
+  return fnNode.body !== undefined && referencesOwnArguments(fnNode.body);
+}
+
+/**
+ * Does this callback DEMONSTRABLY observe zod's second (parse-context) argument?
+ *
+ * Only a positive answer is trustworthy. Zod calls `transform(value, payload)`
+ * while every compiled route passes the value alone, so a callback that reads
+ * the second argument must be left to zod — but a callback whose signature
+ * cannot be read (a native like `Number`, a bound function) is NOT thereby
+ * suspect, and refusing those costs a very common idiom its compiled path for
+ * no correctness gain: `.transform(Number)` delegating measured SLOWER than not
+ * compiling at all. So this reports only what the parsed parameter list proves.
+ *
+ * `fn.length` cannot answer this at all: it stops counting at the first default
+ * and ignores a rest element, so `(...args) => args.length` reports 0 and
+ * `(v, ctx = null) => …` reports 1.
+ */
+export function observesSecondArgument(fn: unknown): boolean {
+  if (typeof fn !== "function") return false;
+  const fnNode = recoverSignature(fn.toString());
+  return fnNode !== null && signatureObservesSecondArgument(fnNode);
+}
+
+/**
  * Can a callback be invoked with the value alone without hiding Zod's second
  * parse-context argument? `fn.length` is insufficient here: default and rest
  * parameters can observe that argument while still reporting length 0 or 1.
@@ -114,11 +221,7 @@ export function isContextFreeUnaryCallback(fn: unknown): boolean {
   }
   const fnNode = asFunctionNode(ast, source);
   if (fnNode === null) return false;
-  if ((fnNode.params?.length ?? 0) > 1) return false;
-  if (fnNode.params?.some((param) => param.type === "RestElement")) return false;
-  const refs = new Set<string>();
-  if (fnNode.body) collectIdentifierRefs(fnNode.body, refs);
-  return !refs.has("arguments");
+  return !signatureObservesSecondArgument(fnNode);
 }
 
 /**
