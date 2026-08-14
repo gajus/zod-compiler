@@ -124,12 +124,19 @@ export function jit<T extends ZodType>(
   // schema — it captures the original `parseAsync` / `safeParseAsync` as its
   // throw paths, and capturing a stub there would loop back into itself.
   const original = new Map<string, PropertyDescriptor | undefined>();
-  for (const slot of SLOTS) {
-    original.set(slot, Object.getOwnPropertyDescriptor(target, slot));
+  try {
+    for (const slot of SLOTS) {
+      original.set(slot, Object.getOwnPropertyDescriptor(target, slot));
+    }
+  } catch {
+    // The target answers a descriptor query with a throw — an exotic wrapper,
+    // not anything Zod built. Without a snapshot there is nothing to roll back
+    // to, so install nothing and hand back the schema exactly as it came.
+    return schema as T & CompiledSchema<output<T>>;
   }
 
-  // Installing the accessors is the one step that can throw rather than degrade:
-  // a slot locked non-configurable (a future Zod, another wrapper) makes
+  // Installing the accessors is the step most likely to throw rather than
+  // degrade: a slot locked non-configurable (a future Zod, another wrapper) makes
   // defineProperty raise, and `jit()` is called at module scope — so an
   // unhandled throw here takes down the importing app at boot. Roll back to
   // whatever Zod had and leave the schema alone instead.
@@ -172,8 +179,10 @@ export function jit<T extends ZodType>(
 
 /**
  * Front every installed method with a compile-on-read accessor. `trigger`
- * materializes the schema, which replaces these accessors with the compiled
- * methods (or restores Zod's own), so the read that follows never re-enters.
+ * materializes the schema, which normally replaces these accessors with the
+ * compiled methods (or restores Zod's own). When that replacement does not take,
+ * the getter falls back to the snapshot rather than re-reading the slot — see
+ * the re-entrancy note in the body.
  */
 function installAccessors(
   target: Record<string, unknown>,
@@ -182,18 +191,34 @@ function installAccessors(
   cancel: () => void,
 ): void {
   for (const slot of SLOTS) {
+    // Re-entrancy is settled structurally rather than by inspection. Reading the
+    // slot again is how this getter normally hands over — to the compiled method
+    // materialize() installed, or to Zod's own that restore() put back — but the
+    // handover can fail to take: a target frozen after `jit()` refuses both, and
+    // a second copy of this module in the graph leaves ITS accessor on the slot,
+    // so the two bounce reads between them. `trigger()` is spent by then, so
+    // either way the read recurses until the stack blows. While a read is already
+    // in flight, serve Zod's own method from the snapshot: a schema that cannot
+    // be compiled still parses.
+    let reading = false;
+    const read = function (): unknown {
+      if (reading) return fromSnapshot(target, original, slot);
+      reading = true;
+      try {
+        trigger();
+        if (stillFrontedBy(target, slot, read)) return fromSnapshot(target, original, slot);
+        return target[slot];
+      } finally {
+        reading = false;
+      }
+    };
     Object.defineProperty(target, slot, {
       configurable: true,
       // Preserve Zod's own visibility: parse/safeParse/... are enumerable own
       // properties, `~standard` is not. `is` does not exist on a Zod schema, so
       // it follows the non-enumerable convention `compile()` already uses.
       enumerable: original.get(slot)?.enumerable ?? false,
-      get() {
-        trigger();
-        // Whatever now occupies the slot: the compiled method, or — if
-        // compilation was impossible — Zod's own, put back by restore().
-        return target[slot];
-      },
+      get: read,
       set(value: unknown) {
         // Someone overwrote a method before first use (a test double, another
         // wrapper). Their value wins, and compilation is cancelled outright —
@@ -208,6 +233,41 @@ function installAccessors(
       },
     });
   }
+}
+
+/**
+ * Is `slot` still fronted by this very accessor — i.e. did the replacement that
+ * `trigger()` was supposed to perform not take? A target that will not answer
+ * the question is assumed to still hold it, since reading the slot to find out
+ * is the recursion being avoided.
+ */
+function stillFrontedBy(
+  target: Record<string, unknown>,
+  slot: string,
+  getter: () => unknown,
+): boolean {
+  try {
+    return Object.getOwnPropertyDescriptor(target, slot)?.get === getter;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * What Zod had in `slot`, taken from the snapshot made before installation.
+ * `undefined` for `is`, which no plain Zod schema carries — the same thing every
+ * other degradation path leaves there.
+ */
+function fromSnapshot(
+  target: Record<string, unknown>,
+  original: ReadonlyMap<string, PropertyDescriptor | undefined>,
+  slot: string,
+): unknown {
+  const descriptor = original.get(slot);
+  if (descriptor === undefined) return undefined;
+  // `~standard` is a lazy getter on a Zod schema, so invoke it rather than
+  // reading a `value` it does not have.
+  return descriptor.get === undefined ? descriptor.value : descriptor.get.call(target);
 }
 
 /**
@@ -235,9 +295,18 @@ function restore(
   original: ReadonlyMap<string, PropertyDescriptor | undefined>,
 ): void {
   for (const slot of SLOTS) {
-    const descriptor = original.get(slot);
-    if (descriptor === undefined) delete target[slot];
-    else Object.defineProperty(target, slot, descriptor);
+    // Per slot, because this also runs as the rollback for a failed install: a
+    // target that refuses one slot must not cost the others their restoration.
+    // A slot left fronted by its accessor still reads correctly — the getter
+    // serves Zod's own method from the snapshot — but it keeps a redundant
+    // indirection, so restoring what can be restored is worth the try/catch.
+    try {
+      const descriptor = original.get(slot);
+      if (descriptor === undefined) delete target[slot];
+      else Object.defineProperty(target, slot, descriptor);
+    } catch {
+      // Nothing further to try for this slot.
+    }
   }
 }
 

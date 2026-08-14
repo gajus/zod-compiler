@@ -51,6 +51,15 @@ function safeParseName(schema: object): string | undefined {
   return value?.name;
 }
 
+/**
+ * Is `slot` fronted by a getter rather than holding a method outright? Only
+ * meaningful for the slots Zod defines as plain values — `~standard` is a lazy
+ * getter on an untouched schema, so this cannot distinguish it.
+ */
+function isAccessor(target: object, slot: string): boolean {
+  return typeof Object.getOwnPropertyDescriptor(target, slot)?.get === "function";
+}
+
 /** The `.name` Zod's own `safeParse` carries — how a test tells "not compiled". */
 const ZOD_SAFE_PARSE_NAME = safeParseName(z.object({ a: z.string() }));
 
@@ -304,6 +313,128 @@ describe("jit() — degradation", () => {
       writable: false,
     });
     expect(() => jit(schema)).not.toThrow();
+    expect(schema.safeParse({ a: "xy" }).success).toBe(true);
+    expect(schema.safeParse({ a: "x" }).success).toBe(false);
+  });
+
+  /**
+   * The same promise, held against a target that fails ASYMMETRICALLY — it
+   * answers the descriptor snapshot or the install with a throw. Rolling back is
+   * itself a `defineProperty`, so a target that refuses that too could make the
+   * rollback escape the very guard meant to contain it.
+   */
+  it("does not throw when the target refuses a descriptor query", () => {
+    const schema = z.object({ a: z.string().min(2) });
+    const hostile = new Proxy(schema, {
+      getOwnPropertyDescriptor: () => {
+        throw new Error("descriptor query refused");
+      },
+    });
+    expect(() => jit(hostile)).not.toThrow();
+    // Untouched, so Zod's own methods still answer through the proxy.
+    expect(hostile.safeParse({ a: "xy" }).success).toBe(true);
+  });
+
+  it("does not throw when the target refuses defineProperty on every slot", () => {
+    const schema = z.object({ a: z.string().min(2) });
+    const hostile = new Proxy(schema, {
+      defineProperty: () => {
+        throw new Error("defineProperty refused");
+      },
+    });
+    expect(() => jit(hostile)).not.toThrow();
+    expect(hostile.safeParse({ a: "xy" }).success).toBe(true);
+    expect(hostile.safeParse({ a: "x" }).success).toBe(false);
+  });
+
+  /**
+   * Installation reaches the slots before `safeParseAsync` and then throws, so
+   * rollback has real work: those slots must go back to Zod's own descriptors
+   * even though the refusing one cannot.
+   */
+  it("rolls back the slots it can when the target refuses one", () => {
+    const schema = z.object({ a: z.string().min(2) });
+    const seenKeys: string[] = [];
+    const hostile = new Proxy(schema, {
+      defineProperty: (target, key, descriptor) => {
+        seenKeys.push(String(key));
+        if (key === "safeParseAsync") throw new Error("defineProperty refused");
+        return Reflect.defineProperty(target, key, descriptor);
+      },
+    });
+    expect(() => jit(hostile)).not.toThrow();
+    // Every slot installed before the refusal was also rolled back — twice in
+    // `seenKeys`. Pins the partial path itself, not the order SLOTS happens to
+    // have: reorder it and this fails rather than silently testing nothing.
+    const installedThenRestored = seenKeys.filter((key, i) => seenKeys.indexOf(key) !== i);
+    expect(installedThenRestored.length).toBeGreaterThan(0);
+    for (const slot of installedThenRestored) {
+      expect(isAccessor(schema, slot)).toBe(false);
+    }
+    expect(hostile.safeParse({ a: "xy" }).success).toBe(true);
+    expect(hostile.safeParse({ a: "x" }).success).toBe(false);
+  });
+
+  /**
+   * A target that refuses EVERY rollback keeps its accessors, so the getter is
+   * the last line of defence: `trigger()` is spent, and re-reading the slot
+   * would re-enter the getter until the stack blows. It must serve Zod's own
+   * method from the snapshot instead.
+   */
+  it("keeps a schema usable when no slot can be rolled back", () => {
+    const schema = z.object({ a: z.string().min(2) });
+    let installs = 0;
+    const hostile = new Proxy(schema, {
+      defineProperty: (target, key, descriptor) => {
+        installs += 1;
+        if (installs > 1) throw new Error("defineProperty refused");
+        return Reflect.defineProperty(target, key, descriptor);
+      },
+    });
+    expect(() => jit(hostile)).not.toThrow();
+    // `parse` is the slot that took an accessor and could not be rolled back.
+    expect(isAccessor(schema, "parse")).toBe(true);
+    expect(() => hostile.parse({ a: "xy" })).not.toThrow();
+    expect(hostile.parse({ a: "xy" })).toStrictEqual({ a: "xy" });
+    expect(() => hostile.parse({ a: "x" })).toThrow();
+  });
+
+  /**
+   * `Object.freeze(jit(schema))` is an ordinary defensive export. Freezing after
+   * installation means the first read triggers a materialize whose restore the
+   * frozen object refuses — the same stranding, reached without any Proxy.
+   */
+  it("keeps a schema usable when it is frozen after jit()", () => {
+    const schema = Object.freeze(jit(z.object({ a: z.string().min(2) })));
+    expect(schema.safeParse({ a: "xy" }).success).toBe(true);
+    expect(schema.safeParse({ a: "x" }).success).toBe(false);
+    expect(schema.parse({ a: "xy" })).toStrictEqual({ a: "xy" });
+    // The accessor is still there — the frozen target refused every handover —
+    // so these reads came through the getter's snapshot fallback, which is the
+    // path under test.
+    expect(isAccessor(schema, "safeParse")).toBe(true);
+    const standard = (schema as unknown as { "~standard": { validate: (v: unknown) => unknown } })[
+      "~standard"
+    ];
+    expect(standard.validate({ a: "xy" })).toStrictEqual({ value: { a: "xy" } });
+  });
+
+  /**
+   * Two copies of this module in one graph — a duplicated dependency, an
+   * ESM+CJS dual load, a bundler-split chunk. `seen` is per-module, so both
+   * install on the same schema and each leaves an accessor the other does not
+   * recognise. Freezing then blocks both handovers, and the two getters bounced
+   * reads between themselves until the stack blew. Needs no hostile Proxy.
+   */
+  it("keeps a schema usable when two copies of jit() install on it", async () => {
+    const { jit: otherJit } = (await import("#src/jit.js?duplicate-instance")) as {
+      jit: typeof jit;
+    };
+    expect(otherJit).not.toBe(jit);
+    const schema = z.object({ a: z.string().min(2) });
+    jit(schema);
+    otherJit(schema);
+    Object.freeze(schema);
     expect(schema.safeParse({ a: "xy" }).success).toBe(true);
     expect(schema.safeParse({ a: "x" }).success).toBe(false);
   });
