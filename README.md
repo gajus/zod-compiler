@@ -188,6 +188,7 @@ has neither — see [React Native / Expo](#react-native--expo).
 | `apply`       | `"build" \| "serve" \| "all"`    | builds + Vitest | **Vite only**: when the plugin runs                                                                         |
 | `codegenMode` | `"lean" \| "inline"`             | auto            | `"inline"` emits helpers per file; needed for transpile-only esbuild — see [SWC](#swc)                      |
 | `cache`       | `boolean \| string`              | `true`          | Persistent transform cache in `node_modules/.cache/zod-compiler`                                            |
+| `parallel`    | `boolean \| number`              | `false`         | Run transforms on worker threads — see [Parallel Transforms](#parallel-transforms)                          |
 
 ```typescript
 zodCompiler({
@@ -411,6 +412,41 @@ expensive one — later runs hit the persistent cache.
 
 Scope discovery with `include`; set `ZOD_COMPILER_TIMING=1` for a per-phase breakdown. Files that
 never mention `zod` cost nothing.
+
+### Parallel Transforms
+
+Discovery runs one file at a time on the bundler's own thread — executions are serialized so
+concurrent transforms cannot double-execute a shared dependency. `parallel` moves whole transforms
+onto worker threads instead, each with its own loader and module cache, which is what makes running
+them at the same time sound.
+
+```typescript
+zodCompiler({ parallel: true }); // one worker per core, less one, capped at 4
+zodCompiler({ parallel: 2 }); // or pick the count yourself
+```
+
+**Whether it pays depends on your import graph, not your core count.** A module shared by many
+schema files is executed once in-process and once _per worker_ here. Files with independent graphs
+win; files chained through each other can lose. Both rows below are 120 files of 8 schemas each, on
+12 performance cores — the only difference is whether the files import one another:
+
+| Transform (120 files) | in-process |      n=2 |      n=4 |      n=8 |     n=12 |
+| --------------------- | ---------: | -------: | -------: | -------: | -------: |
+| independent graphs    |   3,633 ms | 2,263 ms | 1,508 ms | 1,786 ms | 2,119 ms |
+| 120-deep import chain |     945 ms |   977 ms | 1,045 ms | 1,796 ms | 3,332 ms |
+
+So measure before adopting it — `ZOD_COMPILER_TIMING=1` prints the per-phase breakdown, and the
+`discover` line is the one workers move. Throughput peaks around four workers and declines past it:
+beyond that point every extra worker re-executes more graph, holds another copy of it in memory, and
+adds to the generated source that the single receiving thread has to deserialize.
+
+Emitted code, sourcemaps and cache entries are identical either way — `parallel` is not part of the
+cache key, so a parallel build and a serial one share the same cache. The disk cache and dependency
+crawling stay on the bundler thread, and if a worker cannot start or dies mid-build its file is
+retried in-process rather than failing the build.
+
+A **warm cache still beats parallelism**, and costs no memory — reach for `parallel` for the cold
+runs the cache cannot help with.
 
 ## Framework Examples
 

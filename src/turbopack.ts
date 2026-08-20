@@ -60,10 +60,15 @@ import { RUNTIME_PACKAGE_ID } from "./unplugin/virtual.js";
  * `buildEnd` flush that a loader has no equivalent for, and loader hosts keep
  * their own persistent result cache — Turbopack's is keyed on content plus the
  * dependencies declared below, which is what this would have re-implemented.
+ *
+ * No `parallel`: the concurrency is the host's to own. Turbopack already runs
+ * loaders across its own worker pool, so a pool per loader invocation would
+ * multiply threads against a machine that is already saturated — and the
+ * module-cache staleness stamps below assume one shared execution cache.
  */
 export type ZodCompilerTurbopackOptions = Omit<
   ZodCompilerPluginOptions,
-  "apply" | "cache" | "codegenMode" | "hoist"
+  "apply" | "cache" | "codegenMode" | "hoist" | "parallel"
 > & {
   hoist?: boolean | { schemaNamePattern?: string | null | undefined } | undefined;
   /**

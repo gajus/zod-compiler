@@ -544,6 +544,13 @@ export class DiskCache {
     this.pending = [];
     const snapshot = this.superset === null ? null : this.superset();
     if (snapshot === null) return;
+    // Every pending entry got here by RUNNING discovery, so the set of modules
+    // that discovery executed cannot be empty. An empty snapshot means the
+    // provider lost track of them — the loader was invalidated between save
+    // and flush, or transforms ran somewhere this process cannot observe — and
+    // an entry with no deps validates as fresh forever. Declining costs one
+    // recompute; persisting would serve that stale result indefinitely.
+    if (snapshot.length === 0) return;
     this.ensureDir();
     const built = this.buildDepset(snapshot);
     if (built === null) return;

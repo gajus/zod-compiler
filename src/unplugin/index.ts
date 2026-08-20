@@ -5,14 +5,22 @@ import { getFirstPartyModulePaths, invalidateModuleCache } from "../loader.js";
 import { collectStaticDeps, resetDepGraphMemo } from "./dep-graph.js";
 import { DiskCache, resetDepValidationMemo } from "./disk-cache.js";
 import {
+  poolTransformOptions,
+  PoolUnavailableError,
+  resolvePoolSize,
+  TransformPool,
+} from "./pool.js";
+import {
   log,
   shouldTransform,
   TRANSFORM_ID_FILTER,
   transformCodeFilter,
+  type TransformOutput,
   type TransformSourceMap,
   transformCodeWithMap,
+  warn,
 } from "./transform.js";
-import type { BuildStats, ZodCompilerPluginOptions } from "./types.js";
+import type { BuildStats, TransformOptions, ZodCompilerPluginOptions } from "./types.js";
 import { BuildStatsAccumulator } from "./types.js";
 import {
   loadVirtual,
@@ -85,6 +93,39 @@ export const unplugin = createUnplugin(
     // Entries self-validate against dep content hashes, so watch invalidation
     // semantics carry across processes.
     const cacheOption = options?.cache ?? true;
+    // Opt-in worker pool. Null when disabled, or when the worker entry cannot
+    // be located (the plugin has been bundled into a single file by a
+    // consumer) — transforms then run in-process exactly as before.
+    const poolSize = resolvePoolSize(options?.parallel);
+    const pool = TransformPool.create(poolSize);
+    /** Dedupes the in-process-fallback warning to one per build. */
+    let warnedPoolFallback = false;
+    if (poolSize > 0 && pool === null) {
+      warn(
+        "parallel was requested but the transform worker entry could not be located " +
+          "(is zod-compiler bundled into your build?). Falling back to in-process transforms.",
+      );
+    }
+    /**
+     * Executed-module superset for the disk cache's deferred entries.
+     *
+     * With a pool, discovery happens in the workers, so this process's own
+     * loader has executed nothing and `getFirstPartyModulePaths()` alone would
+     * report an empty (or absent) set — silently dropping every deferred
+     * entry, which on large graphs is most of them. Both sides are unioned:
+     * the workers' reports, plus anything the in-process fallback executed
+     * here. A worker that cannot track modules at all (Bun/Deno native import)
+     * reports null, and null wins — the cache declines to persist rather than
+     * record a set it knows is incomplete.
+     */
+    const executedModuleSuperset = (): string[] | null => {
+      const local = getFirstPartyModulePaths();
+      if (pool === null) return local;
+      const remote = pool.firstPartyModulePaths();
+      if (remote === null) return null;
+      if (local === null) return remote;
+      return [...new Set([...local, ...remote])];
+    };
     const diskCache =
       cacheOption === false
         ? null
@@ -100,7 +141,7 @@ export const unplugin = createUnplugin(
                   ? String(options.hoist.schemaNamePattern ?? "default")
                   : (options?.hoist ?? true),
             }),
-            getFirstPartyModulePaths,
+            executedModuleSuperset,
           );
     // Vite only (other bundlers ignore the field): when the plugin runs.
     // The default compiles production builds AND test runs — tests should
@@ -194,11 +235,7 @@ export const unplugin = createUnplugin(
             }
           }
 
-          let discoveryRan = false;
-          let substantialWork = false;
-          let uncacheable = false;
-          let fileStats: BuildStats | null = null;
-          const output = await transformCodeWithMap(code, id, {
+          const transformOptions: TransformOptions = {
             mode,
             runtimeId,
             verbose,
@@ -206,20 +243,66 @@ export const unplugin = createUnplugin(
             compact,
             autoDiscover,
             hoist: options?.hoist,
-            onDiscovery() {
-              discoveryRan = true;
-            },
-            onSubstantialWork() {
-              substantialWork = true;
-            },
-            onUncacheableResult() {
-              uncacheable = true;
-            },
-            onBuildStats(s) {
-              stats.add(s);
-              fileStats = s;
-            },
-          });
+          };
+
+          let discoveryRan = false;
+          let substantialWork = false;
+          let uncacheable = false;
+          let fileStats: BuildStats | null = null;
+
+          const inProcess = async (): Promise<TransformOutput | null> =>
+            transformCodeWithMap(code, id, {
+              ...transformOptions,
+              onDiscovery() {
+                discoveryRan = true;
+              },
+              onSubstantialWork() {
+                substantialWork = true;
+              },
+              onUncacheableResult() {
+                uncacheable = true;
+              },
+              onBuildStats(s) {
+                fileStats = s;
+              },
+            });
+
+          let output: TransformOutput | null;
+          if (pool === null) {
+            output = await inProcess();
+          } else {
+            try {
+              // The worker reports through flags what the in-process path
+              // reports through callbacks; everything downstream reads the
+              // same four values either way.
+              const r = await pool.run(code, id, poolTransformOptions(transformOptions));
+              output = r.output;
+              discoveryRan = r.discoveryRan;
+              substantialWork = r.substantialWork;
+              uncacheable = r.uncacheable;
+              fileStats = r.stats;
+            } catch (error) {
+              // A transform's own error propagates — it will fail identically
+              // in-process, and retrying would only pay discovery twice. Only
+              // a pool fault (a worker that died holding this task) is worth
+              // redoing on this thread, so a single unhealthy worker degrades
+              // the build's speed rather than breaking it.
+              if (!(error instanceof PoolUnavailableError)) throw error;
+              // Once per build. A pool that is broken rather than unlucky
+              // fails for every remaining file, and a warning per file would
+              // bury the build's real output under thousands of copies.
+              if (!warnedPoolFallback) {
+                warnedPoolFallback = true;
+                warn(
+                  `${error.message} — compiling ${id} in-process instead. ` +
+                    `Later files take the same path without repeating this warning.`,
+                );
+              }
+              output = await inProcess();
+            }
+          }
+
+          if (fileStats !== null) stats.add(fileStats);
           const result = output === null ? null : output.code;
           const map = output === null ? null : output.map;
           cache.set(id, { code, result, map });
@@ -286,6 +369,9 @@ export const unplugin = createUnplugin(
         // deferred entries predate the change and must not flush against
         // post-change dep hashes.
         invalidateModuleCache();
+        // Workers hold their own module caches; the broadcast is ordered ahead
+        // of every transform posted after this point.
+        pool?.invalidate();
         resetDepValidationMemo();
         resetDepGraphMemo();
         diskCache?.dropDeferred();

@@ -33,10 +33,14 @@ export interface SwcCoreLike {
  * persistent cache, so hosts that need one must key transform results on
  * content themselves. `include`/`exclude` are honored: files they reject
  * pass through to SWC without the zod-compiler step.
+ *
+ * No `parallel` either: this is a per-file transformer, so whatever drives it
+ * decides how many files run at once. A pool owned by a single `transform()`
+ * call would compete with that instead of adding to it.
  */
 export type ZodCompilerSwcOptions = Omit<
   ZodCompilerPluginOptions,
-  "apply" | "cache" | "codegenMode"
+  "apply" | "cache" | "codegenMode" | "parallel"
 > & {
   /**
    * SWC is a transformer, not a bundler plugin host, so inline is the safe

@@ -3,7 +3,7 @@ import type { HoistOptions } from "./hoist.js";
 
 export interface TransformOptions {
   mode: CodegenMode;
-  runtimeId?: string;
+  runtimeId?: string | undefined;
   zodCompat?: boolean | undefined;
   /** Compact output: compile only the fast path; delegate cold errors to the retained Zod schema. */
   compact?: boolean | undefined;
@@ -183,6 +183,41 @@ export interface ZodCompilerPluginOptions {
    * @default determined by bundler
    */
   codegenMode?: "lean" | "inline" | undefined;
+  /**
+   * Run transforms on worker threads instead of the bundler's own (Node.js only).
+   *
+   * Schema discovery executes each file's import graph in-process, and the
+   * loader serializes those executions so concurrent transforms cannot
+   * double-execute a shared dependency — so a cold build compiles one file at
+   * a time on one thread. Workers lift that limit: each owns a private loader
+   * and module cache, which is exactly why running several concurrently is
+   * sound. Measured on 120 files of deeply nested schemas, 3,633 ms sequential
+   * became 1,508 ms at four workers.
+   *
+   * **Whether it pays depends on your import graph, not your core count.** A
+   * dependency shared by many schema files is executed once in-process and
+   * once PER WORKER here, so files with independent graphs win big and files
+   * chained through each other can lose: the same fixture rewired into a
+   * 120-deep import chain measured 1,045 ms at four workers against 945 ms
+   * in-process. Measure with `ZOD_COMPILER_TIMING=1` before adopting it.
+   *
+   * Opt-in for that reason and for memory: every worker holds its own copy of
+   * zod and of the graph it executed. That compounds with runners which
+   * already shard across processes (Vitest pools, Nx, Turborepo), where the
+   * cores are spoken for.
+   *
+   * - `false` (default): transforms run in-process, exactly as before.
+   * - `true`: one worker per core, less one for the bundler, capped at 4 —
+   *   throughput peaks around four and declines past it.
+   * - `<number>`: exactly that many workers (1-32).
+   *
+   * Falls back to in-process transforms — with a warning — if workers cannot
+   * be started. The disk cache, the static dependency crawl and all result
+   * bookkeeping stay on the bundler thread either way, so cache contents and
+   * emitted output are identical to a serial build.
+   * @default false
+   */
+  parallel?: boolean | number | undefined;
   /**
    * Persistent transform-result cache (Node.js only).
    *

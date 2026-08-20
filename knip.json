@@ -6,6 +6,7 @@
     ".": {
       "entry": [
         "src/unplugin/{bun,esbuild,farm,rolldown,rollup,rsbuild,rspack,vite,webpack}.ts",
+        "src/unplugin/pool-worker.ts",
         "tests/compat.mjs"
       ],
       "project": ["src/**/*.ts", "tests/**/*.{ts,mjs}"],

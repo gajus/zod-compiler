@@ -273,7 +273,7 @@ export function log(msg: string): void {
   console.log(`[zod-compiler] ${msg}`);
 }
 
-function warn(msg: string): void {
+export function warn(msg: string): void {
   // oxlint-disable-next-line no-console -- build output
   console.warn(`[zod-compiler] ${msg}`);
 }
