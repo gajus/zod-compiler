@@ -25,16 +25,51 @@ const OPTIONS: TransformOptions = {
 };
 
 /**
+ * Booting a worker dominates everything these tests measure: the first task on
+ * a fresh worker costs ~130 ms through `dist/` and ~780 ms here, where the
+ * bootstrap loads the compiler's TypeScript through jiti — while a task on an
+ * already-warm worker costs about 1 ms. A pool per test therefore spent its
+ * whole runtime on boots, and on a 2-vCPU CI runner two of them ran past the
+ * 5 s default and failed the release.
+ *
+ * So tests that only READ share one pool, which is also how a build uses it —
+ * booted once, reused for every file. Tests that mutate pool state (invalidate,
+ * kill workers, dispose) still take a private one via {@link freshPool}.
+ */
+let shared: TransformPool | undefined;
+function sharedPool(): TransformPool {
+  shared ??= freshPool(2);
+  return shared;
+}
+
+/**
  * Real workers, not a stand-in. The pool boots them from `src/` through its
  * jiti bootstrap here and from `dist/` when published, and the point of these
  * tests is that a transform crossing a thread boundary produces what an
  * in-process one does — a fake executor would assume exactly what needs proving.
  */
-function pool(size = 2): TransformPool {
+function freshPool(size = 2): TransformPool {
   const created = TransformPool.create(size);
   if (created === null) throw new Error("worker entry not resolvable from tests");
   return created;
 }
+
+/**
+ * Budget for a test that boots its own worker. Generous on purpose: a boot
+ * measured ~780 ms on a 12-core dev machine and over 5 s on a 2-vCPU CI runner
+ * competing with vitest's own file-level workers, and the default 5 s left no
+ * headroom for the slowest of them.
+ *
+ * The ceiling is the workflow's own `timeout-minutes: 10`. Around a dozen tests
+ * here boot a worker, so even if every one of them hung this file would spend
+ * ~6 min before failing — still leaving the job room to report a test failure
+ * rather than dying as an opaque cancellation.
+ */
+const BOOTS_A_WORKER = 30_000;
+
+// File-scoped, so a genuine hang anywhere else in the suite still fails fast
+// against the 5 s default.
+vi.setConfig({ hookTimeout: BOOTS_A_WORKER, testTimeout: BOOTS_A_WORKER });
 
 /** Files written into tests/fixtures so their `zod` / `#src` imports resolve. */
 const written: string[] = [];
@@ -58,6 +93,7 @@ afterEach(() => {
 
 afterAll(async () => {
   await disposeAllPools();
+  shared = undefined;
 });
 
 describe("resolvePoolSize", () => {
@@ -123,7 +159,7 @@ describe("TransformPool", () => {
     const code = fs.readFileSync(file, "utf8");
 
     const expected = await transformCodeWithMap(code, file, OPTIONS);
-    const actual = await pool(2).run(code, file, poolTransformOptions(OPTIONS));
+    const actual = await sharedPool().run(code, file, poolTransformOptions(OPTIONS));
 
     expect(actual.output?.code).toBe(expected?.code);
     expect(actual.output?.map).toEqual(expected?.map);
@@ -133,7 +169,7 @@ describe("TransformPool", () => {
     const file = fixture("flags", schemaSource(3));
     const code = fs.readFileSync(file, "utf8");
 
-    const result = await pool(1).run(code, file, poolTransformOptions(OPTIONS));
+    const result = await sharedPool().run(code, file, poolTransformOptions(OPTIONS));
 
     expect(result.discoveryRan).toBe(true);
     expect(result.substantialWork).toBe(true);
@@ -145,7 +181,7 @@ describe("TransformPool", () => {
     const files = Array.from({ length: 6 }, (_unused, i) =>
       fixture(`queue${i}`, schemaSource(i + 1)),
     );
-    const p = pool(2);
+    const p = sharedPool();
 
     const results = await Promise.all(
       files.map((file) =>
@@ -163,7 +199,7 @@ describe("TransformPool", () => {
 
   it("reports the first-party modules its workers executed", async () => {
     const file = fixture("modules", schemaSource(1));
-    const p = pool(1);
+    const p = freshPool(1);
     expect(p.firstPartyModulePaths()).toEqual([]);
 
     await p.run(fs.readFileSync(file, "utf8"), file, poolTransformOptions(OPTIONS));
@@ -178,7 +214,7 @@ describe("TransformPool", () => {
 
   it("re-discovers a file whose source changed after invalidate()", async () => {
     const file = fixture("invalidate", schemaSource(1));
-    const p = pool(1);
+    const p = freshPool(1);
 
     const before = await p.run(schemaSource(1), file, poolTransformOptions(OPTIONS));
     expect(before.output?.code).toContain("length<1");
@@ -194,7 +230,7 @@ describe("TransformPool", () => {
 
   it("clears the reported module set on invalidate so re-execution re-reports", async () => {
     const file = fixture("remodules", schemaSource(1));
-    const p = pool(1);
+    const p = freshPool(1);
     await p.run(fs.readFileSync(file, "utf8"), file, poolTransformOptions(OPTIONS));
     expect(p.firstPartyModulePaths()).toContain(file);
 
@@ -219,7 +255,7 @@ describe("TransformPool", () => {
     ].join("\n");
     const file = fixture("broken", code);
 
-    const failure = pool(1).run(
+    const failure = sharedPool().run(
       code,
       file,
       poolTransformOptions({ ...OPTIONS, autoDiscover: false }),
@@ -233,7 +269,7 @@ describe("TransformPool", () => {
   it("stops spawning workers after repeated deaths instead of retrying per file", async () => {
     const file = fixture("breaker", schemaSource(1));
     const code = fs.readFileSync(file, "utf8");
-    const p = pool(2);
+    const p = freshPool(2);
 
     // Kill each worker as soon as it appears — terminate() only, leaving the
     // pool to notice the death through its own 'exit' handler, because that is
@@ -267,7 +303,7 @@ describe("TransformPool", () => {
 
   it("rejects queued and in-flight work once disposed", async () => {
     const file = fixture("disposed", schemaSource(1));
-    const p = pool(1);
+    const p = freshPool(1);
     await p.dispose();
 
     await expect(
@@ -278,18 +314,22 @@ describe("TransformPool", () => {
   it("reuses one worker across tasks instead of spawning per file", async () => {
     const a = fixture("reuse-a", schemaSource(1));
     const b = fixture("reuse-b", schemaSource(2));
-    const p = pool(4);
+    const p = freshPool(4);
+    const live = p as unknown as { workers: unknown[] };
 
-    // Sequential awaits can only ever occupy one worker at a time, so the
-    // second call must land on the first worker rather than growing the pool.
+    // Sequential awaits can never occupy more than one worker at a time, so a
+    // pool with room for four must still be holding exactly one. Booting is by
+    // far the most expensive thing a worker does — this is what keeps a build
+    // paying for it once rather than once per file.
     await p.run(fs.readFileSync(a, "utf8"), a, poolTransformOptions(OPTIONS));
-    const executedAfterFirst = p.firstPartyModulePaths() ?? [];
+    expect(live.workers).toHaveLength(1);
     await p.run(fs.readFileSync(b, "utf8"), b, poolTransformOptions(OPTIONS));
-    const executedAfterSecond = p.firstPartyModulePaths() ?? [];
+    expect(live.workers).toHaveLength(1);
 
-    expect(executedAfterFirst).toContain(a);
-    expect(executedAfterSecond).toContain(a);
-    expect(executedAfterSecond).toContain(b);
+    const executed = p.firstPartyModulePaths() ?? [];
+    expect(executed).toContain(a);
+    expect(executed).toContain(b);
+    await p.dispose();
   });
 });
 
@@ -327,7 +367,7 @@ describe("plugin with parallel enabled", () => {
     );
 
     const serial = makePlugin(false, false);
-    const parallel = makePlugin(3, false);
+    const parallel = makePlugin(2, false);
     const expected: (string | undefined)[] = [];
     for (const file of files) {
       expected.push((await serial.transform(fs.readFileSync(file, "utf8"), file))?.code);
@@ -417,6 +457,8 @@ describe("plugin with parallel enabled", () => {
     // no race with how fast the transforms happen to finish. A dead pool must
     // degrade the build's speed, not break it.
     await disposeAllPools();
+    // That took the shared pool with it; the next caller must build a new one.
+    shared = undefined;
 
     const warned = vi.spyOn(console, "warn").mockImplementation(vi.fn());
     let results: (string | undefined)[];
