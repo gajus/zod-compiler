@@ -2507,3 +2507,24 @@ describe("preprocess over a tuple that rewrites a short input", () => {
     expect(compiledInput).toStrictEqual(zodInput);
   });
 });
+
+/**
+ * `z.looseRecord()` sets `def.mode = "loose"`, which `$ZodRecord` consults
+ * BEFORE asking whether a key is recognized: an unrecognized key is copied to
+ * the output verbatim and raises nothing. The compiled walk runs the key schema
+ * over every key, so it rejected input zod passes straight through.
+ */
+describe("z.looseRecord copies unrecognized keys through", () => {
+  it("a key the key schema rejects is not an error", () =>
+    expectParity(z.looseRecord(z.string().regex(/^a/), z.number()), [
+      {},
+      { a1: 1 },
+      { b: 1 },
+      { a1: 1, b: 2 },
+      { b: "not a number" },
+    ]));
+  it("an enum-keyed loose record", () =>
+    expectParity(z.looseRecord(z.enum(["a", "b"]), z.number()), [{}, { a: 1 }, { c: 3 }]));
+  // CONTROL: a plain record still compiles.
+  it("a plain record still compiles", () => expectCompiled(z.record(z.string(), z.number())));
+});

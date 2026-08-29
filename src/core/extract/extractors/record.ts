@@ -17,6 +17,16 @@ export function extractRecord(def: ZodDef, ctx: ExtractorContext): SchemaIR {
   if (enumerableKeys && !def.partial) {
     return ctx.fallback("unsupported");
   }
+  // `z.looseRecord()` sets `def.mode = "loose"`, which zod checks BEFORE it ever
+  // asks whether a key is recognized: an unrecognized key is copied to the
+  // output verbatim rather than raising anything. The compiled walk runs the key
+  // schema over every key and reports `invalid_key`, so it rejects input zod
+  // passes straight through — `z.looseRecord(z.string().regex(/^a/), z.number())`
+  // accepts `{b: 1}`. Nothing in RecordIR expresses "validate these keys, copy
+  // the rest", so delegate.
+  if (def.mode === "loose") {
+    return ctx.fallback("unsupported");
+  }
   const keyType = ctx.visit(def.keyType, "._zod.def.keyType");
   const valueType = ctx.visit(def.valueType, "._zod.def.valueType");
   // Object keys are strings at runtime. Zod coerces/validates numeric-string

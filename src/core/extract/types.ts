@@ -81,6 +81,8 @@ export interface ZodDef {
   valueType: ZodSchema;
   /** `z.partialRecord()`: the key schema's values are not required to be present. */
   partial?: boolean;
+  /** `z.looseRecord()`: an unrecognized key is copied through, not reported. */
+  mode?: "loose" | undefined;
   left: ZodSchema;
   right: ZodSchema;
   discriminator: string;
