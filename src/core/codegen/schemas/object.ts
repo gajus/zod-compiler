@@ -87,33 +87,46 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
     // The three absent-key rules of zod's handlePropertyResult (see ObjectIR).
     // Presence is tested on the ORIGINAL input, as zod's `key in input` is —
     // a clone would hide an inherited key.
+    //
+    // The two rules that test presence AFTER running the property snapshot it
+    // FIRST. Running the property can create the very key the test asks about:
+    // where nothing mutates, `objVar` IS `g.input`, so the write-back of a
+    // property that accepted `undefined` (`o[key]=result`) adds an own `key`
+    // and the guard then reads it as present. `z.looseObject({a: z.custom()})`
+    // on `{}` lost its `nonoptional` issue entirely that way — the fast path
+    // still rejected on `"a" in x`, so `safeParse` failed with an EMPTY issue
+    // array — and left the caller's object carrying an `a` zod never writes.
+    const dropValue = strip ? `${propExpr}=undefined;` : `delete ${objVar}[${keyStr}];`;
     if (skipAbsent.has(key)) {
       code += emit`if(${keyStr} in ${g.input}){${propCode}}`;
     } else if (suppressAbsent.has(key)) {
       // A defaulted optional-out property runs, but a failure on an absent key
       // is discarded whole: issues and whatever value it wrote before failing.
       const beforeVar = g.temp("ob");
-      const dropValue = strip
-        ? `${propExpr}=undefined;`
-        : needsClone
-          ? `delete ${objVar}[${keyStr}];`
-          : "";
+      const presentVar = g.temp("op");
       code += emit`
+        var ${presentVar}=${keyStr} in ${g.input};
         var ${beforeVar}=${g.issues}.length;
         ${propCode}
-        if(!(${keyStr} in ${g.input})&&${g.issues}.length>${beforeVar}){
+        if(!${presentVar}&&${g.issues}.length>${beforeVar}){
           ${g.issues}.length=${beforeVar};${dropValue}
         }`;
     } else if (nonoptional.has(key)) {
       // A required key that is absent fails as such when its schema raised
       // nothing for the `undefined` it saw. zod pushes this one without an
-      // `inst`, so no schema-level message reaches it.
+      // `inst`, so no schema-level message reaches it — and it returns without
+      // assigning, so whatever the property made of `undefined` is dropped.
       const beforeVar = g.temp("ob");
+      const presentVar = g.temp("op");
       code += emit`
+        var ${presentVar}=${keyStr} in ${g.input};
         var ${beforeVar}=${g.issues}.length;
         ${propCode}
-        if(!(${keyStr} in ${g.input})&&${g.issues}.length===${beforeVar}){
-          ${invalidType(g, "nonoptional", { input: "undefined", path: propPath, codeFirst: true, useTypeMsg: false })}
+        if(!${presentVar}){
+          ${dropValue}
+          if(${g.issues}.length===${beforeVar}){
+            ${invalidType(g, "nonoptional", { input: "undefined", path: propPath, codeFirst: true, useTypeMsg: false })}
+          }
         }`;
     } else {
       code += propCode;

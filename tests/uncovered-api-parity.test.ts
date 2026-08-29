@@ -2214,6 +2214,13 @@ describe("required properties whose key is absent", () => {
     ["nullable over any", () => z.any().nullable()],
     ["nonoptional over optional", () => z.string().optional().nonoptional()],
     ["pipe into an optional", () => z.any().pipe(z.string().optional())],
+    // A delegating property that ACCEPTS `undefined` and writes its result
+    // back. Where the object needs no clone the write target IS the input, so
+    // running the property created the key the absent-key guard then tested —
+    // and the issue was never raised. The fast path still rejected on
+    // `"a" in x`, so `safeParse` failed with an empty `issues` array.
+    ["z.custom()", () => z.custom()],
+    ["z.custom() over a truthy predicate", () => z.custom(() => true)],
   ];
   for (const [label, make] of REQUIRED) {
     it(`${label}: absent key is nonoptional, explicit undefined is the schema's call`, () => {
@@ -2227,6 +2234,28 @@ describe("required properties whose key is absent", () => {
       z.object({ a: z.any() }).refine(() => false, "never runs"),
       [{}, { a: 1 }],
     ));
+
+  /**
+   * zod's `handlePropertyResult` RETURNS on the absent-required-key branch
+   * without assigning, so nothing the property made of `undefined` reaches the
+   * output — or the input. The compiled walk writes a delegating property's
+   * result straight back through the slot it read from, which on a
+   * clone-free object is the caller's own object, so the drop has to be
+   * explicit. Checked on the input rather than the output because the parse
+   * always fails here and the output is discarded.
+   */
+  it("a delegating required property leaves no key on the caller's input", () => {
+    for (const schema of OBJECT_VARIANTS(() => z.custom())) {
+      const compiled = compileLikeProduction(schema);
+      const zodInput: Record<string, unknown> = { b: 1 };
+      const compiledInput: Record<string, unknown> = { b: 1 };
+      // The error is built lazily, and it is the slow walk that writes back —
+      // so the issues have to be read before the input is inspected.
+      void schema.safeParse(zodInput).error?.issues;
+      void compiled(compiledInput).error?.issues;
+      expect(Object.keys(compiledInput)).toStrictEqual(Object.keys(zodInput));
+    }
+  });
 
   it("CONTROL: a property that rejects undefined reports its own issue instead", () =>
     expectParity(z.object({ a: z.string(), b: z.string().pipe(z.string().optional()) }), [
