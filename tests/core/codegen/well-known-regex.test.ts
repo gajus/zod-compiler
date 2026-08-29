@@ -22,6 +22,48 @@ describe("well-known-regex", () => {
       expect(lookupWellKnownRegex("^foo$")).toBeNull();
       expect(lookupWellKnownRegex("")).toBeNull();
     });
+
+    /**
+     * The table matches pattern sources VERBATIM, so an entry Zod has since
+     * edited stops hitting silently: no test fails, the lookup just misses and
+     * every transformed file re-declares its own RegExp. The 4.5 bump did that
+     * to `cuid`, `ulid` and `iso.datetime` at once — including the ~330-char
+     * datetime source this table exists to dedupe.
+     *
+     * Pinned by looking each entry up against the LIVE Zod pattern, so the next
+     * upgrade that edits one fails here.
+     */
+    it("every entry still matches a live Zod pattern", () => {
+      const live = new Map<string, string>();
+      const record = (label: string, schema: z.ZodType): void => {
+        const pattern = (schema as { _zod: { def: { pattern?: RegExp } } })._zod.def.pattern;
+        if (pattern) live.set(pattern.source, label);
+      };
+      record("email", z.email());
+      record("guid", z.guid());
+      record("cuid", z.cuid());
+      record("cuid2", z.cuid2());
+      record("ulid", z.ulid());
+      record("nanoid", z.nanoid());
+      record("xid", z.xid());
+      record("ksuid", z.ksuid());
+      record("ipv4", z.ipv4());
+      record("ipv6", z.ipv6());
+      record("base64", z.base64());
+      record("base64url", z.base64url());
+      record("e164", z.e164());
+      record("iso.date", z.iso.date());
+      record("iso.time", z.iso.time());
+      record("iso.datetime", z.iso.datetime());
+      record("iso.duration", z.iso.duration());
+
+      const stale = WELL_KNOWN_REGEXES.filter(
+        // The documented stand-in for when the extractor supplies no pattern,
+        // so it is deliberately not one of Zod's own sources.
+        (entry) => entry.name !== "__zcReUuid" && !live.has(entry.source),
+      ).map((entry) => entry.name);
+      expect(stale, `stale registry entries: ${stale.join(", ")}`).toStrictEqual([]);
+    });
   });
 
   // Each Zod constructor below must produce a `string_format` check whose
