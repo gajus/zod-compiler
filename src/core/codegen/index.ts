@@ -241,6 +241,10 @@ export function generateValidator(
     fastExpr !== null &&
     fastExpr !== "true" &&
     !hasMutation(ir) &&
+    // `data: input` verbatim, with no compiled walk to fall back on — so a
+    // schema whose output needs an own `__proto__` removed cannot use it.
+    !needsProtoScrub(ir) &&
+    !nestedNeedsProtoScrub(ir) &&
     !hasNonRootTargets
   ) {
     const delegate = emitRetainedMethod(ctx);
@@ -445,7 +449,10 @@ export function generateValidator(
       functionDef: functionDefParts.join("\n"),
       refCount: options?.refCount ?? 0,
       usedHelpers: ctx.usedHelpers,
-      fastFnName,
+      // `fc` is a sound VERDICT here either way, but publishing it also promises
+      // `parse()` may return the input — which a scrubbed output cannot (see
+      // fastResultIsInput). `.is()` still gets the predicate through fastTotal.
+      fastFnName: fastResultIsInput(ir) ? fastFnName : null,
       // Total predicate: mutation-free fast path, fc(input) ⟺ accepts(input).
       // generateIIFE installs fc directly as the zero-allocation `.is()`.
       fastTotal: true,

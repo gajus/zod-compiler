@@ -99,7 +99,7 @@ interface BuildGen {
  * Resolving the ref against its target closes the cycle, and iterating to a
  * fixpoint settles the mutual dependency between the two.
  */
-function rebuildSet(root: SchemaIR): ReadonlySet<SchemaIR> {
+function rebuildSet(root: SchemaIR, includeProtoScrub = true): ReadonlySet<SchemaIR> {
   const targets = new Map<number, SchemaIR>([[0, root]]);
   const nodes: SchemaIR[] = [];
   const seen = new Set<SchemaIR>();
@@ -145,7 +145,7 @@ function rebuildSet(root: SchemaIR): ReadonlySet<SchemaIR> {
         // `passthrough` handing the raw container up through a PARENT that
         // never looks inside it (`z.array(z.looseObject(...))`); the parent
         // rebuilds instead, and each child is scrubbed as it is built.
-        needsProtoScrub(node) ||
+        (includeProtoScrub && needsProtoScrub(node)) ||
         // `z.stringbool()` replaces its accepted string with a boolean.
         node.type === "stringBool" ||
         // An overwrite effect (`.trim()`, `.toLowerCase()`) rewrites the string,
@@ -342,6 +342,14 @@ function children(ir: SchemaIR): readonly SchemaIR[] {
 export function generateBuild(ir: SchemaIR, ctx: CodeGenContext): string | null {
   const rebuilds = rebuildSet(ir);
   if (!rebuilds.has(ir) || mutatesBeyondStrip(ir)) return null;
+  // When the ONLY reason the root rebuilds is its own `__proto__` scrub, decline
+  // and let the mutation-free shortcut below take it: that one keeps the fast
+  // check and filters the returned value through `__zcPs`, where building would
+  // pay a full single-pass walk to achieve the same thing. Measured at ~2x on a
+  // 5-key `z.looseObject`, which is precisely the shape that lost the shortcut.
+  // Only the root is exempt; a nested scrub still forces its parent to rebuild,
+  // which is what the clause in `rebuildSet` is for.
+  if (needsProtoScrub(ir) && !rebuildSet(ir, false).has(ir)) return null;
   const fail = emitFailSentinel(ctx);
   const scope: FastScope = { temps: [], used: 0 };
   const built = build(ir, "input", { ctx, extractable: false, fail, rebuilds, scope });
