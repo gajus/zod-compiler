@@ -21,15 +21,24 @@ import {
 import type { SafeParseResult } from "#src/core/types.js";
 import { RESOLVED_RUNTIME_ID, loadVirtual } from "#src/unplugin/virtual.js";
 
-// `__zcMsg` is built from the SAME declaration production emits, not a
-// stand-in: it resolves `config.customError`/`config.localeError` per call, so
-// a harness that passed a snapshotted `localeError` here would silently not
-// exercise either.
+/**
+ * `__zcMsg` built from the SAME declaration production emits, not a stand-in:
+ * it resolves `config.customError`/`config.localeError` per call, so a harness
+ * that passed a snapshotted `localeError` would silently exercise neither.
+ * Since zod 4.5 the snapshot is also plain empty: the English locale is
+ * installed on the first schema construction, not at import, so a module-scope
+ * `z.config().localeError` reads `undefined` and every compiled issue loses its
+ * message. Every harness that hands the finalizer a `__zcMsg` uses this one.
+ */
+export const zcMsg = new Function("__zodCompilerConfig", `${ZOD_MSG_DECLARATION}return __zcMsg;`)(
+  z.config,
+) as (issue: unknown) => string;
+
 const localizedFin = new Function(
-  "__zodCompilerConfig",
+  "__zcMsg",
   "__zcZodError",
-  `${ZOD_MSG_DECLARATION}${FAIL_CLASS_DECL}${FIN_DECL}; return __zcFin;`,
-)(z.config, ZodRealError);
+  `${FAIL_CLASS_DECL}${FIN_DECL}; return __zcFin;`,
+)(zcMsg, ZodRealError);
 
 const finZ = new Function(`${FAILZ_CLASS_DECL}${FINZ_DECL}; return __zcFinZ;`)() as (
   rfp: (input: unknown) => SafeParseResult<unknown>,

@@ -11,6 +11,7 @@ import {
   MK_VALIDATOR_DECL,
 } from "#src/core/iife.js";
 import type { CompiledSchemaInfo } from "#src/core/pipeline.js";
+import { zcMsg } from "../parity-harness.js";
 
 type MkvFn = (
   fn: (input: unknown) => { success: true; data: unknown } | { success: false; error: unknown },
@@ -224,8 +225,7 @@ describe("generateIIFE() — runtime execution", () => {
 
   function executeIIFE(schema: CompiledSchemaInfo, options?: { zodCompat?: boolean }) {
     const iife = generateIIFE("Schema", schema, options);
-    const __zcMsg = z.config().localeError;
-    const __zcFin = makeFinFn(__zcMsg, ZodRealError);
+    const __zcFin = makeFinFn(zcMsg, ZodRealError);
     const fn = new Function(
       "Schema",
       "__zcMsg",
@@ -234,7 +234,7 @@ describe("generateIIFE() — runtime execution", () => {
       "__zcFin",
       `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\nreturn ${iife};`,
     );
-    return fn({}, __zcMsg, ZodRealError, __zcMkv, __zcFin) as {
+    return fn({}, zcMsg, ZodRealError, __zcMkv, __zcFin) as {
       parse: (input: unknown) => unknown;
       safeParse: (input: unknown) => {
         success: boolean;
@@ -401,8 +401,7 @@ describe("generateIIFE() — shared schema instance (CSE/dedup + identifier sche
   function executeSharedIIFE(schema: z.ZodType, exportName: string) {
     const info = makeInfoWithFallback(exportName, schema);
     const iife = generateIIFE("Schema", info);
-    const __zcMsg = z.config().localeError;
-    const __zcFin = makeFinFn(__zcMsg, ZodRealError);
+    const __zcFin = makeFinFn(zcMsg, ZodRealError);
     const fn = new Function(
       "Schema",
       "__zcMsg",
@@ -411,7 +410,7 @@ describe("generateIIFE() — shared schema instance (CSE/dedup + identifier sche
       "__zcFin",
       `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\nreturn ${iife};`,
     );
-    return fn(schema, __zcMsg, ZodRealError, __zcMkv, __zcFin) as {
+    return fn(schema, zcMsg, ZodRealError, __zcMkv, __zcFin) as {
       safeParse: (input: unknown) => {
         success: boolean;
         data?: unknown;

@@ -13,17 +13,18 @@ import type { RefEntry } from "#src/core/extract/index.js";
 import { extractSchema } from "#src/core/extract/index.js";
 import { FAIL_CLASS_DECL, FIN_DECL, FIN_DEFERRED_DECL } from "#src/core/iife.js";
 import { compileSchemas, type CompiledSchemaInfo } from "#src/core/pipeline.js";
+import { zcMsg } from "../../parity-harness.js";
 
 const localizedFin = new Function(
   "__zcMsg",
   "__zcZodError",
   `${FAIL_CLASS_DECL}${FIN_DECL}; return __zcFin;`,
-)(z.config().localeError, ZodRealError);
+)(zcMsg, ZodRealError);
 const localizedFinD = new Function(
   "__zcMsg",
   "__zcZodError",
   `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}; return __zcFinD;`,
-)(z.config().localeError, ZodRealError);
+)(zcMsg, ZodRealError);
 
 function compileOne(schema: unknown): (i: unknown) => {
   success: boolean;
@@ -40,7 +41,7 @@ function compileOne(schema: unknown): (i: unknown) => {
     `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\n${generated.code}\nreturn ${generated.functionDef};`,
   );
   return factory(
-    z.config().localeError,
+    zcMsg,
     ZodRealError,
     localizedFin,
     refEntries.map((e) => e.schema),
@@ -58,7 +59,7 @@ function buildShared(
   if (!fnName) throw new Error("no fn");
   const src = `${sharedCode}\nreturn (function(){\n${info.codegenResult.code}\n${info.codegenResult.functionDef}\nreturn ${fnName};\n})();`;
   return new Function("__zcMsg", "__zcZodError", "__zcFin", "__zcFinD", "__rf", src)(
-    z.config().localeError,
+    zcMsg,
     ZodRealError,
     localizedFin,
     localizedFinD,
