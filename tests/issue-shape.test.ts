@@ -426,6 +426,11 @@ describe("issue shape — key order, as ZodError.message renders it", () => {
       z.discriminatedUnion("t", [z.object({ t: z.literal("a") })]),
       1,
     ],
+    [
+      "invalid_union from a discriminated-union miss puts `options` after `discriminator`",
+      z.discriminatedUnion("t", [z.object({ t: z.literal("a") }), z.object({ t: z.literal("b") })]),
+      { t: "z" },
+    ],
     ["too_small from a check leads with `origin`", z.string().min(3), "a"],
     ["too_big from a check leads with `origin`", z.string().max(1), "abc"],
     ["exact length leads with `origin`", z.string().length(2), "a"],

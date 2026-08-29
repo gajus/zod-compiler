@@ -39,12 +39,18 @@ export function slowDiscriminatedUnion(
   const msgProp = g.typeMsg === undefined ? "" : `,message:${JSON.stringify(g.typeMsg)}`;
   // Field for field what $ZodDiscriminatedUnion pushes when no option matches:
   // `{ code, errors: [], note: "No matching discriminator", discriminator,
-  // input, path: [def.discriminator] }`. There is deliberately no `options`
-  // key — zod never enumerates the valid discriminator values here, so adding
-  // them invents a field consumers would find on no real zod issue.
+  // options, input, path: [def.discriminator] }`. `options` is
+  // `Array.from(disc.value.keys())` — every dispatch value in map insertion
+  // order, which is exactly `ir.cases` (option order, then each option's
+  // `propValues[discriminator]` in ITS order, so an omittable discriminator
+  // lists `undefined` right after its own values). The locale reads the list
+  // for "Invalid discriminator value. Expected 'a' | 'b'". A fresh array
+  // literal per push, as zod allocates one, so consumers never share or
+  // mutate a hoisted table.
+  const optionsList = ir.cases.map(({ value }) => literalToJs(value)).join(",");
   code += emit`
     default:
-      ${g.issues}.push({code:"invalid_union",errors:[],note:"No matching discriminator",discriminator:${discKey},input:${g.input},path:${extendPath(g.path, discKey)}${msgProp}});
+      ${g.issues}.push({code:"invalid_union",errors:[],note:"No matching discriminator",discriminator:${discKey},options:[${optionsList}],input:${g.input},path:${extendPath(g.path, discKey)}${msgProp}});
     }`;
   // Propagate option-applied mutations (defaults, coercions, transforms,
   // overwrite checks, stringbool) back to the output location. Each option is

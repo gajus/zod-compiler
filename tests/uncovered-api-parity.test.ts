@@ -1470,14 +1470,29 @@ describe("issue fields beyond code and path", () => {
     ).toMatch(/^\/.*\/$/);
   });
 
-  it("discriminated-union no-match issue carries no `options`", () => {
-    const keys = ["code", "discriminator", "errors", "message", "note", "path"];
+  it("discriminated-union no-match issue carries `options` in dispatch-map order", () => {
+    const keys = ["code", "discriminator", "errors", "message", "note", "options", "path"];
     const du = z.discriminatedUnion("t", [
       z.object({ t: z.literal("a"), a: z.string() }),
       z.object({ t: z.literal("b"), b: z.number() }),
     ]);
     expectCompiled(du);
     expectIssueFields(du, { t: "z" }, "duNoMatch", keys);
+    // `options` is the dispatch map's key order: option by option, each option's
+    // values in ITS order, with an omittable discriminator's `undefined` (and a
+    // nullable's `null`) trailing that option's own values — not a sorted or
+    // deduplicated set.
+    const ladder = z.discriminatedUnion("t", [
+      z.object({ t: z.literal(["a", "c"]).optional() }),
+      z.object({ t: z.enum(["b", "d"]).nullable() }),
+    ]);
+    expectCompiled(ladder);
+    expectIssueFields(ladder, { t: "z" }, "duLadderNoMatch", keys);
+    expect(
+      (ladder.safeParse({ t: "z" }) as { error?: { issues: { options?: unknown }[] } }).error
+        ?.issues[0]?.options,
+      "zod's own options order",
+    ).toStrictEqual(["a", "c", undefined, "b", "d", null]);
     // Same issue, unchanged, when the union sits under a container — the path
     // gains the parent segments and nothing else.
     expectIssueFields(z.object({ v: du }), { v: { t: "z" } }, "duNoMatchInObject", keys);
