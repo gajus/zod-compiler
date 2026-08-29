@@ -263,7 +263,8 @@ function extractFunctionName(functionDef: string): string {
  * descriptor, so ONE `.shape` read fires ALL of an object's recursion getters).
  * Binding `__zs` itself does not: constructing the schema leaves deferred
  * callbacks unforced, and `usesRetainedSchema`'s only read is `__zs.safeParse`,
- * an own property zod assigns during `ZodType.init`.
+ * a prototype getter that binds the method and installs the bound copy on the
+ * instance without touching the schema's structure.
  *
  * The distinction decides whether the IIFE may be evaluated inside the
  * INITIALIZER of the binding the schema's own deferred callbacks close over —

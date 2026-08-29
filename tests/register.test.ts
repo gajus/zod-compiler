@@ -24,6 +24,14 @@ async function run(
   return JSON.parse(stdout) as { after: string; before: string };
 }
 
+/**
+ * The uninstrumented shape. Zod keeps `safeParse` on the prototype and installs
+ * a bound own copy on first read, so a plain schema has no own descriptor
+ * before the call and `bound safeParse` after it; an instrumented one shows
+ * jit()'s accessor before and the compiled `safeParse_jit` after.
+ */
+const PLAIN_ZOD = { after: "bound safeParse", before: "undefined" };
+
 describe.skipIf(!existsSync(builtRegister))("zod-compiler/register", () => {
   it("instruments native ESM imports", async () => {
     await expect(run("esm-runner.mjs", "javascript")).resolves.toStrictEqual({
@@ -62,19 +70,13 @@ describe.skipIf(!existsSync(builtRegister))("zod-compiler/register", () => {
       writeFileSync(path.join(dir, "zod-compiler.json"), JSON.stringify(badConfig));
       // Resolving at all means the app booted; this exact shape is the
       // uninstrumented one, i.e. the schema fell back to plain Zod.
-      await expect(run("esm-runner.mjs", "javascript", dir)).resolves.toStrictEqual({
-        after: "",
-        before: "undefined",
-      });
+      await expect(run("esm-runner.mjs", "javascript", dir)).resolves.toStrictEqual(PLAIN_ZOD);
     } finally {
       rmSync(dir, { force: true, recursive: true });
     }
   });
 
   it("loads zod-compiler.json from the working directory", async () => {
-    await expect(run("esm-runner.mjs", "javascript", fixtures)).resolves.toStrictEqual({
-      after: "",
-      before: "undefined",
-    });
+    await expect(run("esm-runner.mjs", "javascript", fixtures)).resolves.toStrictEqual(PLAIN_ZOD);
   });
 });
