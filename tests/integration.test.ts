@@ -6,6 +6,7 @@ import { extractSchema } from "#src/core/extract/index.js";
 import { FAIL_CLASS_DECL, FIN_DECL, FIN_DEFERRED_DECL } from "#src/core/iife.js";
 import type { SafeParseResult, SchemaIR } from "#src/core/types.js";
 import { zodAtLeast } from "./zod-version.js";
+import { zcMsg } from "./parity-harness.js";
 
 const __zcFin = new Function("__zcZodError", `${FAIL_CLASS_DECL}${FIN_DECL}; return __zcFin;`)(
   ZodRealError,
@@ -3048,15 +3049,13 @@ describe("integration — refine custom message", () => {
       "__zcMsg",
       "__zcZodError",
       `${FAIL_CLASS_DECL}${FIN_DECL}; return __zcFin;`,
-    )(z.config().localeError, ZodRealError);
+    )(zcMsg, ZodRealError);
     const safeParse = new Function(
       "__zcMsg",
       "__zcZodError",
       "__zcFin",
       `"use strict";${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\n${generated.code}\nreturn ${generated.functionDef};`,
-    )(z.config().localeError, ZodRealError, localizedFin) as (
-      input: unknown,
-    ) => SafeParseResult<unknown>;
+    )(zcMsg, ZodRealError, localizedFin) as (input: unknown) => SafeParseResult<unknown>;
 
     const result = safeParse("");
     const zodResult = schema.safeParse("");

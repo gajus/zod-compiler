@@ -4,6 +4,7 @@ import { generateValidator } from "#src/core/codegen/index.js";
 import type { RefEntry } from "#src/core/extract/index.js";
 import { extractSchema } from "#src/core/extract/index.js";
 import { FAIL_CLASS_DECL, FIN_DECL, FIN_DEFERRED_DECL } from "#src/core/iife.js";
+import { zcMsg } from "./parity-harness.js";
 import { zodAtLeast } from "./zod-version.js";
 
 /**
@@ -14,13 +15,11 @@ function compileForErrorTest(schema: z.ZodType, name = "test") {
   const refEntries: RefEntry[] = [];
   const ir = extractSchema(schema, refEntries);
   const result = generateValidator(ir, name, { refCount: refEntries.length });
-  // oxlint-disable-next-line typescript/no-non-null-assertion -- localeError is always set in Zod v4
-  const __zcMsg = z.config().localeError!;
   const __zcFin = new Function(
     "__zcMsg",
     "__zcZodError",
     `${FAIL_CLASS_DECL}${FIN_DECL}; return __zcFin;`,
-  )(__zcMsg, ZodRealError);
+  )(zcMsg, ZodRealError);
   const refSchemas = refEntries.map((e) => e.schema);
   const fn =
     refSchemas.length > 0
@@ -39,8 +38,8 @@ function compileForErrorTest(schema: z.ZodType, name = "test") {
         );
   return (
     refSchemas.length > 0
-      ? fn(__zcMsg, ZodRealError, __zcFin, refSchemas)
-      : fn(__zcMsg, ZodRealError, __zcFin)
+      ? fn(zcMsg, ZodRealError, __zcFin, refSchemas)
+      : fn(zcMsg, ZodRealError, __zcFin)
   ) as (input: unknown) => {
     success: boolean;
     data?: unknown;

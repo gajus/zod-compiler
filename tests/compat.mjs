@@ -14,7 +14,12 @@
 import { ZodRealError, z } from "zod";
 import { generateValidator } from "../dist/core/codegen/index.js";
 import { extractSchema } from "../dist/core/extract/index.js";
-import { FAIL_CLASS_DECL, FIN_DECL } from "../dist/core/iife.js";
+import {
+  FAIL_CLASS_DECL,
+  FIN_DECL,
+  FIN_DEFERRED_DECL,
+  ZOD_MSG_DECLARATION,
+} from "../dist/core/iife.js";
 import { compile } from "../dist/index.js";
 
 let passed = 0;
@@ -60,15 +65,17 @@ assert(typeof result.code === "string", "generateValidator produces code string"
 assert(result.code.length > 0, "generated code is non-empty");
 assert(typeof result.functionDef === "string", "generateValidator produces function def");
 
-// Compile and run the generated code (pass __msg and __ZodError for localeError + ZodError).
-// FIN_DECL provides the shared __fin finalizer that every safeParse_* function calls.
-const __msg = z.config().localeError;
+// Compile and run the generated code the way production wires it: __zcMsg comes
+// from ZOD_MSG_DECLARATION and reads z.config() per call (zod 4.5 installs the
+// English locale on the first schema construction, so a snapshot taken at import
+// would be empty), and FIN_DECL / FIN_DEFERRED_DECL provide the shared finalizers
+// every safeParse_* function calls.
 const fn = new Function(
-  "__msg",
-  "__ZodError",
-  `${FAIL_CLASS_DECL}${FIN_DECL}\n${result.code}\nreturn ${result.functionDef};`,
+  "__zodCompilerConfig",
+  "__zcZodError",
+  `${ZOD_MSG_DECLARATION}${FAIL_CLASS_DECL}${FIN_DECL}${FIN_DEFERRED_DECL}\n${result.code}\nreturn ${result.functionDef};`,
 );
-const safeParse = fn(__msg, ZodRealError);
+const safeParse = fn(z.config, ZodRealError);
 
 // Valid input
 const validInput = {
