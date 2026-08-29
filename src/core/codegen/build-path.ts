@@ -49,13 +49,14 @@ import {
   hasMutation,
   keyMembershipTest,
   literalToJs,
+  needsProtoScrub,
   outputAlwaysDefined,
   rejectsUndefined,
   tupleRewritesShortInput,
 } from "./context.js";
 import { createFastGen, generateFast } from "./fast-path.js";
 import { EXTRACT_CAP, estimateFastCost, MIN_EXTRACT, predictedInlineSize } from "./fast-size.js";
-import { ZC_HOP_DECL, ZC_PLAIN_DECL } from "./issue-decls.js";
+import { ZC_HOP_DECL, ZC_PLAIN_DECL, ZC_PROTO_SCRUB_DECL } from "./issue-decls.js";
 import { defaultValueExpr, needsPostInnerDefault } from "./schemas/default.js";
 import { parsedProperties } from "./schemas/object.js";
 import { innerAppliesDefaultOnUndefined } from "./schemas/optional.js";
@@ -138,6 +139,13 @@ function rebuildSet(root: SchemaIR): ReadonlySet<SchemaIR> {
         // issue array. Marking it here makes `buildTuple`'s own bail propagate
         // instead.
         (node.type === "tuple" && tupleRewritesShortInput(node)) ||
+        // A loose/catchall object or a record hands its input back, and zod's
+        // output never carries an own `__proto__` — so its output is not its
+        // input whenever the key is there. Marking it here is what stops
+        // `passthrough` handing the raw container up through a PARENT that
+        // never looks inside it (`z.array(z.looseObject(...))`); the parent
+        // rebuilds instead, and each child is scrubbed as it is built.
+        needsProtoScrub(node) ||
         // `z.stringbool()` replaces its accepted string with a boolean.
         node.type === "stringBool" ||
         // An overwrite effect (`.trim()`, `.toLowerCase()`) rewrites the string,
@@ -199,6 +207,13 @@ export function rebuildsOutput(ir: SchemaIR): boolean {
  */
 export function fastResultIsInput(ir: SchemaIR): boolean {
   if (rebuildsOutput(ir)) return false;
+  //  3. The output needs an own `__proto__` removed. A loose/catchall object or
+  //     a record hands its input back, and zod's output never carries the key,
+  //     so `safeParse` filters the value through `__zcPs` — which makes `data`
+  //     a copy exactly when the key is present. `fc` may not promise identity
+  //     on top of that, so `.is()` and `parse()` derive from safeParse for
+  //     these shapes (see ZC_PROTO_SCRUB_DECL).
+  if (needsProtoScrub(ir)) return false;
   const seen = new Set<SchemaIR>();
   const ordered = (node: SchemaIR): boolean => {
     if (seen.has(node)) return false;
@@ -261,6 +276,26 @@ function mutatesHere(ir: SchemaIR): boolean {
 
 function superRefines(checks: readonly { kind: string }[] | undefined): boolean {
   return checks !== undefined && checks.some((c) => c.kind === "super_refine_effect");
+}
+
+/**
+ * Does anything STRICTLY BELOW `ir` hand back a container needing a `__proto__`
+ * scrub?
+ *
+ * The root's by-reference shortcut can filter the value it returns
+ * (`data: __zcPs(input)`), but that only reaches the OUTER container — a nested
+ * one is never touched, because the shortcut does not walk. So a schema with a
+ * scrub-needing descendant keeps the eager slow walk, which scrubs at every
+ * level. Only the root's own scrub is shortcut-compatible.
+ */
+export function nestedNeedsProtoScrub(ir: SchemaIR): boolean {
+  const seen = new Set<SchemaIR>();
+  const walk = (node: SchemaIR): boolean => {
+    if (seen.has(node)) return false;
+    seen.add(node);
+    return children(node).some((child) => needsProtoScrub(child) || walk(child));
+  };
+  return walk(ir);
 }
 
 function children(ir: SchemaIR): readonly SchemaIR[] {
@@ -372,6 +407,15 @@ function build(ir: SchemaIR, input: string, g: BuildGen): Built | null {
 
   // This node's extraction decision is made; its descendants get to make their
   // own, so an oversized hosted helper keeps splitting.
+  // When the ONLY reason this node rebuilds is its own `__proto__` scrub —
+  // nothing under it rebuilds — a validated passthrough plus that scrub IS the
+  // rebuild. Taken BEFORE the builders so a plain record keeps handing its
+  // input back by reference (buildRecord would copy into a fresh `{}`, which is
+  // a different documented behaviour: see the output-identity divergence).
+  if (needsProtoScrub(ir) && !children(ir).some((child) => g.rebuilds.has(child))) {
+    return passthrough(ir, input, g);
+  }
+
   const before = g.scope.used;
   const out = buildInline(ir, input, { ...g, extractable: true });
   if (out !== null) g.scope.used = before + out.code.length;
@@ -589,12 +633,21 @@ function hostPassthrough(ir: SchemaIR, g: BuildGen): string | null {
   return name;
 }
 
-/** Validate in place with the Fast Path and hand the input straight back. */
+/**
+ * Validate in place with the Fast Path and hand the input straight back —
+ * filtered through `__zcPs` for a container zod would have stripped an own
+ * `__proto__` from (see ZC_PROTO_SCRUB_DECL). The filter copies only when the
+ * key is present, so the ordinary value is still returned by reference.
+ */
 function passthrough(ir: SchemaIR, input: string, g: BuildGen): Built | null {
   const scoped = createFastGen(input, g.ctx, true, g.scope);
   const expr = generateFast(ir, scoped);
   if (expr === null) return null;
-  return { code: expr === "true" ? "" : `if(!(${expr}))return ${g.fail};`, value: input };
+  const guard = expr === "true" ? "" : `if(!(${expr}))return ${g.fail};`;
+  if (!needsProtoScrub(ir)) return { code: guard, value: input };
+  const slot = local(g, "bs");
+  const scrub = emitRuntimeHelper(g.ctx, "__zcPs", ZC_PROTO_SCRUB_DECL);
+  return { code: `${guard}${slot}=${scrub}(${input});`, value: slot };
 }
 
 /**

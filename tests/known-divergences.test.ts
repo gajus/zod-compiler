@@ -87,14 +87,17 @@ describe("known divergence — record iterates own enumerable string keys only",
  *
  *   - the output is always an ordinary plain object, so a null-prototype input
  *     (or one inheriting from another object) comes back with `Object.prototype`;
- *   - an own `__proto__` key is dropped, because zod's record walk skips it and
- *     never copies it across (the compiler skips VALIDATING it too — that part
- *     is parity, and is pinned in uncovered-api-parity.test.ts — but the key
- *     rides along in the input it hands back);
  *   - a symbol key survives, where zod's copy loop (`for … in`) never sees one.
  *
- * Closing any of them means allocating a fresh object on every successful record
+ * Closing either means allocating a fresh object on every successful record
  * parse, which is the cost the by-reference design exists to avoid.
+ *
+ * An own `__proto__` key USED to ride along here too. That one is now closed —
+ * it was not merely a shape difference: the key survived into a value callers
+ * hand to `Object.assign`, whose [[Set]] then runs the inherited setter and
+ * replaces the target's prototype. The scrub copies only when the key is
+ * actually present (see ZC_PROTO_SCRUB_DECL), so the ordinary record still comes
+ * back by reference and pays one `hasOwnProperty` call.
  */
 describe("known divergence — record output is the input, not a fresh plain object", () => {
   const schema = z.record(z.string(), z.string());
@@ -109,16 +112,27 @@ describe("known divergence — record output is the input, not a fresh plain obj
     expect(ourData).toBe(input);
   });
 
-  it("an own `__proto__` key rides along in the output", () => {
+  it("PARITY: an own `__proto__` key is dropped from the output, as zod drops it", () => {
     const input = JSON.parse('{"a":"x","__proto__":{"polluted":true}}') as Record<string, string>;
     const compiled = compileLikeProduction(schema, "recProtoKey");
     const zodData = schema.safeParse(input).data as object;
     const ourData = (compiled(input) as { data: object }).data;
-    expect(Object.hasOwn(zodData, "__proto__")).toBe(false); // zod dropped it
-    expect(Object.hasOwn(ourData, "__proto__")).toBe(true); // compiler kept it
-    // Neither side POLLUTES: the key stays an own data property on both.
-    expect(Object.getPrototypeOf(ourData)).toBe(Object.prototype);
-    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+    expect(Object.hasOwn(zodData, "__proto__")).toBe(false);
+    expect(Object.hasOwn(ourData, "__proto__")).toBe(false);
+    // The point of dropping it: [[Set]] would run the INHERITED setter and
+    // replace the target's prototype, where the spread that copies own data
+    // properties would not.
+    const assigned = Object.assign({}, ourData) as { polluted?: boolean };
+    expect(assigned.polluted).toBeUndefined();
+    expect(Object.getPrototypeOf(assigned)).toBe(Object.prototype);
+    // The caller's own object is untouched — the scrub copies, never edits.
+    expect(Object.hasOwn(input, "__proto__")).toBe(true);
+  });
+
+  it("a record with no `__proto__` is still handed back by reference", () => {
+    const input = { a: "x" };
+    const compiled = compileLikeProduction(schema, "recNoProtoKey");
+    expect((compiled(input) as { data: object }).data).toBe(input);
   });
 
   it("a loose object passes its input through, symbol keys and all", () => {

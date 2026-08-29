@@ -836,6 +836,30 @@ export function tupleRewritesShortInput(ir: SchemaIR & { type: "tuple" }): boole
   return false;
 }
 
+/**
+ * Does this node hand back a container that could still carry an own
+ * `__proto__` zod would have stripped?
+ *
+ * True for the shapes whose output IS their input: a LOOSE or CATCHALL object
+ * (a stripping one rebuilds from the declared keys, and `parsedProperties`
+ * already drops the key) and any record. See {@link ZC_PROTO_SCRUB_DECL} for
+ * what zod does and why the difference matters.
+ */
+export function needsProtoScrub(ir: SchemaIR): boolean {
+  // Every record: the walk skips `__proto__` but the container is handed back.
+  if (ir.type === "record") return true;
+  if (ir.type !== "object") return false;
+  // A STRIPPING object rebuilds from the declared keys and `parsedProperties`
+  // drops `__proto__`, so its output can never carry one.
+  if (ir.stripUnknownKeys === true) return false;
+  // A STRICT object reports an undeclared `__proto__` as an unrecognized key
+  // and fails, so the only way one reaches its output is by being DECLARED —
+  // which zod's shape loop strips while still counting the name as recognized.
+  if (ir.strict === true) return Object.hasOwn(ir.properties, "__proto__");
+  // Loose or catchall: an undeclared `__proto__` rides through untouched.
+  return true;
+}
+
 export function hasMutation(ir: SchemaIR): boolean {
   switch (ir.type) {
     case "string":

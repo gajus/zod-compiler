@@ -13,7 +13,7 @@ import {
 } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType, unrecognizedKeys } from "../emit-issue.js";
-import { ZC_AB_DECL } from "../issue-decls.js";
+import { ZC_AB_DECL, ZC_PROTO_SCRUB_DECL } from "../issue-decls.js";
 import { orderByRuntimeCost } from "../fast-size.js";
 import { refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
 
@@ -49,6 +49,12 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
     // Spread, not Object.assign: V8's CloneObjectIC makes `{...x}` ~25% faster
     // on the whole safeParse call for mutation-bearing schemas.
     code += needsClone ? `var ${objVar}={...${g.input}};` : `var ${objVar}=${g.input};`;
+    // A loose or catchall output is the INPUT, or a spread of it — and spread
+    // copies an own `__proto__` as a plain data property — where zod's fresh
+    // `{}` never receives the key at all. Scrub it (see ZC_PROTO_SCRUB_DECL); a
+    // strip object rebuilds and needs nothing here.
+    const scrub = emitRuntimeHelper(g.ctx, "__zcPs", ZC_PROTO_SCRUB_DECL);
+    code += `${objVar}=${scrub}(${objVar});`;
   }
 
   // Object-level refines are gated on zod's ABORT rule, not on "did anything
@@ -218,7 +224,9 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
       }`;
   }
 
-  if (needsClone) {
+  // `!strip` also writes back: the scrub above may have re-pointed `objVar` at
+  // a copy even where nothing else mutates.
+  if (needsClone || !strip) {
     code += `${g.output}=${objVar};`;
   }
 

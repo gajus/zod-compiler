@@ -2528,3 +2528,81 @@ describe("z.looseRecord copies unrecognized keys through", () => {
   // CONTROL: a plain record still compiles.
   it("a plain record still compiles", () => expectCompiled(z.record(z.string(), z.number())));
 });
+
+/**
+ * `__proto__` never reaches an output, because zod never lets it: the shape
+ * loop strips a declared one, `handleCatchall` skips an undeclared one, and
+ * `$ZodRecord` skips it while copying — all so the assignment into their fresh
+ * `{}` cannot replace the result's prototype.
+ *
+ * A compiled loose/catchall object or record hands its INPUT back, so it has to
+ * remove the key itself (`__zcPs`). This is not cosmetic: an own `__proto__`
+ * that survives into the parsed value turns `Object.assign({}, parsed)` into a
+ * prototype-pollution sink, since [[Set]] runs the inherited setter where the
+ * spread that produced the value did not.
+ *
+ * A STRICT object is exempt unless the key is declared — an undeclared one is
+ * an unrecognized key and the parse fails — and a STRIPPING object rebuilds
+ * from the declared keys, which `parsedProperties` drops.
+ */
+describe("`__proto__` never reaches a compiled output", () => {
+  const polluting = (): Record<string, unknown> =>
+    JSON.parse('{"a":1,"__proto__":{"polluted":true}}') as Record<string, unknown>;
+
+  const CONTAINERS: [string, () => z.ZodType][] = [
+    ["looseObject", () => z.looseObject({ a: z.number() })],
+    ["catchall", () => z.object({ a: z.number() }).catchall(z.any())],
+    ["record", () => z.record(z.string(), z.any())],
+    ["record with a coerced value", () => z.record(z.string(), z.coerce.number())],
+    ["looseObject with a coerced prop", () => z.looseObject({ a: z.coerce.number() })],
+  ];
+
+  for (const [label, make] of CONTAINERS) {
+    it(`${label}: the key is dropped, as zod drops it`, () =>
+      expectParity(make(), [polluting(), { a: 1 }, {}]));
+
+    it(`${label}: the result is not a pollution sink`, () => {
+      const compiled = compileLikeProduction(make(), `proto_${label.replace(/\W/g, "_")}`);
+      const result = compiled(polluting()) as { success: boolean; data?: object };
+      expect(result.success).toBe(true);
+      const assigned = Object.assign({}, result.data) as { polluted?: boolean };
+      expect(assigned.polluted).toBeUndefined();
+      expect(Object.getPrototypeOf(assigned)).toBe(Object.prototype);
+    });
+  }
+
+  // The scrub copies rather than editing, so the caller keeps its own object.
+  it("the caller's input is left alone", () => {
+    const input = polluting();
+    compileLikeProduction(z.looseObject({ a: z.number() }), "protoInputIntact")(input);
+    expect(Object.hasOwn(input, "__proto__")).toBe(true);
+  });
+
+  // NESTED containers too: the root shortcut only filters the outer value, so a
+  // schema with a scrub-needing descendant must not take it.
+  const NESTED: [string, () => z.ZodType, unknown][] = [
+    ["in a stripping object", () => z.object({ v: z.looseObject({ a: z.number() }) }), { v: null }],
+    ["in an array", () => z.array(z.record(z.string(), z.any())), null],
+    ["in a tuple", () => z.tuple([z.looseObject({ a: z.number() })]), null],
+    ["in a loose object", () => z.looseObject({ v: z.record(z.string(), z.any()) }), { v: null }],
+    ["two deep", () => z.object({ o: z.object({ v: z.looseObject({ a: z.number() }) }) }), null],
+  ];
+  for (const [label, make, _shape] of NESTED) {
+    it(`${label}: the nested container is scrubbed too`, () => {
+      const wrap = (inner: Record<string, unknown>): unknown =>
+        label === "in an array" || label === "in a tuple"
+          ? [inner]
+          : label === "two deep"
+            ? { o: { v: inner } }
+            : { v: inner };
+      expectParity(make(), [wrap(polluting()), wrap({ a: 1 })]);
+    });
+  }
+
+  // CONTROL: a container with no such key is still handed back by reference.
+  it("an ordinary container is still returned by reference", () => {
+    const input = { a: 1 };
+    const compiled = compileLikeProduction(z.looseObject({ a: z.number() }), "protoByRef");
+    expect((compiled(input) as { data: object }).data).toBe(input);
+  });
+});

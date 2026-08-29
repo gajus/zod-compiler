@@ -3,7 +3,7 @@ import type { FastGen, SlowGen } from "../context.js";
 import { declareFastTemps, emitRuntimeHelper, extendPath, hasMutation } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType, unrecognizedKeys } from "../emit-issue.js";
-import { ZC_FZ_DECL, ZC_HOP_DECL, ZC_PLAIN_DECL } from "../issue-decls.js";
+import { ZC_FZ_DECL, ZC_HOP_DECL, ZC_PLAIN_DECL, ZC_PROTO_SCRUB_DECL } from "../issue-decls.js";
 
 /**
  * `$ZodRecord` gates on `util.isPlainObject`, NOT the looser `util.isObject`
@@ -33,6 +33,11 @@ export function slowRecord(ir: SchemaIR & { type: "record" }, g: SlowGen): strin
   if (hasMutation(ir.valueType)) {
     code += `${g.output}={...${g.input}};`;
   }
+  // PROTO_SKIP keeps `__proto__` out of the WALK; this keeps it out of the
+  // OUTPUT, which zod also does — it copies into a fresh `{}` and skips the key
+  // (see ZC_PROTO_SCRUB_DECL). Runs before the walk so the loop iterates the
+  // same container the caller gets back.
+  code += `${g.output}=${emitRuntimeHelper(g.ctx, "__zcPs", ZC_PROTO_SCRUB_DECL)}(${g.input});`;
 
   const keyVar = g.temp("rkey");
   const keyIssuesVar = g.temp("rki");

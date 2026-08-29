@@ -193,6 +193,26 @@ export const ZC_LENGTH_ORIGIN_DECL =
   'function __zcLo(v){return Array.isArray(v)?"array":typeof v==="string"?"string":"unknown";}';
 
 /**
+ * Drop an own `__proto__` from a container the parse hands back BY REFERENCE.
+ *
+ * zod never lets the key into an output: `$ZodObject`'s shape loop strips a
+ * declared one, `handleCatchall` skips an undeclared one, and `$ZodRecord` skips
+ * it while copying — all so the assignment into their fresh `{}` cannot replace
+ * the result's prototype. A compiled loose/catchall object or record IS its
+ * input, so the key has to be removed here instead; leaving it made
+ * `Object.assign({}, parsed)` a prototype-pollution sink, since [[Set]] runs the
+ * inherited setter the spread that built the value did not.
+ *
+ * Copies rather than editing in place: the divergence note promises the caller
+ * its own container back, not one with a key silently deleted from it. The
+ * common object has no such key and is returned untouched, so the cost is one
+ * `hasOwnProperty` call.
+ */
+export const ZC_PROTO_SCRUB_DECL =
+  'function __zcPs(o){if(!Object.prototype.hasOwnProperty.call(o,"__proto__"))return o;' +
+  'var c={...o};delete c["__proto__"];return c;}';
+
+/**
  * Code points in a string — zod's `util.codePointLength`, verbatim. A surrogate
  * pair counts once and a lone surrogate as itself. The regex probe is the fast
  * exit for a string with no astral characters, and the hand-rolled loop avoids
@@ -368,6 +388,7 @@ export const RUNTIME_HELPER_DECLS: Readonly<Record<string, string>> = {
   __zcLo: ZC_LENGTH_ORIGIN_DECL,
   __zcSo: ZC_SIZE_ORIGIN_DECL,
   __zcCpl: ZC_CPL_DECL,
+  __zcPs: ZC_PROTO_SCRUB_DECL,
   __zcPlain: ZC_PLAIN_DECL,
   __zcPfx: ZC_PFX_DECL,
   __zcCu: ZC_CUSTOM_OK_DECL,

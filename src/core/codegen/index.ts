@@ -6,15 +6,23 @@ import type {
   GeneratedConstant,
   RecTargetGen,
 } from "./context.js";
-import { fastResultIsInput, generateBuild, rebuildsOutput } from "./build-path.js";
+import {
+  fastResultIsInput,
+  generateBuild,
+  nestedNeedsProtoScrub,
+  rebuildsOutput,
+} from "./build-path.js";
 import {
   declareFastTemps,
   emitRetainedMethod,
   emitRfDelegate,
+  emitRuntimeHelper,
   hasMutation,
+  needsProtoScrub,
   RETAINED_SCHEMA_VAR,
 } from "./context.js";
 import type { SharedSchemaPlan } from "./dedupe.js";
+import { ZC_PROTO_SCRUB_DECL } from "./issue-decls.js";
 import { createFastGen, generateFast } from "./fast-path.js";
 import { createSlowGen, generateSlow } from "./slow-path.js";
 
@@ -377,7 +385,16 @@ export function generateValidator(
     };
   }
 
-  if (fastExpr !== null && !hasMutation(ir)) {
+  if (fastExpr !== null && !hasMutation(ir) && !nestedNeedsProtoScrub(ir)) {
+    // The by-reference shortcut hands back the input verbatim, which a loose or
+    // catchall object — or a record — must not do while it still carries an own
+    // `__proto__` (see ZC_PROTO_SCRUB_DECL). The fast check itself stays a pure
+    // predicate, so `fc(input) ⟺ zod accepts` still holds and the deferred error
+    // path below is untouched; only the value handed back is filtered. The cost
+    // is one `hasOwnProperty` per successful parse of those shapes.
+    const fastData = needsProtoScrub(ir)
+      ? `${emitRuntimeHelper(ctx, "__zcPs", ZC_PROTO_SCRUB_DECL)}(input)`
+      : "input";
     // Mutation-free schemas with a fast path: a fast-check failure can never
     // become a slow-path success (both are generated from the same checks —
     // unlike default/catch schemas, whose partial fast path requires value
@@ -403,7 +420,7 @@ export function generateValidator(
       // a per-call closure for recursive schemas. Recursion is the rare
       // shape; everything else gets the hosted walk.
       functionDefParts.push(
-        `if(${fastExpr}){return{success:true,data:input};}`,
+        `if(${fastExpr}){return{success:true,data:${fastData}};}`,
         `return __zcFinD(function(input){`,
         `var _e=[];`,
         `var _d=input;`,
@@ -418,7 +435,7 @@ export function generateValidator(
         `function ${walkName}(input){var _e=[];\nvar _d=input;\n${slowCode}\nreturn _e;}`,
       );
       functionDefParts.push(
-        `if(${fastExpr}){return{success:true,data:input};}`,
+        `if(${fastExpr}){return{success:true,data:${fastData}};}`,
         `return __zcFinD(${walkName},input);`,
         `}`,
       );
