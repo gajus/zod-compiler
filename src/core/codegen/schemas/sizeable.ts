@@ -6,6 +6,21 @@ import { tooBig, tooSmall } from "../emit-issue.js";
 import { ZC_CPL_DECL, ZC_LENGTH_ORIGIN_DECL, ZC_SIZE_ORIGIN_DECL } from "../issue-decls.js";
 
 /**
+ * The UTF-16 unit count from which a string is CERTAINLY at least `min` code
+ * points, so the count can be skipped.
+ *
+ * A code point is one or two units, so `codePoints >= ceil(units / 2)`, and
+ * that ceiling is an integer: `ceil(units/2) >= min` holds exactly when
+ * `ceil(units/2) >= Math.ceil(min)`, i.e. `units >= 2 * ceil(min) - 1`.
+ * Rounding `min` up is what makes a FRACTIONAL bound safe — `min(2.5)` is
+ * settled at 5 units, not the 4 that `2 * min - 1` would have claimed, where
+ * two astral characters are only 2 code points and zod reports `too_small`.
+ */
+function certainlyAtLeast(min: number): number {
+  return 2 * Math.ceil(min) - 1;
+}
+
+/**
  * String length tests over Unicode CODE POINTS, gated so the count is only
  * paid for when the UTF-16 unit count leaves the verdict in doubt.
  *
@@ -14,41 +29,41 @@ import { ZC_CPL_DECL, ZC_LENGTH_ORIGIN_DECL, ZC_SIZE_ORIGIN_DECL } from "../issu
  * only when the unit count could sit on the other side of the bound. A code
  * point is one or two units, so `units/2 <= codePoints <= units` — which pins
  * the doubtful band tighter than zod's own gate without changing a verdict:
- * `min(N)` is settled outside `N <= units < 2N-1` (so `min(1)` stays a plain
- * `length>=1`), `max(N)` outside `N < units <= 2N`, and `length(N)` outside
- * `N <= units <= 2N`. Every test leads with the plain unit comparison, so an
- * ASCII string of ordinary length never reaches the helper.
+ * `min(N)` is settled outside `N <= units < 2*ceil(N)-1` (so `min(1)` stays a
+ * plain `length>=1`; see {@link certainlyAtLeast} for the fractional case),
+ * `max(N)` outside `N < units <= 2N`, and `length(N)` outside `N <= units <=
+ * 2N`. Every test leads with the plain unit comparison, so an ASCII string of
+ * ordinary length never reaches the helper.
  *
  * `mayNotBeString` adds the `typeof` guard zod applies (`typeof input ===
  * "string" && …`) for a site whose input is not statically a string — a
  * length check firing on the wrong type through its `when` predicate; an array
- * measures elements, never code points.
+ * measures elements, never code points. Only the failure-direction forms take
+ * it: `min`/`max`/`equals` are reached solely from `fastStringCheck`, whose
+ * input is statically a string.
  */
 export const stringLengthTests = {
-  min(x: string, min: number, ctx: CodeGenContext, mayNotBeString = false): string {
+  min(x: string, min: number, ctx: CodeGenContext): string {
     const units = `${x}.length>=${min}`;
     if (min <= 1) return units;
     const cpl = emitRuntimeHelper(ctx, "__zcCpl", ZC_CPL_DECL);
-    const guard = mayNotBeString ? `typeof ${x}!=="string"||` : "";
-    return `${units}&&(${x}.length>=${2 * min - 1}||${guard}${cpl}(${x})>=${min})`;
+    return `${units}&&(${x}.length>=${certainlyAtLeast(min)}||${cpl}(${x})>=${min})`;
   },
-  max(x: string, max: number, ctx: CodeGenContext, mayNotBeString = false): string {
+  max(x: string, max: number, ctx: CodeGenContext): string {
     const units = `${x}.length<=${max}`;
     if (max <= 0) return units;
     const cpl = emitRuntimeHelper(ctx, "__zcCpl", ZC_CPL_DECL);
-    const guard = mayNotBeString ? `typeof ${x}!=="string"||` : "";
-    return `(${units}||(${x}.length<=${2 * max}&&(${guard}${cpl}(${x})<=${max})))`;
+    return `(${units}||(${x}.length<=${2 * max}&&${cpl}(${x})<=${max}))`;
   },
-  equals(x: string, length: number, ctx: CodeGenContext, mayNotBeString = false): string {
+  equals(x: string, length: number, ctx: CodeGenContext): string {
     if (length <= 0) return `${x}.length===${length}`;
     const cpl = emitRuntimeHelper(ctx, "__zcCpl", ZC_CPL_DECL);
-    const guard = mayNotBeString ? `typeof ${x}==="string"&&` : "";
     // A single unit is always one code point, so `length(1)` is only in doubt
     // at exactly two units.
     if (length === 1) {
-      return `(${x}.length===1||(${guard}${x}.length===2&&${cpl}(${x})===1))`;
+      return `(${x}.length===1||(${x}.length===2&&${cpl}(${x})===1))`;
     }
-    return `(${x}.length>=${length}&&${x}.length<=${2 * length}&&${guard}${cpl}(${x})===${length})`;
+    return `(${x}.length>=${length}&&${x}.length<=${2 * length}&&${cpl}(${x})===${length})`;
   },
   /**
    * The FAILING condition of `min`/`max`, with the negation pushed inward so a
@@ -60,7 +75,7 @@ export const stringLengthTests = {
     if (min <= 1) return units;
     const cpl = emitRuntimeHelper(ctx, "__zcCpl", ZC_CPL_DECL);
     const guard = mayNotBeString ? `typeof ${x}==="string"&&` : "";
-    return `${units}||(${x}.length<${2 * min - 1}&&${guard}${cpl}(${x})<${min})`;
+    return `${units}||(${x}.length<${certainlyAtLeast(min)}&&${guard}${cpl}(${x})<${min})`;
   },
   maxFails(x: string, max: number, ctx: CodeGenContext, mayNotBeString = false): string {
     const units = `${x}.length>${max}`;

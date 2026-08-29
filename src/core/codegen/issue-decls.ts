@@ -112,11 +112,20 @@ export const ISSUE_DECLS: Readonly<Record<string, string>> = {
 
 /**
  * Float-safe remainder — byte-for-byte port of zod's util.floatSafeRemainder.
- * Raw `%` mis-rejects valid multiples of decimal steps (0.3 % 0.1 !== 0);
- * zod scales both operands to integers by their decimal-place count first.
+ * Raw `%` mis-rejects valid multiples of decimal steps (0.3 % 0.1 !== 0).
+ *
+ * zod 4.5 REPLACED the decimal-scaling implementation this once mirrored with a
+ * ratio-and-tolerance one, and the two disagree in both directions: the old form
+ * accepted `1e-7` as a multiple of 3 (its `toFixed` scaling collapsed the value
+ * to 0) and rejected `1e21` (where `toFixed` yields exponential notation and
+ * `parseInt` then reads 1). The tolerance is 4x epsilon because `val` and `step`
+ * each round to a double before the division rounds again, so a true decimal
+ * multiple's quotient can sit up to 1.5 scaled epsilons from the integer.
  */
 export const ZC_FSR_DECL =
-  'function __zcFsr(v,s){var vd=((""+v).split(".")[1]||"").length;var ss=""+s;var sd=(ss.split(".")[1]||"").length;if(sd===0&&/\\d?e-\\d?/.test(ss)){var m=ss.match(/\\d?e-(\\d?)/);if(m&&m[1]){sd=parseInt(m[1],10);}}var d=vd>sd?vd:sd;var vi=parseInt(v.toFixed(d).replace(".",""),10);var si=parseInt(s.toFixed(d).replace(".",""),10);return (vi%si)/Math.pow(10,d);}';
+  "function __zcFsr(v,s){var r=v/s;var q=Math.round(r);" +
+  "var t=4*Number.EPSILON*Math.max(Math.abs(r),1);" +
+  "return Math.abs(r-q)<t?0:r-q;}";
 
 /**
  * Hoisted `Object.prototype.hasOwnProperty` reference. Record fast/slow paths

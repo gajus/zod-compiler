@@ -135,6 +135,25 @@ describe("edge cases — numeric / bigint / date boundaries", () => {
     expectParity(z.number().min(0).max(0), [0, -0]));
   it("number.int().multipleOf(3) at integer-valued floats", () =>
     expectParity(z.number().int().multipleOf(3), [9, 9.0, 10, 1.5]));
+  /**
+   * `__zcFsr` mirrors `util.floatSafeRemainder`, which zod 4.5 re-implemented:
+   * the decimal-scaling form it used to be gave the wrong answer at BOTH ends of
+   * the float range. Subnormal-ish values scaled to zero and were accepted as a
+   * multiple of anything; values at or past 1e21 stringify to exponential
+   * notation, which `parseInt` truncated to 1, and were rejected. The
+   * ratio/tolerance form has neither failure, and the decimal cases below are
+   * what the scaling form existed to get right in the first place.
+   */
+  it("number.multipleOf below the decimal-scaling floor", () =>
+    expectParity(z.number().multipleOf(3), [1e-7, 1e-15, Number.MIN_VALUE, 0]));
+  it("number.multipleOf(0.1) at tiny magnitudes", () =>
+    expectParity(z.number().multipleOf(0.1), [2e-7, 1e-15, 0.3, 0.7, 2.03]));
+  it("number.multipleOf past the 1e21 exponential-notation boundary", () =>
+    expectParity(z.number().multipleOf(3), [1e21, -1e21, 1e22, 1e300, Number.MAX_VALUE]));
+  it("number.multipleOf(0.5) past 1e21", () =>
+    expectParity(z.number().multipleOf(0.5), [1e21, 1e22]));
+  it("number.multipleOf(0.07) keeps the decimal tolerance", () =>
+    expectParity(z.number().multipleOf(0.07), [2.03, 0.07, 0.14, 0.08]));
   it("int64 at the two's-complement edges", () =>
     expectParity(z.int64(), [2n ** 63n - 1n, 2n ** 63n, -(2n ** 63n), -(2n ** 63n) - 1n]));
   it("uint64 at the unsigned edges", () =>
@@ -621,7 +640,37 @@ describe("edge cases — wrapper chains, pipe+coerce, ISO options, zero boundari
     expectParity(z.string().length(0), ["", "x"]);
     expectParity(z.array(z.number()).length(0), [[], [1]]);
     expectParity(z.number().multipleOf(0), [0, 1, 5]); // x % 0 is NaN — only 0 can pass in Zod
+    // `x % 0n` THROWS where the number branch merely yields NaN, so zod 4.5
+    // guards the divisor ($ZodCheckMultipleOf) and reports not_multiple_of for
+    // every input. Emitting the bare `%` here crashed safeParse outright.
+    expectParity(z.bigint().multipleOf(0n), [0n, 1n, 5n]);
+    expectParity(z.object({ v: z.bigint().multipleOf(0n) }), [{ v: 0n }, { v: 1n }]);
   });
+});
+
+/**
+ * `z.string().min()/.max()/.length()` measure Unicode CODE POINTS, and the
+ * compiled form skips that count when the UTF-16 unit count already settles the
+ * verdict. The skip threshold has to round a FRACTIONAL bound up: `min(2.5)` is
+ * only certain at 5 units, and the `2 * min - 1` form claimed it at 4 — where
+ * two astral characters are 4 units but just 2 code points, which zod rejects.
+ */
+describe("edge cases — fractional length bounds over astral characters", () => {
+  const ASTRAL = ["", "a", "😀", "😀a", "😀😀", "😀😀😀", "😀😀😀😀", "abcd", "\uD800", "👨‍👩‍👦"];
+  for (const bound of [0.5, 1.5, 2.5, 3.5]) {
+    it(`string.min(${bound})`, () => expectParity(z.string().min(bound), [...ASTRAL]));
+    it(`string.max(${bound})`, () => expectParity(z.string().max(bound), [...ASTRAL]));
+    it(`string.length(${bound})`, () => expectParity(z.string().length(bound), [...ASTRAL]));
+    it(`object property min(${bound})`, () =>
+      expectParity(
+        z.object({ v: z.string().min(bound) }),
+        ASTRAL.map((v) => ({ v })),
+      ));
+    // The when-gated copy: an array's length check still fires on a string, and
+    // zod measures THAT in code points.
+    it(`array.min(${bound}) over a string`, () =>
+      expectParity(z.array(z.number()).min(bound), [...ASTRAL]));
+  }
 });
 
 /**
