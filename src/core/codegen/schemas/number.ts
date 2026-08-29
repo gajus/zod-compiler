@@ -76,7 +76,7 @@ export function slowNumber(ir: NumberIR, g: SlowGen): string {
           }
           break;
         case "number_format": {
-          const message = check.message;
+          const message = check.message ?? g.typeMsg;
           if (check.format === "safeint") {
             // Mirrors $ZodCheckNumberFormat: non-integers → invalid_type;
             // integers outside the safe range → too_small/too_big with
@@ -121,8 +121,8 @@ export function slowNumber(ir: NumberIR, g: SlowGen): string {
           break;
         }
         case "multiple_of": {
-          const msgProp =
-            check.message !== undefined ? `,message:${JSON.stringify(check.message)}` : "";
+          const message = check.message ?? g.typeMsg;
+          const msgProp = message !== undefined ? `,message:${JSON.stringify(message)}` : "";
           // zod uses a float-safe remainder: raw % mis-rejects 0.3 % 0.1
           const fsr = emitRuntimeHelper(g.ctx, "__zcFsr", ZC_FSR_DECL);
           code += emit`

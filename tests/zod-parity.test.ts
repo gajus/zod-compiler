@@ -325,11 +325,24 @@ describe("zod parity — custom error messages", () => {
     expectParity(z.string().email("Bad email"), ["nope"]);
   });
 
-  it("schema-level { error } applies to node-level issues only (Zod precedence)", () => {
+  it("schema-level { error } covers the schema's own checks (Zod precedence)", () => {
     expectParity(z.string({ error: "must be a string" }), [42]);
-    // Zod resolves check issues against the CHECK's error map, not the
-    // schema's — min(3) failure gets the locale default, not "bad name".
+    // A check stamps its owning schema onto the issue, so the schema's error
+    // map is the rung after the check's own — min(3) failure gets "bad name",
+    // and an explicit check message still wins over it.
     expectParity(z.string({ error: "bad name" }).min(3), ["x", 42]);
+    expectParity(z.string({ error: "bad name" }).min(3, "too short").email(), ["x", "abc"]);
+    expectParity(z.number({ error: "bad num" }).int().multipleOf(3), [1.5, 4]);
+    expectParity(
+      z.string({ error: "bad name" }).refine(() => false),
+      ["x"],
+    );
+    expectParity(
+      z.string({ error: "bad name" }).superRefine((v, ctx) => {
+        if (v === "x") ctx.addIssue({ code: "custom" });
+      }),
+      ["x", "ok"],
+    );
     expectParity(z.enum(["a", "b"], { error: "pick a or b" }), ["c"]);
     expectParity(z.union([z.string(), z.number()], { error: "string or number" }), [true]);
     expectParity(z.tuple([z.string()], { error: "exactly one" }), [[], ["a", "b"]]);

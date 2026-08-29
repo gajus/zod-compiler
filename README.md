@@ -557,7 +557,7 @@ Three things differ by design:
 
 | Behavior                  | Zod                                             | zod-compiler                                            |
 | ------------------------- | ----------------------------------------------- | ------------------------------------------------------- |
-| Record key iteration      | All own keys (`Reflect.ownKeys`)                | Own enumerable **string** keys only                     |
+| Record key iteration      | Own enumerable keys, symbols included           | Own enumerable **string** keys only                     |
 | Container output identity | A fresh array / set / map / object              | The input container, by reference (array holes survive) |
 | Per-call parse params     | `safeParse(x, { error, reportInput })` honoured | Ignored; global `z.config()` maps still apply           |
 

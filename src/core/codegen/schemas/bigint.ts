@@ -46,8 +46,8 @@ export function slowBigInt(ir: BigIntIR, g: SlowGen): string {
           }
           break;
         case "bigint_multiple_of": {
-          const msgProp =
-            check.message !== undefined ? `,message:${JSON.stringify(check.message)}` : "";
+          const message = check.message ?? g.typeMsg;
+          const msgProp = message !== undefined ? `,message:${JSON.stringify(message)}` : "";
           code += emit`
             if(${g.input}%${check.value}n!==0n){
               ${g.issues}.push({origin:"bigint",code:"not_multiple_of",divisor:${check.value}n,input:${g.input},path:${g.path}${msgProp}});

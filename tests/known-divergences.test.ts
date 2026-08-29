@@ -50,13 +50,13 @@ describe("known divergence — array output keeps sparseness / extra properties"
  * 2. RECORD KEY ITERATION — for-in vs Reflect.ownKeys.
  *
  * The compiler iterates records with an allocation-free `for-in` (own
- * ENUMERABLE STRING keys), while Zod walks `Reflect.ownKeys` — every own key,
- * including non-enumerable string keys AND symbol keys. So the compiler ignores
- * keys Zod validates (and, for string-shaped key schemas, rejects): symbol keys
- * are silently accepted, and a non-enumerable string key is skipped entirely.
+ * ENUMERABLE STRING keys), while Zod walks `Reflect.ownKeys` filtered to the
+ * enumerable ones — so it also sees an own enumerable SYMBOL key, which a
+ * string-shaped key schema then rejects. The compiler silently accepts it.
  * Closing this means replacing for-in with a Reflect.ownKeys keys-array
  * allocation on every record parse — the cost for-in deliberately avoids (the
- * code notes for-in is 2.9–5.8x faster than the Object.keys form).
+ * code notes for-in is 2.9–5.8x faster than the Object.keys form). A
+ * non-enumerable key, string or symbol, is skipped by both sides.
  */
 describe("known divergence — record iterates own enumerable string keys only", () => {
   it("symbol key is rejected by Zod but ignored by the compiler", () => {
@@ -67,13 +67,14 @@ describe("known divergence — record iterates own enumerable string keys only",
     expect(schema.safeParse(input).success).toBe(false); // Zod validates the symbol key
     expect((compiled(input) as { success: boolean }).success).toBe(true); // compiler ignores it
   });
-  it("non-enumerable string key is validated by Zod but ignored by the compiler", () => {
+  it("a non-enumerable key is skipped by both", () => {
     const schema = z.record(z.string(), z.number());
-    const input = { a: 1 } as Record<string, unknown>;
+    const input = { a: 1 } as Record<string | symbol, unknown>;
     Object.defineProperty(input, "hidden", { value: "not-a-number", enumerable: false });
+    Object.defineProperty(input, Symbol("h"), { value: "not-a-number", enumerable: false });
     const compiled = compileLikeProduction(schema, "nonEnum");
-    expect(schema.safeParse(input).success).toBe(false); // Zod sees `hidden` and rejects its value
-    expect((compiled(input) as { success: boolean }).success).toBe(true); // for-in never visits it
+    expect(schema.safeParse(input).success).toBe(true);
+    expect((compiled(input) as { success: boolean }).success).toBe(true);
   });
 });
 
@@ -169,18 +170,21 @@ describe("known divergence — a catchall validates inherited keys but cannot re
  * the same failure: `ctx.error.issues`, finalized by `util.finalizeIssue`
  * (message filled in, `path` defaulted, `input` deleted), and `ctx.issues`,
  * which is the RAW `payload.issues` array straight off the inner parse — no
- * `message`, no `path`, but WITH `input` and with `inst`, the $ZodType instance
- * that raised the issue. They are distinct arrays holding distinct objects.
+ * `message`, no `path`, but WITH `input`, with `inst`, the $ZodType instance
+ * that raised the issue, and with `schema`, the instance that owns it (the
+ * same object for an issue a schema raised itself; the enclosing schema for one
+ * its check raised). They are distinct arrays holding distinct objects.
  *
  * The compiler produces ONE finalized array and passes it as both fields, so
- * `ctx.issues` gets the finalized shape rather than the raw one. `inst` is what
- * makes the raw view unreachable: it is the live zod schema object for the
- * failing node, and compiled code has no such object — a leaf like the inner
- * `z.string()` is erased into inline type tests at build time, with no runtime
- * value to name. Synthesizing a stand-in would be a lie an error map could
- * dereference (`iss.inst._zod.def`) and crash on, so the raw view is left as
- * the finalized one; the finalized view — the one zod's own docs point at, and
- * the only one carrying human-readable messages — matches exactly.
+ * `ctx.issues` gets the finalized shape rather than the raw one. `inst` and
+ * `schema` are what make the raw view unreachable: they are live zod schema
+ * objects for the failing node, and compiled code has no such object — a leaf
+ * like the inner `z.string()` is erased into inline type tests at build time,
+ * with no runtime value to name. Synthesizing a stand-in would be a lie an
+ * error map could dereference (`iss.inst._zod.def`) and crash on, so the raw
+ * view is left as the finalized one; the finalized view — the one zod's own
+ * docs point at, and the only one carrying human-readable messages — matches
+ * exactly.
  */
 describe("known divergence — z.catch()'s raw ctx.issues view is the finalized one", () => {
   const seen = (sink: (ctx: { issues: unknown[]; error: { issues: unknown[] } }) => void) =>
@@ -200,7 +204,7 @@ describe("known divergence — z.catch()'s raw ctx.issues view is the finalized 
     return captured;
   };
 
-  it("zod's ctx.issues is the raw payload (input + inst, no message/path)", () => {
+  it("zod's ctx.issues is the raw payload (input + inst + schema, no message/path)", () => {
     const ctx = capture((sink) => {
       seen(sink).safeParse(123);
     });
@@ -209,6 +213,7 @@ describe("known divergence — z.catch()'s raw ctx.issues view is the finalized 
       "expected",
       "input",
       "inst",
+      "schema",
     ]);
     // ...and it is a DIFFERENT array from the finalized one.
     expect(ctx.issues).not.toBe(ctx.error.issues);
@@ -272,8 +277,8 @@ describe("known divergence — a compiled failure builds its error lazily", () =
  * 6. z.readonly() OVER A PRIMITIVE FREEZES A VALUE ITS INNER REJECTED.
  *
  * `$ZodReadonly` freezes `payload.value` after running its inner schema without
- * checking whether that schema produced issues (`handleReadonlyResult` is
- * unconditional). When the inner is a primitive and the value is an object, the
+ * checking whether that schema produced issues (`handleReadonlyResult` only
+ * spares a memoized revisit). When the inner is a primitive and the value is an object, the
  * payload still holds the caller's own object — so Zod freezes data it just
  * rejected. A plain `z.string()` does not.
  *

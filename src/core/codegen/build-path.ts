@@ -56,6 +56,7 @@ import { createFastGen, generateFast } from "./fast-path.js";
 import { EXTRACT_CAP, estimateFastCost, MIN_EXTRACT, predictedInlineSize } from "./fast-size.js";
 import { ZC_HOP_DECL, ZC_PLAIN_DECL } from "./issue-decls.js";
 import { defaultValueExpr, needsPostInnerDefault } from "./schemas/default.js";
+import { parsedProperties } from "./schemas/object.js";
 import { innerAppliesDefaultOnUndefined } from "./schemas/optional.js";
 import { fastStringCheck } from "./schemas/string.js";
 import { emitStringBoolMap, stringBoolUsesInline } from "./schemas/string-bool.js";
@@ -630,7 +631,7 @@ function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {
   }
 
   const slots: { always: boolean; keyStr: string; value: string }[] = [];
-  for (const [key, propIR] of Object.entries(ir.properties)) {
+  for (const [key, propIR] of parsedProperties(ir)) {
     const keyStr = escapeString(key);
     const slot = local(g, "bv");
     code += `${slot}=${input}[${keyStr}];`;
