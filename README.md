@@ -5,6 +5,10 @@
 Keep your existing Zod schemas. Get **1.1-46x faster** validation, and up to **41x** on rejected
 input. No code changes required.
 
+Requires **Zod ≥ 4.5**. The compiled output reproduces 4.5's semantics exactly — code-point string
+lengths, symbol-keyed shapes, tuple issue order — so it does not match earlier 4.x releases. Stay on
+zod-compiler 1.x if you are on Zod 4.0–4.4.
+
 - [What Gets Compiled](#what-gets-compiled)
 - [Schema Hoisting](#schema-hoisting)
 - [Benchmark](#benchmark)
