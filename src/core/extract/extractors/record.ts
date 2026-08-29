@@ -9,9 +9,12 @@ export function extractRecord(def: ZodDef, ctx: ExtractorContext): SchemaIR {
   // Exhaustive-key records: when the key schema exposes a finite value set
   // (z.record(z.enum(...))), Zod requires EVERY key to be present and rejects
   // unrecognized keys. Compiled records only iterate input keys — delegate to
-  // Zod. z.partialRecord() clears `_zod.values`, so it still compiles.
+  // Zod. z.partialRecord() keeps the key schema (and its values) but sets
+  // `def.partial`, which is what zod itself reads to skip the exhaustive walk;
+  // the values then only decide the ISSUE a stray key raises (see RecordIR).
   const keyValues = def.keyType?._zod?.values;
-  if (keyValues !== undefined && keyValues.size > 0) {
+  const enumerableKeys = keyValues !== undefined;
+  if (enumerableKeys && !def.partial) {
     return ctx.fallback("unsupported");
   }
   const keyType = ctx.visit(def.keyType, "._zod.def.keyType");
@@ -43,7 +46,9 @@ export function extractRecord(def: ZodDef, ctx: ExtractorContext): SchemaIR {
   if (hasMutation(keyType)) {
     return ctx.fallback("unsupported");
   }
-  return { type: "record", keyType, valueType };
+  return enumerableKeys
+    ? { type: "record", keyType, valueType, enumerableKeys: true }
+    : { type: "record", keyType, valueType };
 }
 
 function isStringShapedKey(ir: SchemaIR): boolean {

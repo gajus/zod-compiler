@@ -18,7 +18,7 @@ export function slowArray(ir: SchemaIR & { type: "array" }, g: SlowGen): string 
   let code = emit`
     if(!Array.isArray(${g.input})){
       ${invalidType(g, "array")}
-      ${whenGatedSizeChecks(ir.checks, g, "length")}
+      ${whenGatedSizeChecks(ir.checks, g, "length", true)}
     }else{`;
 
   if (hasMutation(ir.element)) {

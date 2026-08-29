@@ -1,9 +1,88 @@
 import type { CheckOrEffectIR, FileCheckIR, SetCheckIR } from "../../types.js";
-import type { SlowGen } from "../context.js";
+import type { CodeGenContext, SlowGen } from "../context.js";
 import { emitRuntimeHelper } from "../context.js";
 import { emit } from "../emit.js";
 import { tooBig, tooSmall } from "../emit-issue.js";
-import { ZC_LENGTH_ORIGIN_DECL, ZC_SIZE_ORIGIN_DECL } from "../issue-decls.js";
+import { ZC_CPL_DECL, ZC_LENGTH_ORIGIN_DECL, ZC_SIZE_ORIGIN_DECL } from "../issue-decls.js";
+
+/**
+ * String length tests over Unicode CODE POINTS, gated so the count is only
+ * paid for when the UTF-16 unit count leaves the verdict in doubt.
+ *
+ * zod measures `z.string().min()/.max()/.length()` in code points
+ * (`util.codePointLength`), so `"😀"` has length 1, and it computes that count
+ * only when the unit count could sit on the other side of the bound. A code
+ * point is one or two units, so `units/2 <= codePoints <= units` — which pins
+ * the doubtful band tighter than zod's own gate without changing a verdict:
+ * `min(N)` is settled outside `N <= units < 2N-1` (so `min(1)` stays a plain
+ * `length>=1`), `max(N)` outside `N < units <= 2N`, and `length(N)` outside
+ * `N <= units <= 2N`. Every test leads with the plain unit comparison, so an
+ * ASCII string of ordinary length never reaches the helper.
+ *
+ * `mayNotBeString` adds the `typeof` guard zod applies (`typeof input ===
+ * "string" && …`) for a site whose input is not statically a string — a
+ * length check firing on the wrong type through its `when` predicate; an array
+ * measures elements, never code points.
+ */
+export const stringLengthTests = {
+  min(x: string, min: number, ctx: CodeGenContext, mayNotBeString = false): string {
+    const units = `${x}.length>=${min}`;
+    if (min <= 1) return units;
+    const cpl = emitRuntimeHelper(ctx, "__zcCpl", ZC_CPL_DECL);
+    const guard = mayNotBeString ? `typeof ${x}!=="string"||` : "";
+    return `${units}&&(${x}.length>=${2 * min - 1}||${guard}${cpl}(${x})>=${min})`;
+  },
+  max(x: string, max: number, ctx: CodeGenContext, mayNotBeString = false): string {
+    const units = `${x}.length<=${max}`;
+    if (max <= 0) return units;
+    const cpl = emitRuntimeHelper(ctx, "__zcCpl", ZC_CPL_DECL);
+    const guard = mayNotBeString ? `typeof ${x}!=="string"||` : "";
+    return `(${units}||(${x}.length<=${2 * max}&&(${guard}${cpl}(${x})<=${max})))`;
+  },
+  equals(x: string, length: number, ctx: CodeGenContext, mayNotBeString = false): string {
+    if (length <= 0) return `${x}.length===${length}`;
+    const cpl = emitRuntimeHelper(ctx, "__zcCpl", ZC_CPL_DECL);
+    const guard = mayNotBeString ? `typeof ${x}==="string"&&` : "";
+    // A single unit is always one code point, so `length(1)` is only in doubt
+    // at exactly two units.
+    if (length === 1) {
+      return `(${x}.length===1||(${guard}${x}.length===2&&${cpl}(${x})===1))`;
+    }
+    return `(${x}.length>=${length}&&${x}.length<=${2 * length}&&${guard}${cpl}(${x})===${length})`;
+  },
+  /**
+   * The FAILING condition of `min`/`max`, with the negation pushed inward so a
+   * check with no doubtful band emits the plain comparison the slow path always
+   * used (`x.length<1`, not `!(x.length>=1)`).
+   */
+  minFails(x: string, min: number, ctx: CodeGenContext, mayNotBeString = false): string {
+    const units = `${x}.length<${min}`;
+    if (min <= 1) return units;
+    const cpl = emitRuntimeHelper(ctx, "__zcCpl", ZC_CPL_DECL);
+    const guard = mayNotBeString ? `typeof ${x}==="string"&&` : "";
+    return `${units}||(${x}.length<${2 * min - 1}&&${guard}${cpl}(${x})<${min})`;
+  },
+  maxFails(x: string, max: number, ctx: CodeGenContext, mayNotBeString = false): string {
+    const units = `${x}.length>${max}`;
+    if (max <= 0) return units;
+    const cpl = emitRuntimeHelper(ctx, "__zcCpl", ZC_CPL_DECL);
+    const guard = mayNotBeString ? `typeof ${x}!=="string"||` : "";
+    return `${units}&&(${x}.length>${2 * max}||${guard}${cpl}(${x})>${max})`;
+  },
+  /**
+   * The measured length zod compares in `$ZodCheckLengthEquals` — code points
+   * inside the doubtful band, units outside it — for the slow path, which has
+   * to know WHICH side of the bound the value fell on.
+   */
+  measure(x: string, length: number, ctx: CodeGenContext, mayNotBeString = false): string {
+    if (length <= 0) return `${x}.length`;
+    const cpl = emitRuntimeHelper(ctx, "__zcCpl", ZC_CPL_DECL);
+    const guard = mayNotBeString ? `typeof ${x}==="string"&&` : "";
+    const band =
+      length === 1 ? `${x}.length===2` : `${x}.length>=${length}&&${x}.length<=${2 * length}`;
+    return `(${guard}${band}?${cpl}(${x}):${x}.length)`;
+  },
+};
 
 /**
  * Length/size checks re-emitted for the branch where the node's TYPE CHECK
@@ -34,11 +113,18 @@ import { ZC_LENGTH_ORIGIN_DECL, ZC_SIZE_ORIGIN_DECL } from "../issue-decls.js";
  *
  * `origin` is computed at runtime here (see ZC_LENGTH_ORIGIN_DECL), because the
  * value that reached this branch is by definition not the schema's own type.
+ *
+ * `mayBeString` is set by a non-string node whose length checks can fire on a
+ * string (`z.array(…).min(2)` over `"😀"`): zod then measures it in code
+ * points, so those tests take the guarded form of {@link stringLengthTests}. A
+ * string node's own failure branch never holds a string and keeps the plain
+ * unit comparison.
  */
 export function whenGatedSizeChecks(
   checks: readonly (CheckOrEffectIR | SetCheckIR | FileCheckIR)[],
   g: SlowGen,
   family: "length" | "size",
+  mayBeString = false,
 ): string {
   const KINDS =
     family === "length"
@@ -64,24 +150,28 @@ export function whenGatedSizeChecks(
     switch (check.kind) {
       case "min_length":
         body += emit`
-          if(${measure}<${check.minimum}){
+          if(${mayBeString ? stringLengthTests.minFails(g.input, check.minimum, g.ctx, true) : `${measure}<${check.minimum}`}){
             ${tooSmall(g, check.minimum, origin, true, { message: check.message })}
           }`;
         break;
       case "max_length":
         body += emit`
-          if(${measure}>${check.maximum}){
+          if(${mayBeString ? stringLengthTests.maxFails(g.input, check.maximum, g.ctx, true) : `${measure}>${check.maximum}`}){
             ${tooBig(g, check.maximum, origin, true, { message: check.message })}
           }`;
         break;
-      case "length_equals":
+      case "length_equals": {
+        const length = mayBeString
+          ? stringLengthTests.measure(g.input, check.length, g.ctx, true)
+          : measure;
         body += emit`
-          if(${measure}<${check.length}){
+          if(${length}<${check.length}){
             ${tooSmall(g, check.length, origin, true, { exact: true, message: check.message })}
-          }else if(${measure}>${check.length}){
+          }else if(${length}>${check.length}){
             ${tooBig(g, check.length, origin, true, { exact: true, message: check.message })}
           }`;
         break;
+      }
       case "min_size":
         body += emit`
           if(${measure}<${check.minimum}){

@@ -79,6 +79,8 @@ export interface ZodDef {
   rest: ZodSchema | null;
   keyType: ZodSchema;
   valueType: ZodSchema;
+  /** `z.partialRecord()`: the key schema's values are not required to be present. */
+  partial?: boolean;
   left: ZodSchema;
   right: ZodSchema;
   discriminator: string;

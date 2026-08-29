@@ -148,10 +148,14 @@ describe("edge cases — numeric / bigint / date boundaries", () => {
 });
 
 describe("edge cases — string Unicode and negative zero", () => {
-  it("string.length counts UTF-16 code units (emoji is length 2)", () =>
-    expectParity(z.string().length(1), ["😀", "a", "ab"]));
-  it("string.min on surrogate-pair strings", () =>
-    expectParity(z.string().min(2), ["😀", "a", "ab"]));
+  it("string.length counts code points (emoji is length 1)", () =>
+    expectParity(z.string().length(1), ["😀", "a", "ab", "😀a", "\ud83d"]));
+  it("string.min counts code points on surrogate-pair strings", () =>
+    expectParity(z.string().min(2), ["😀", "a", "ab", "😀a", "😀😀"]));
+  it("string.max counts code points on surrogate-pair strings", () =>
+    expectParity(z.string().max(1), ["😀", "a", "ab", "😀a", "😀😀"]));
+  it("array length checks count elements, not code points", () =>
+    expectParity(z.array(z.string()).min(2), [["😀"], ["😀", "a"], "😀"]));
   it("literal(0) treats -0 and 0 as equal (=== semantics)", () =>
     expectParity(z.literal(0), [0, -0]));
   it("literal(-0) treats 0 and -0 as equal", () => expectParity(z.literal(-0), [0, -0]));

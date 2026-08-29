@@ -19,11 +19,16 @@ import { extractSchema } from "#src/core/extract/index.js";
 import { FAIL_CLASS_DECL, FIN_DECL, FIN_DEFERRED_DECL } from "#src/core/iife.js";
 import type { SafeParseResult } from "#src/core/types.js";
 
+// Read per call, as production's `__zcMsg` does: zod installs its English
+// locale on the first schema construction, so a snapshot taken here — before
+// any schema exists — would be `undefined`.
+const localeError: z.core.$ZodErrorMap = (issue) => z.config().localeError?.(issue);
+
 const localizedFin = new Function(
   "__zcMsg",
   "__zcZodError",
   `${FAIL_CLASS_DECL}${FIN_DECL}; return __zcFin;`,
-)(z.config().localeError, ZodRealError);
+)(localeError, ZodRealError);
 
 interface ZodLikeSchema {
   safeParse: (input: unknown) => {
@@ -48,7 +53,7 @@ function compileLikeProduction(
     `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\n${generated.code}\nreturn ${generated.functionDef};`,
   );
   return factory(
-    z.config().localeError,
+    localeError,
     ZodRealError,
     localizedFin,
     refEntries.map((e) => e.schema),

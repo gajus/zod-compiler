@@ -240,7 +240,13 @@ describe("feature matrix — collections", () => {
       { a: 1, b: 2, c: 3 },
     ]));
   it("partialRecord", () =>
-    expectParity(z.partialRecord(z.enum(["a", "b"]), z.number()), [{ a: 1 }, {}, { a: "x" }]));
+    expectParity(z.partialRecord(z.enum(["a", "b"]), z.number()), [
+      { a: 1 },
+      {},
+      { a: "x" },
+      { c: 1 },
+      { a: "x", c: 1, d: 2 },
+    ]));
   it("set + size checks", () =>
     expectParity(z.set(z.string()).min(1).max(2), [
       new Set(["a"]),

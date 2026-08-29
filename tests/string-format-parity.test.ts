@@ -495,13 +495,32 @@ describe("invalid_format issue fields", () => {
       "ftp://example.com",
       ["code", "format", "message", "note", "path", "pattern"],
     ],
+    // ── the `://` guard: an http(s) check without normalize rejects before the
+    // parser and before the protocol probe, with a note and no pattern ───────
     [
       "httpUrl (bad protocol)",
       z.httpUrl(),
       "ftp://example.com",
+      ["code", "format", "message", "note", "path"],
+    ],
+    [
+      "httpUrl (bad format)",
+      z.httpUrl(),
+      "not a url",
+      ["code", "format", "message", "note", "path"],
+    ],
+    [
+      "httpUrl (bad protocol, normalize)",
+      z.httpUrl({ normalize: true }),
+      "ftp://example.com",
       ["code", "format", "message", "note", "path", "pattern"],
     ],
-    ["httpUrl (unparseable)", z.httpUrl(), "not a url", ["code", "format", "message", "path"]],
+    [
+      "httpUrl (unparseable, normalize)",
+      z.httpUrl({ normalize: true }),
+      "not a url",
+      ["code", "format", "message", "path"],
+    ],
   ];
 
   for (const [name, schema, input, zodKeys] of FIELD_CASES) {

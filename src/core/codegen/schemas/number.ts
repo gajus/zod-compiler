@@ -17,7 +17,7 @@ export function slowNumber(ir: NumberIR, g: SlowGen): string {
     }else if(Number.isNaN(${g.input})){
       ${invalidType(g, "number", { extra: 'received:"NaN"' })}
     }else if(!Number.isFinite(${g.input})){
-      ${invalidType(g, "number", { extra: 'received:"Infinity"' })}
+      ${invalidType(g, "number", { extra: `received:String(${g.input})` })}
     }`;
 
   if (ir.checks.length > 0) {

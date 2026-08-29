@@ -439,6 +439,13 @@ export interface RecordIR {
   type: "record";
   keyType: SchemaIR;
   valueType: SchemaIR;
+  /**
+   * The key schema declares a finite key set (`_zod.values`), so a key outside
+   * it is reported as `unrecognized_keys` — one issue after the walk — rather
+   * than `invalid_key`. Only a partial record compiles with one; an exhaustive
+   * one, where every declared key must be present, delegates to zod.
+   */
+  enumerableKeys?: true;
 }
 
 export interface SetIR {
