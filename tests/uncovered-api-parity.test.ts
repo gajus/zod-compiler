@@ -1323,14 +1323,13 @@ describe("issue fields beyond code and path", () => {
     }
   }
 
-  it("tuple length issues: too_small omits `inclusive`, too_big keeps it", () => {
+  it("tuple length issues: too_small and too_big both spell out `inclusive: true`", () => {
     const pair = z.tuple([z.string(), z.number()]);
     expectCompiled(pair);
-    // No `inclusive` — zod's under-length branch never writes one. The locale
-    // reads its absence as the exclusive phrasing (">2 items"), which is why the
-    // message matched all along while the shape did not.
-    expectIssueFields(pair, [], "tupleTooSmall", ["code", "message", "minimum", "origin", "path"]);
-    // Its sibling in the same ternary DOES spell out `inclusive: true`.
+    // zod's under-length push mirrors its over-length one: `{ code, minimum,
+    // inclusive: true, ..., origin }`, phrased ">=2 items" by the locale.
+    const keys = ["code", "inclusive", "message", "minimum", "origin", "path"];
+    expectIssueFields(pair, [], "tupleTooSmall", keys);
     expectIssueFields(pair, ["a", 1, 2], "tupleTooBig", [
       "code",
       "inclusive",
@@ -1339,16 +1338,23 @@ describe("issue fields beyond code and path", () => {
       "origin",
       "path",
     ]);
-    // An omittable tail moves `optStart`, not the issue's shape.
+    // An omittable tail moves `optStart` (the `minimum`), not the issue's shape.
     const withOptionalTail = z.tuple([z.string(), z.number(), z.string().optional()]);
     expectCompiled(withOptionalTail);
-    expectIssueFields(withOptionalTail, [], "tupleOptTailTooSmall", [
-      "code",
-      "message",
-      "minimum",
-      "origin",
-      "path",
-    ]);
+    expectIssueFields(withOptionalTail, [], "tupleOptTailTooSmall", keys);
+  });
+
+  it('an absent required key reports `invalid_type` with `expected: "nonoptional"`', () => {
+    // Pushed by $ZodObject itself, `code` first and without an `inst` — so the
+    // object's own `error` does not reach it where it reaches every other
+    // issue the node creates.
+    const required = z.object({ a: z.any() }, { error: "object-level" });
+    expectCompiled(required);
+    expectIssueFields(required, {}, "nonoptionalKey", ["code", "expected", "message", "path"]);
+    expect(compileLikeProduction(required)({}).error?.issues[0]?.message).toBe(
+      "Invalid input: expected nonoptional, received undefined",
+    );
+    expect(compileLikeProduction(required)(1).error?.issues[0]?.message).toBe("object-level");
   });
 
   it("CONTROL: check-created size issues still carry `inclusive`", () => {
@@ -2008,7 +2014,7 @@ describe("tuple items that zod treats as omittable", () => {
     ["exactOptional", () => z.exactOptional(z.string())],
     ["default", () => z.string().default("d")],
     ["prefault", () => z.string().prefault("d")],
-    ["z.undefined()", () => z.undefined()],
+    ["catch", () => z.string().catch("c")],
     ["nullable over optional", () => z.string().optional().nullable()],
     ["readonly over optional", () => z.string().optional().readonly()],
     ["lazy over optional", () => z.lazy(() => z.string().optional())],
@@ -2031,37 +2037,97 @@ describe("tuple items that zod treats as omittable", () => {
     it(`${label}: is still required when a required item follows it`, () =>
       expectParity(z.tuple([make(), z.string()]), [[], ["a"], ["a", "b"]]));
   }
+
+  // Accepting `undefined` is not the same as permitting absence: these sit on
+  // the bottom rung of `optin`, so a short input is `too_small` and only an
+  // explicit `undefined` reaches the item.
+  it("z.undefined() and z.any() are required-in", () => {
+    for (const make of [() => z.undefined(), () => z.any(), () => z.string().or(z.undefined())]) {
+      expectParity(z.tuple([make()]), [[], [undefined], ["s"]]);
+      expectParity(z.tuple([z.string(), make()]), [[], ["a"], ["a", undefined]]);
+    }
+  });
 });
 
-// A required slot past the end of a short input is RUN by zod, and
-// `handleTupleResult` writes its result back — so the output array is longer
-// than the input whenever that item accepts `undefined`.
-describe("tuple output is padded up to optStart, as handleTupleResult does", () => {
-  it("a required any/unknown slot past the end lands as an own undefined", () => {
+// Without a rest element a required slot past the end is `too_small` before
+// any item runs. With one there is no length gate: zod RUNS the item on
+// `undefined` and `handleTupleResults` writes its result back, so the output
+// is longer than the input whenever that item accepts `undefined`.
+describe("a required slot past the end", () => {
+  it("is too_small without a rest element, whatever the item accepts", () => {
     expectParity(z.tuple([z.any(), z.any()]), [["x"], ["x", "y"], []]);
     expectParity(z.tuple([z.unknown(), z.unknown()]), [["x"], []]);
     expectParity(z.tuple([z.any(), z.string().default("d")]), [[], ["x"], ["x", "y"]]);
   });
 
-  it("with a rest element, where no length gate hides the short input", () =>
+  it("lands as an own undefined with a rest element, where no length gate hides it", () =>
     expectParity(z.tuple([z.any(), z.any()]).rest(z.number()), [[], ["x"], ["x", "y", 1]]));
 
   it("CONTROL: a required slot that REJECTS undefined fails instead of padding", () =>
     expectParity(z.tuple([z.string(), z.string()]), [["x"], []]));
 });
 
-// ─── `.optional()` over an optional-IN inner ────────────────────────────────
-// `$ZodOptional.parse` takes a different branch when `innerType._zod.optin ===
-// "optional"`: it RUNS the inner on `undefined` (so a `.default()`/`.prefault()`
-// underneath fires) instead of short-circuiting, then discards the failure only
-// if the value is still undefined. The compiled short-circuit models the other
-// branch, and the `.default()` case explicitly; everything else delegates.
+// ─── Absent omittable slots: handleTupleResults ─────────────────────────────
+// Every item runs, and the walk over the results decides the output's length:
+// at or past `optoutStart` an absent "optional"-rung slot ends the output and a
+// failed "defaulted" one does the same with its issues dropped; below it the
+// result is written back so a later required-out slot keeps its index; and a
+// trailing run of `undefined`s from absent optional-out slots is trimmed.
+
+describe("absent tuple slots shape the output as handleTupleResults does", () => {
+  it("below optoutStart the slot is written back, issues and all", () => {
+    expectParity(z.tuple([z.string(), z.string().optional(), z.string().catch("c")]), [
+      ["a"],
+      ["a", undefined],
+      ["a", "b"],
+      ["a", 1],
+    ]);
+    expectParity(z.tuple([z.string(), z.string().optional().pipe(z.string())]), [
+      ["a"],
+      ["a", "b"],
+    ]);
+    expectParity(z.tuple([z.string(), z.string().min(5).prefault("ab")]), [["a"], ["a", "abcdef"]]);
+  });
+
+  it("at or past optoutStart a defaulted slot keeps its value and a failed one ends the output", () => {
+    const failing = () => z.string().min(5).prefault("ab").optional();
+    expectParity(z.tuple([z.string(), z.string().default("d").optional()]), [["a"], ["a", "b"]]);
+    expectParity(z.tuple([z.string(), failing()]), [["a"], ["a", "abcdef"], ["a", "ab"]]);
+    expectParity(z.tuple([z.string(), failing(), z.string().default("e")]), [["a"], ["a", "x"]]);
+    expectParity(z.tuple([z.string().optional(), z.exactOptional(z.string())]), [[], ["a"]]);
+    expectParity(z.tuple([z.string().default("d").optional(), z.exactOptional(z.string())]), [[]]);
+  });
+
+  it("a trailing undefined from an absent optional-out slot is trimmed, an explicit one kept", () => {
+    const opts = z.tuple([z.string(), z.string().optional(), z.string().optional()]);
+    expectParity(opts, [["a"], ["a", undefined], ["a", undefined, undefined], ["a", "b"]]);
+    expectParity(z.tuple([z.string().pipe(z.string().optional())]).rest(z.number()), [
+      [],
+      [undefined],
+    ]);
+  });
+
+  it("too_big no longer skips the items: their issues follow it", () => {
+    expectParity(z.tuple([z.string()]), [
+      [1, 2],
+      ["a", 2],
+    ]);
+    expectParity(z.union([z.tuple([z.string()]), z.number()]), [[1, 2]]);
+  });
+});
+
+// ─── `.optional()` over a "defaulted" inner ─────────────────────────────────
+// `$ZodOptional.parse` short-circuits `undefined` unless `innerType._zod.optin`
+// is `"defaulted"`: then it RUNS the inner on a payload of its own (so a
+// `.default()`/`.prefault()` underneath fires) and, if that failed, yields
+// `undefined` with the failure dropped. The compiled short-circuit models the
+// other branch, and the `.default()` case explicitly; everything else delegates.
 
 describe("optional() wrapping a schema that consumes undefined itself", () => {
   it("prefault fires through the optional", () =>
     expectParity(z.string().prefault("d").optional(), [undefined, "x", 1]));
 
-  it("a prefault whose value fails its own checks keeps the failure", () =>
+  it("a prefault whose value fails its own checks yields undefined, not the failure", () =>
     expectParity(z.string().min(5).prefault("ab").optional(), [undefined, "abcdef", "ab"]));
 
   it("default fires through the optional, including under a nullable", () => {
@@ -2077,14 +2143,26 @@ describe("optional() wrapping a schema that consumes undefined itself", () => {
     expectParity(z.string().optional().optional(), [undefined, "x", 1]);
     expectParity(z.exactOptional(z.string()).optional(), [undefined, "x", 1]);
     expectParity(z.undefined().optional(), [undefined, "x"]);
+    expectParity(z.string().catch("c").optional(), [undefined, "x", 1]);
     expectParity(z.string().optional().nullable().optional(), [undefined, null, "x", 1]);
   });
 });
 
-// ─── Absent-key issue suppression follows `optout`, not the IR shape ────────
-// `handlePropertyResult` drops a property's issues when the schema is
-// optional-OUT and the key is missing. Keying that off "the property extracted
-// to a fallback" was one wrapper too narrow.
+// ─── Absent keys follow the `optin` ladder, not the IR shape ────────────────
+// `handlePropertyResult` reads the schema's `optin`/`optout`: an absent key on
+// the "optional" rung contributes nothing, on the "defaulted" rung runs with a
+// failure swallowed, and on the bottom rung is an `invalid_type` of its own
+// (`expected: "nonoptional"`) whenever the schema accepted the `undefined` it
+// saw. Keying any of that off "the property extracted to a fallback" was one
+// wrapper too narrow.
+
+const OBJECT_VARIANTS = (make: () => z.ZodType): z.ZodType[] => [
+  z.object({ a: make() }),
+  z.object({ a: make(), b: z.number() }),
+  z.strictObject({ a: make(), b: z.number() }),
+  z.looseObject({ a: make(), b: z.number() }),
+  z.object({ a: make() }).catchall(z.number()),
+];
 
 describe("optional-out properties whose key is absent", () => {
   const OPTOUT: [string, () => z.ZodType][] = [
@@ -2092,18 +2170,54 @@ describe("optional-out properties whose key is absent", () => {
     ["nullable over exactOptional", () => z.exactOptional(z.string()).nullable()],
     ["readonly over exactOptional", () => z.exactOptional(z.string()).readonly()],
     ["nullable over optional", () => z.string().min(5).optional().nullable()],
-    ["z.undefined()", () => z.undefined()],
+    ["pipe between optionals", () => z.string().optional().pipe(z.string().min(5).optional())],
   ];
   for (const [label, make] of OPTOUT) {
     it(`${label}: absent key raises nothing, explicit undefined still does`, () => {
       const inputs = [{}, { a: undefined }, { a: "abcdef" }, { a: 1 }];
-      expectParity(z.object({ a: make() }), inputs);
-      expectParity(z.object({ a: make(), b: z.number() }), inputs);
-      expectParity(z.strictObject({ a: make(), b: z.number() }), inputs);
-      expectParity(z.looseObject({ a: make(), b: z.number() }), inputs);
-      expectParity(z.object({ a: make() }).catchall(z.number()), inputs);
+      for (const schema of OBJECT_VARIANTS(make)) expectParity(schema, inputs);
     });
   }
+
+  it("a defaulted property runs for an absent key and swallows its own failure", () => {
+    const inputs = [{}, { a: undefined }, { a: "abcdef" }, { a: "ab" }];
+    for (const schema of OBJECT_VARIANTS(() => z.string().min(5).prefault("ab").optional())) {
+      expectParity(schema, inputs);
+    }
+    for (const schema of OBJECT_VARIANTS(() => z.string().prefault("abcdef").optional())) {
+      expectParity(schema, inputs);
+    }
+  });
+});
+
+describe("required properties whose key is absent", () => {
+  const REQUIRED: [string, () => z.ZodType][] = [
+    ["z.undefined()", () => z.undefined()],
+    ["z.any()", () => z.any()],
+    ["z.unknown()", () => z.unknown()],
+    ["union with an undefined option", () => z.string().or(z.undefined())],
+    ["nullable over any", () => z.any().nullable()],
+    ["nonoptional over optional", () => z.string().optional().nonoptional()],
+    ["pipe into an optional", () => z.any().pipe(z.string().optional())],
+  ];
+  for (const [label, make] of REQUIRED) {
+    it(`${label}: absent key is nonoptional, explicit undefined is the schema's call`, () => {
+      const inputs = [{}, { a: undefined }, { a: "abcdef" }, { a: 1 }];
+      for (const schema of OBJECT_VARIANTS(make)) expectParity(schema, inputs);
+    });
+  }
+
+  it("the absence aborts, so an object-level refine does not run", () =>
+    expectParity(
+      z.object({ a: z.any() }).refine(() => false, "never runs"),
+      [{}, { a: 1 }],
+    ));
+
+  it("CONTROL: a property that rejects undefined reports its own issue instead", () =>
+    expectParity(z.object({ a: z.string(), b: z.string().pipe(z.string().optional()) }), [
+      {},
+      { a: "x" },
+    ]));
 });
 
 // ─── Length/size checks run even after the type check failed ────────────────

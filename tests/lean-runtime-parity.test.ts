@@ -63,8 +63,8 @@ const CASES: [label: string, schema: z.ZodType, inputs: unknown[]][] = [
   ["too_small exact", z.string().length(3), ["ab"]],
   ["too_big exact", z.string().length(3), ["abcd"]],
   ["too_big exact array", z.array(z.string()).length(2), [["a", "b", "c"]]],
-  // __zcTSn: the tuple's under-length issue, which carries NO `inclusive` key.
-  ["too_small tuple (no inclusive)", z.tuple([z.string(), z.number()]), [["a"]]],
+  // __zcTSt: the tuple's under-length issue, whose `origin` trails `inclusive`.
+  ["too_small tuple key order", z.tuple([z.string(), z.number()]), [["a"]]],
   ["too_small tuple with message", z.tuple([z.string()], undefined, "wrong arity"), [[]]],
   // __zcTBt: the tuple's OVER-length issue, whose `origin` trails `inclusive`.
   ["too_big tuple key order", z.tuple([z.string(), z.number()]), [["a", 1, 2]]],

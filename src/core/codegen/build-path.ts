@@ -615,7 +615,11 @@ function buildReadonly(
 function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {
   if (ir.catchall !== undefined) return null;
   if (ir.stripUnknownKeys !== true && ir.strict !== true) return null;
+  // Both swallow an absent key's failure, which a single-pass build that fails
+  // at the first bad check cannot model.
+  if (ir.skipAbsentKeys !== undefined && ir.skipAbsentKeys.length > 0) return null;
   if (ir.suppressAbsentKeys !== undefined && ir.suppressAbsentKeys.length > 0) return null;
+  const nonoptional = new Set(ir.nonoptionalKeys ?? []);
   // Object-level `.refine()` runs on the assembled output (below). superRefine
   // rewrites the payload, which this pass does not model — mutatesBeyondStrip
   // already rejects it, so this is a belt-and-braces narrowing of the type.
@@ -633,6 +637,8 @@ function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {
   for (const [key, propIR] of Object.entries(ir.properties)) {
     const keyStr = escapeString(key);
     const slot = local(g, "bv");
+    // A required key has to be present whatever its schema makes of `undefined`.
+    if (nonoptional.has(key)) code += `if(!(${keyStr} in ${input}))return ${g.fail};`;
     code += `${slot}=${input}[${keyStr}];`;
     const propBuilt = build(propIR, slot, g);
     if (propBuilt === null) return null;
@@ -721,6 +727,7 @@ function buildTuple(ir: SchemaIR & { type: "tuple" }, input: string, g: BuildGen
   // Trailing-optional and rest handling shape the output length; keep those on
   // the eager walk rather than restating the rules here.
   if (ir.rest !== null) return null;
+  if (ir.optStart !== ir.items.length) return null;
   if (ir.items.some((item) => !rejectsUndefined(item))) return null;
 
   let code = `if(!Array.isArray(${input})||${input}.length!==${ir.items.length})return ${g.fail};`;

@@ -50,7 +50,9 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
   const refineMark = ir.checks && ir.checks.length > 0 ? g.temp("rm") : "";
   if (refineMark) code += `var ${refineMark}=${g.issues}.length;`;
 
+  const skipAbsent = new Set(ir.skipAbsentKeys ?? []);
   const suppressAbsent = new Set(ir.suppressAbsentKeys ?? []);
+  const nonoptional = new Set(ir.nonoptionalKeys ?? []);
   /** Strip only: per-property output slot + whether it is always in the result. */
   const slots: { always: boolean; keyStr: string; value: string }[] = [];
 
@@ -68,15 +70,36 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
       slots.push({ always: outputAlwaysDefined(propIR), keyStr, value: propExpr });
     }
     const propCode = g.visit(propIR, { input: propExpr, output: propExpr, path: propPath });
-    if (suppressAbsent.has(key)) {
-      // Mirrors zod's handlePropertyResult: optional-out fallback props run,
-      // but their issues are discarded when the key is absent from the input.
+    // The three absent-key rules of zod's handlePropertyResult (see ObjectIR).
+    // Presence is tested on the ORIGINAL input, as zod's `key in input` is —
+    // a clone would hide an inherited key.
+    if (skipAbsent.has(key)) {
+      code += emit`if(${keyStr} in ${g.input}){${propCode}}`;
+    } else if (suppressAbsent.has(key)) {
+      // A defaulted optional-out property runs, but a failure on an absent key
+      // is discarded whole: issues and whatever value it wrote before failing.
+      const beforeVar = g.temp("ob");
+      const dropValue = strip
+        ? `${propExpr}=undefined;`
+        : needsClone
+          ? `delete ${objVar}[${keyStr}];`
+          : "";
+      code += emit`
+        var ${beforeVar}=${g.issues}.length;
+        ${propCode}
+        if(!(${keyStr} in ${g.input})&&${g.issues}.length>${beforeVar}){
+          ${g.issues}.length=${beforeVar};${dropValue}
+        }`;
+    } else if (nonoptional.has(key)) {
+      // A required key that is absent fails as such when its schema raised
+      // nothing for the `undefined` it saw. zod pushes this one without an
+      // `inst`, so no schema-level message reaches it.
       const beforeVar = g.temp("ob");
       code += emit`
         var ${beforeVar}=${g.issues}.length;
         ${propCode}
-        if(!(${keyStr} in ${strip ? g.input : objVar})&&${g.issues}.length>${beforeVar}){
-          ${g.issues}.length=${beforeVar};
+        if(!(${keyStr} in ${g.input})&&${g.issues}.length===${beforeVar}){
+          ${invalidType(g, "nonoptional", { input: "undefined", path: propPath, codeFirst: true, useTypeMsg: false })}
         }`;
     } else {
       code += propCode;
@@ -214,13 +237,25 @@ function orderedProperties(ir: ObjectIR, g: FastGen): [string, SchemaIR][] {
 function fastObjectBody(ir: ObjectIR, g: FastGen, skipKey?: string): string[] | null {
   const x = g.input;
   const parts: string[] = [];
+  const absentAccepts = new Set([...(ir.skipAbsentKeys ?? []), ...(ir.suppressAbsentKeys ?? [])]);
+  const nonoptional = new Set(ir.nonoptionalKeys ?? []);
 
   for (const [key, propIR] of orderedProperties(ir, g)) {
     if (key === skipKey) continue;
-    const propExpr = `${x}[${escapeString(key)}]`;
-    const propCheck = g.visit(propIR, { input: propExpr });
+    const keyStr = escapeString(key);
+    const propCheck = g.visit(propIR, { input: `${x}[${keyStr}]` });
     if (propCheck === null) return null; // All-or-nothing
-    parts.push(propCheck);
+    // Presence rules keyed on the schema's `optin`/`optout` (see ObjectIR): a
+    // required key must be there whatever its schema makes of `undefined`, and
+    // an optional-out key on the "optional"/"defaulted" rungs is accepted when
+    // it is not, whatever the property would say.
+    if (nonoptional.has(key)) {
+      parts.push(propCheck === "true" ? `${keyStr} in ${x}` : `${keyStr} in ${x}&&${propCheck}`);
+    } else if (absentAccepts.has(key)) {
+      parts.push(`(!(${keyStr} in ${x})||${propCheck})`);
+    } else {
+      parts.push(propCheck);
+    }
   }
 
   // Strict unknown-key pass: hosted boolean helper (a for-in loop cannot live

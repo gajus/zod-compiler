@@ -16,14 +16,22 @@ import { ZodRealError, z } from "zod";
 import { generateValidator } from "#src/core/codegen/index.js";
 import type { RefEntry } from "#src/core/extract/index.js";
 import { extractSchema } from "#src/core/extract/index.js";
-import { FAIL_CLASS_DECL, FIN_DECL, FIN_DEFERRED_DECL } from "#src/core/iife.js";
+import {
+  FAIL_CLASS_DECL,
+  FIN_DECL,
+  FIN_DEFERRED_DECL,
+  ZOD_MSG_DECLARATION,
+} from "#src/core/iife.js";
 import type { SafeParseResult } from "#src/core/types.js";
 
+// Built from production's own `__zcMsg` declaration, which reads the config per
+// call: zod installs its locale on the first schema construction, so a
+// `localeError` snapshotted at import time here would be `undefined`.
 const localizedFin = new Function(
-  "__zcMsg",
+  "__zodCompilerConfig",
   "__zcZodError",
-  `${FAIL_CLASS_DECL}${FIN_DECL}; return __zcFin;`,
-)(z.config().localeError, ZodRealError);
+  `${ZOD_MSG_DECLARATION}${FAIL_CLASS_DECL}${FIN_DECL}; return __zcFin;`,
+)(z.config, ZodRealError);
 
 interface ZodLikeSchema {
   safeParse: (input: unknown) => {
@@ -363,7 +371,7 @@ describe("zod parity — custom error messages", () => {
 });
 
 describe("zod parity — tuple shape semantics", () => {
-  it("short tuples report per-item invalid_type, never too_small", () => {
+  it("short tuples report one too_small, never per-item invalid_type", () => {
     expectParity(z.tuple([z.string(), z.number()]), [[], ["a"], ["a", 1]]);
   });
 

@@ -388,12 +388,35 @@ export interface ObjectIR {
    */
   catchall?: SchemaIR;
   /**
-   * Fallback-typed property keys whose zod schema is optional-out: when the
-   * key is ABSENT from the input, their issues are suppressed (mirrors zod's
-   * handlePropertyResult). Lets z.exactOptional() and friends fall back at
-   * the property level without rejecting missing keys.
+   * Keys whose zod schema sits on the middle rung of `optin` ("optional") and is
+   * optional-out, and whose compiled property could still raise an issue or
+   * produce a value when handed `undefined` (a fallback, a union, a pipe). When
+   * the key is ABSENT the property is not run at all — zod's
+   * handlePropertyResult returns before looking at the result, so nothing it
+   * made of `undefined` is reported or kept. The plain `.optional()` property
+   * needs no entry: its compiled form already short-circuits `undefined`.
+   */
+  skipAbsentKeys?: string[];
+  /**
+   * Keys whose zod schema is "defaulted" (`.default()`, `.prefault()`, a union
+   * containing one) AND optional-out, and whose compiled property could raise
+   * an issue for `undefined`: when the key is ABSENT the property runs — the
+   * substitute must fire — but a failure is swallowed, issues and value alike
+   * (mirrors zod's handlePropertyResult). Lets `z.prefault().optional()` and
+   * friends fall back at the property level without rejecting missing keys.
    */
   suppressAbsentKeys?: string[];
+  /**
+   * Keys whose zod schema is NOT optional-in (`_zod.optin === undefined`) but
+   * whose compiled property might accept `undefined` — `z.any()`, `z.unknown()`,
+   * `z.undefined()`, a union with such an option. zod runs the property on the
+   * absent key's `undefined` and, when that raised nothing, reports
+   * `invalid_type` with `expected: "nonoptional"` at the key: a required key
+   * has to be PRESENT, whatever its schema thinks of `undefined`. Keys whose
+   * property rejects `undefined` outright are omitted — their own issue
+   * already stands in for the absence.
+   */
+  nonoptionalKeys?: string[];
 }
 
 export interface ArrayIR {
@@ -407,32 +430,51 @@ export interface TupleIR {
   items: SchemaIR[];
   rest: SchemaIR | null;
   /**
-   * Index where the omittable tail begins — zod's `optStart`, captured from the
-   * live schemas at extraction time:
+   * zod's `optinStart`, captured from the live schemas at extraction time: the
+   * index after the last item whose `_zod.optin` is `undefined`.
    *
    * ```js
-   * const reversedIndex = [...items].reverse().findIndex((i) => i._zod.optin !== "optional");
-   * const optStart = reversedIndex === -1 ? 0 : items.length - reversedIndex;
+   * for (let i = items.length - 1; i >= 0; i--) if (items[i]._zod.optin === undefined) return i + 1;
+   * return 0;
    * ```
    *
-   * An item at or past this index is SKIPPED ENTIRELY when the input is shorter
-   * than the tuple — zod never runs its schema, so no default/prefault fires for
-   * it — and it also moves the under-length `too_small` threshold
-   * (`input.length < optStart - 1`).
+   * Without a rest element an input shorter than this is rejected outright with
+   * a single `too_small` (`minimum: optStart`, `inclusive: true`) before any
+   * item runs. `optin` is a three-rung ladder — `undefined` (required),
+   * `"optional"` (absence permitted, nothing supplied) and `"defaulted"`
+   * (absence permitted, a value substituted) — and any rung above `undefined`
+   * lets the slot be absent.
    *
    * Read from `_zod.optin` rather than inferred from the item's IR type because
    * "optional-in" is a property of the ZOD schema, not of the shape the compiler
-   * managed to compile: `z.exactOptional()`, `z.prefault()`, `.nonoptional()`
-   * and pipes all extract to an opaque `fallback` leaf, `z.undefined()` and
-   * `z.nullable(z.string().optional())` extract to nodes named nothing like
-   * "optional", and a union is optional-in when ANY option is. The IR-type
-   * inference this replaced recognised only `optional` and `default`, so every
-   * other shape lost its omittable tail — `z.tuple([z.exactOptional(z.string())])`
-   * rejected `[]` that zod accepts, `z.tuple([z.string().prefault("d")])` turned
-   * `[]` into `["d"]`, and `z.tuple([z.string(), z.undefined()])` answered a
-   * one-element input with a `too_small` where zod reports nothing.
+   * managed to compile: `z.exactOptional()`, `z.prefault()` and pipes extract to
+   * an opaque `fallback` leaf, `z.nullable(z.string().optional())` extracts to a
+   * node named nothing like "optional", and a union is optional-in when ANY
+   * option is.
    */
   optStart: number;
+  /**
+   * zod's `optoutStart`: the index after the last item whose `_zod.optout` is
+   * not `"optional"` — computed like {@link optStart} but over `optout`. Absent
+   * only when it equals `items.length` (every slot is required-out).
+   *
+   * From this index on, an absent slot can END the output: zod's
+   * `handleTupleResults` truncates the tail there when the item is on the
+   * "optional" rung (see {@link optionalIn}) or when running it on `undefined`
+   * failed, and afterwards drops trailing `undefined`s that absent slots
+   * produced. Below it an absent slot is materialized as `undefined` (or as
+   * whatever the item substituted), because a later required-out slot has to
+   * keep its index.
+   */
+  optoutStart?: number;
+  /**
+   * Indices whose item sits on the middle rung, `_zod.optin === "optional"`.
+   * Absent only when empty. At or past {@link optoutStart} such a slot, when
+   * absent, ends the output without running its schema; a "defaulted" slot
+   * there runs and keeps what it produced. Below `optoutStart` both run and
+   * write their result back.
+   */
+  optionalIn?: number[];
 }
 
 export interface RecordIR {

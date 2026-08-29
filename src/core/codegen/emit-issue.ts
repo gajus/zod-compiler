@@ -111,16 +111,7 @@ export function tooSmall(
   g: IssueGen,
   minimum: string | number,
   origin: Origin,
-  /**
-   * `"omit"` leaves the key OFF the issue entirely — not the same as `false`.
-   * $ZodTuple's under-length branch pushes a bare
-   * `{ code: "too_small", minimum: items.length }` (its over-length sibling in
-   * the very same ternary spells out `inclusive: true`), so a tuple issue
-   * carrying `inclusive: false` has a field zod never wrote. Every check-created
-   * size issue (array/string/set/number/bigint/date min) does carry it, `false`
-   * included — that is what `.gt()`/`.lt()` report.
-   */
-  inclusive: boolean | "omit",
+  inclusive: boolean,
   options?: {
     exact?: boolean;
     input?: string;
@@ -128,6 +119,12 @@ export function tooSmall(
     message?: string | undefined;
     /** Set for node-level issues (tuple length) where schema error applies. */
     useTypeMsg?: boolean;
+    /**
+     * `"tuple"` selects $ZodTuple's under-length key order — `code, minimum,
+     * inclusive, origin` — where a check-created size issue leads with `origin`.
+     * Same shape as its over-length sibling in {@link tooBig}.
+     */
+    layout?: "tuple";
     /** Emit the union-abort marker; see {@link abortsProp}. */
     aborts?: boolean;
   },
@@ -144,11 +141,11 @@ export function tooSmall(
         `__zcTSx(${minimum},${originExpr(origin)},${input},${path}${messageArg(m)})`,
       );
     }
-    if (inclusive === "omit") {
-      g.ctx.usedHelpers.add("__zcTSn");
+    if (options?.layout === "tuple") {
+      g.ctx.usedHelpers.add("__zcTSt");
       return pushIssue(
         g,
-        `__zcTSn(${minimum},${originExpr(origin)},${input},${path}${messageArg(m)})`,
+        `__zcTSt(${minimum},${originExpr(origin)},${input},${path}${messageArg(m)})`,
       );
     }
     g.ctx.usedHelpers.add("__zcTS");
@@ -163,12 +160,10 @@ export function tooSmall(
       `{origin:${originExpr(origin)},code:"too_small",minimum:${minimum},inclusive:true,exact:true,input:${input},path:${path}${messageProp(m)}}`,
     );
   }
-  // The tuple's under-length branch is the only caller that omits `inclusive`,
-  // and it also puts `origin` last — see __zcTSn.
-  if (inclusive === "omit") {
+  if (options?.layout === "tuple") {
     return pushIssue(
       g,
-      `{code:"too_small",minimum:${minimum},origin:${originExpr(origin)},input:${input},path:${path}${messageProp(m)}${abortsProp(options?.aborts)}}`,
+      `{code:"too_small",minimum:${minimum},inclusive:${inclusive},origin:${originExpr(origin)},input:${input},path:${path}${messageProp(m)}${abortsProp(options?.aborts)}}`,
     );
   }
   return pushIssue(
@@ -260,17 +255,24 @@ export function invalidType(
      */
     extraBeforeCode?: boolean;
     /**
-     * Lead with `code` instead of `expected`. Only `$ZodDiscriminatedUnion`'s
-     * non-object guard writes the issue that way; every other schema in zod puts
-     * `expected` first.
+     * Lead with `code` instead of `expected`. `$ZodDiscriminatedUnion`'s
+     * non-object guard and `$ZodObject`'s absent-required-key issue
+     * (`expected: "nonoptional"`) write the issue that way; every other schema
+     * in zod puts `expected` first.
      */
     codeFirst?: boolean;
+    /**
+     * Set to false for the one `invalid_type` zod pushes WITHOUT an `inst`:
+     * the object's `nonoptional` issue for an absent required key, which no
+     * schema-level `error` reaches.
+     */
+    useTypeMsg?: boolean;
   },
 ): string {
   const input = options?.input ?? g.input;
   const path = options?.path ?? g.path;
-  // invalid_type is always created by the schema node — schema error applies.
-  const m = resolveMessage(g, options?.message, true);
+  // invalid_type is created by the schema node — schema error applies.
+  const m = resolveMessage(g, options?.message, options?.useTypeMsg !== false);
   if (g.ctx.mode === "lean" && !options?.extra) {
     const helper = options?.codeFirst ? "__zcITc" : "__zcIT";
     g.ctx.usedHelpers.add(helper);

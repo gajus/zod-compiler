@@ -430,7 +430,12 @@ describe("issue shape — key order, as ZodError.message renders it", () => {
     ["too_big from a check leads with `origin`", z.string().max(1), "abc"],
     ["exact length leads with `origin`", z.string().length(2), "a"],
     ["too_big from a tuple trails `origin` after `inclusive`", z.tuple([z.string()]), ["a", "b"]],
-    ["too_small from a tuple omits `inclusive`", z.tuple([z.string(), z.number()]), []],
+    [
+      "too_small from a tuple trails `origin` after `inclusive`",
+      z.tuple([z.string(), z.number()]),
+      [],
+    ],
+    ["invalid_type for an absent required key leads with `code`", z.object({ a: z.any() }), {}],
     ["safe-integer overflow puts `note` before `origin`", z.int(), Number.MAX_SAFE_INTEGER + 2],
     ["not_multiple_of leads with `origin`", z.number().multipleOf(3), 5],
     ["not_multiple_of on a bigint", z.bigint().multipleOf(3n), 5n],
