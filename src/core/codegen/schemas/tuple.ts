@@ -60,19 +60,40 @@ function slotKinds(ir: TupleIR): SlotKind[] {
  */
 export function slowTuple(ir: SchemaIR & { type: "tuple" }, g: SlowGen): string {
   const len = ir.items.length;
-  const x = g.input;
   const kinds = slotKinds(ir);
   const optoutStart = ir.optoutStart ?? len;
 
+  // Every read and write goes through ONE binding, seeded from the input and
+  // re-pointed by each copy, with the result written to `g.output` at the end.
+  // Reading `g.input` and writing `g.output` directly only worked while the two
+  // were the same identifier — true at every `createSlowGen` root, but NOT under
+  // `z.preprocess()`, which visits with `{ input: valueVar, output: g.output }`
+  // (see slowEffect). There a copy landed in `g.output` while the item writes
+  // went on hitting the original, so the output kept the pristine short array
+  // and the caller's array collected the padding instead.
+  const x = g.temp("ta");
+
+  // With a rest element the fixed items' issues are BUFFERED and flushed after
+  // the rest loop, because that is the order zod reports them in: `$ZodTuple`
+  // collects the fixed items into `itemResults` WITHOUT touching the payload,
+  // runs the rest loop (which pushes through `handleTupleResult`), and only
+  // then calls `handleTupleResults`, which pushes what it buffered. So
+  // `z.tuple([z.string()]).rest(z.number())` on `[1,"b"]` reports the rest
+  // element's issue first. `ZodError.message` is `JSON.stringify(issues)`, so
+  // the order is user-visible, not just an array detail.
+  const itemIssues = ir.rest === null ? g.issues : g.temp("tqi");
+
   let code = emit`
-    if(!Array.isArray(${x})){
+    if(!Array.isArray(${g.input})){
       ${invalidType(g, "tuple")}
-    }else{`;
+    }else{
+      var ${x}=${g.input};
+      ${ir.rest === null ? "" : `var ${itemIssues}=[];`}`;
 
   let itemsCode = "";
   const mutates = ir.items.some(hasMutation) || (ir.rest !== null && hasMutation(ir.rest));
   if (mutates) {
-    itemsCode += `${g.output}=${x}.slice();`;
+    itemsCode += `${x}=${x}.slice();`;
   }
 
   // The input's length, read once: absent slots are written back and would
@@ -83,14 +104,19 @@ export function slowTuple(ir: SchemaIR & { type: "tuple" }, g: SlowGen): string 
   // caller's array must not grow. Guarded on the length so a well-formed input
   // never allocates; a mutating item has already paid for the copy.
   if (!mutates && tupleRewritesShortInput(ir)) {
-    itemsCode += `if(${lenVar}<${len}){${g.output}=${x}.slice();}`;
+    itemsCode += `if(${lenVar}<${len}){${x}=${x}.slice();}`;
   }
 
   for (let i = 0; i < len; i++) {
     const itemIR = ir.items[i] as SchemaIR;
     const elemExpr = `${x}[${i}]`;
     const elemPath = extendStaticPathIndex(g.path, i);
-    const itemCode = g.visit(itemIR, { input: elemExpr, output: elemExpr, path: elemPath });
+    const itemCode = g.visit(itemIR, {
+      input: elemExpr,
+      output: elemExpr,
+      path: elemPath,
+      issues: itemIssues,
+    });
     // One copy of the item code per slot: an absent slot is materialized as an
     // own `undefined` first (`x[i] = undefined`, which is also what extends the
     // copied array), then validated exactly as a present one would be.
@@ -106,10 +132,10 @@ export function slowTuple(ir: SchemaIR & { type: "tuple" }, g: SlowGen): string 
         const beforeVar = g.temp("tb");
         itemsCode += emit`
           if(${i}<${lenVar}||${x}.length===${i}){
-            var ${beforeVar}=${g.issues}.length;
+            var ${beforeVar}=${itemIssues}.length;
             if(${absent}){${elemExpr}=undefined;}
             ${itemCode}
-            if(${absent}&&${g.issues}.length>${beforeVar}){${g.issues}.length=${beforeVar};${x}.length=${i};}
+            if(${absent}&&${itemIssues}.length>${beforeVar}){${itemIssues}.length=${beforeVar};${x}.length=${i};}
           }`;
         break;
       }
@@ -137,13 +163,17 @@ export function slowTuple(ir: SchemaIR & { type: "tuple" }, g: SlowGen): string 
       for(var ${idxVar}=${len};${idxVar}<${x}.length;${idxVar}++){
         ${g.visit(ir.rest, { input: restExpr, output: restExpr, path: restPath })}
       }`;
+    const flushVar = g.temp("tqj");
+    itemsCode += `for(var ${flushVar}=0;${flushVar}<${itemIssues}.length;${flushVar}++){${g.issues}.push(${itemIssues}[${flushVar}]);}`;
+    itemsCode += `${g.output}=${x};`;
     code += itemsCode;
   } else {
     const body = emit`
       if(${x}.length>${len}){
         ${tooBig(g, len, "array", true, { layout: "tuple", aborts: true })}
       }
-      ${itemsCode}`;
+      ${itemsCode}
+      ${g.output}=${x};`;
     code +=
       ir.optStart > 0
         ? emit`

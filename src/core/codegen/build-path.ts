@@ -51,6 +51,7 @@ import {
   literalToJs,
   outputAlwaysDefined,
   rejectsUndefined,
+  tupleRewritesShortInput,
 } from "./context.js";
 import { createFastGen, generateFast } from "./fast-path.js";
 import { EXTRACT_CAP, estimateFastCost, MIN_EXTRACT, predictedInlineSize } from "./fast-size.js";
@@ -128,6 +129,15 @@ function rebuildSet(root: SchemaIR): ReadonlySet<SchemaIR> {
         // never be handed to `passthrough`, whose fast check would reject the
         // absent value outright.
         node.type === "default" ||
+        // A tuple whose output can differ from a SHORT input it accepts —
+        // `z.tuple([z.any()]).rest(z.number())` answers `[]` with `[undefined]`
+        // — is not its own input either. `fastTuple` narrows exactly those
+        // slots to "present" (sound for the root shortcut, which only reads a
+        // TRUE result), so handing it to `passthrough`, which reads a FALSE one
+        // as rejection, turned a valid short input into a failure with an empty
+        // issue array. Marking it here makes `buildTuple`'s own bail propagate
+        // instead.
+        (node.type === "tuple" && tupleRewritesShortInput(node)) ||
         // `z.stringbool()` replaces its accepted string with a boolean.
         node.type === "stringBool" ||
         // An overwrite effect (`.trim()`, `.toLowerCase()`) rewrites the string,

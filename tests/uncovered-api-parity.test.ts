@@ -2429,3 +2429,81 @@ describe("intersections of records reconcile key issues", () => {
       z.intersection(z.record(z.string(), z.number()), z.record(z.string(), z.number())),
     ));
 });
+
+/**
+ * A tuple with `.rest()` reports its REST issues before its fixed-item ones.
+ * `$ZodTuple` collects the fixed items into `itemResults` without touching the
+ * payload, runs the rest loop (which pushes through `handleTupleResult`), and
+ * only then calls `handleTupleResults` to push what it buffered. Since
+ * `ZodError.message` is `JSON.stringify(issues, null, 2)`, both `issues[0]` and
+ * the rendered message depend on getting this right.
+ */
+describe("rest tuples report rest issues before fixed-item issues", () => {
+  it("one fixed item and one rest element, both failing", () =>
+    expectParity(z.tuple([z.string()]).rest(z.number()), [
+      [1, "b"],
+      ["a", 1],
+      [1, 2],
+      ["a", "b"],
+    ]));
+  it("two fixed items and a rest element", () =>
+    expectParity(z.tuple([z.string(), z.string()]).rest(z.number()), [
+      [1, 2, "c"],
+      ["a", "b", 3],
+      [1, "b", "c"],
+    ]));
+  it("the trailing trim still runs after the rest loop", () =>
+    expectParity(z.tuple([z.string().optional()]).rest(z.number()), [[], [undefined], ["a", 1]]));
+});
+
+/**
+ * A tuple whose output can differ from a short input it ACCEPTS is not its own
+ * input, so it must not reach the build path's `passthrough`. `fastTuple`
+ * narrows a `pad`/`tail` slot to "present" — sound for the root shortcut, which
+ * only reads a TRUE result — but `passthrough` reads a FALSE one as rejection,
+ * which turned a valid short input into a failure carrying NO issues at all.
+ *
+ * The top-level tuple was already pinned; the nested one is the case that got
+ * through, because only there does the object's build path consume the tuple's
+ * fast check as a verdict.
+ */
+describe("a rewriting tuple nested in a stripping object", () => {
+  it("a rest tuple's absent required slot still parses", () =>
+    expectParity(z.object({ a: z.tuple([z.any()]).rest(z.number()) }), [
+      { a: [] },
+      { a: [1] },
+      { a: ["x", 1, 2] },
+      { a: "no" },
+    ]));
+  it("the same tuple under z.preprocess()", () =>
+    expectParity(
+      z.preprocess((v) => v, z.tuple([z.any()]).rest(z.number())),
+      [[], [1], ["x", 1]],
+    ));
+});
+
+/**
+ * `z.preprocess()` is the only visit site where `input` and `output` are
+ * DIFFERENT identifiers (slowEffect passes `{ input: valueVar, output:
+ * g.output }`); every `createSlowGen` root passes the same one. slowTuple used
+ * to read the input and write the output directly, so its short-input copy
+ * landed in `g.output` while the item writes went on hitting the original — the
+ * output kept the pristine short array and the CALLER's array collected the
+ * padding.
+ */
+describe("preprocess over a tuple that rewrites a short input", () => {
+  it("the padded slot reaches the output", () =>
+    expectParity(
+      z.preprocess((v) => v, z.tuple([z.string(), z.number().default(1)])),
+      [["x"], ["x", 5], []],
+    ));
+  it("the caller's array is not extended", () => {
+    const schema = z.preprocess((v: unknown) => v, z.tuple([z.string(), z.number().default(1)]));
+    const compiled = compileLikeProduction(schema, "preTuple");
+    const zodInput = ["x"];
+    const compiledInput = ["x"];
+    schema.safeParse(zodInput);
+    compiled(compiledInput);
+    expect(compiledInput).toStrictEqual(zodInput);
+  });
+});
