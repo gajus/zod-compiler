@@ -377,7 +377,7 @@ describe("zod parity — custom error messages", () => {
 });
 
 describe("zod parity — tuple shape semantics", () => {
-  it("short tuples report per-item invalid_type, never too_small", () => {
+  it("short tuples report one too_small, never per-item invalid_type", () => {
     expectParity(z.tuple([z.string(), z.number()]), [[], ["a"], ["a", 1]]);
   });
 

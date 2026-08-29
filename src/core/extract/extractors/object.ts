@@ -1,3 +1,4 @@
+import { rejectsUndefined } from "../../codegen/context.js";
 import type { RefineEffectCheckIR, SchemaIR, SuperRefineEffectCheckIR } from "../../types.js";
 import {
   customParamsRefRegistrar,
@@ -8,15 +9,16 @@ import {
 import type { ExtractorContext, ZodDef } from "../types.js";
 
 /**
- * Can this property IR raise an issue when its key is ABSENT (so the value it
- * sees is `undefined`)? Only those need zod's absent-key issue suppression
- * wrapped around them.
+ * Can this property IR raise an issue, or produce a value, when its key is
+ * ABSENT (so the value it sees is `undefined`)? Only those need zod's
+ * absent-key rules wrapped around them.
  *
  * `optional` and `undefined` cannot: the first short-circuits `undefined`
- * (or forwards it into a `default`, which substitutes without complaint), and
- * the second accepts it. `nullable`/`readonly` are transparent to `undefined`,
- * so they inherit the answer. Everything else — a `fallback` delegate above all
- * — is assumed to report.
+ * (or forwards it into a `default`, which substitutes without complaint — and
+ * is then on the "defaulted" rung, where the substitute is wanted), and the
+ * second accepts it. `nullable`/`readonly` are transparent to `undefined`, so
+ * they inherit the answer. Everything else — a `fallback` delegate above all —
+ * is assumed to act.
  */
 function reportsOnAbsentKey(ir: SchemaIR): boolean {
   switch (ir.type) {
@@ -60,21 +62,35 @@ export function extractObject(def: ZodDef, ctx: ExtractorContext): SchemaIR {
   // Every consumer reads this through Object.keys/values/entries, so dropping
   // the prototype is invisible to them.
   const properties: Record<string, SchemaIR> = Object.create(null) as Record<string, SchemaIR>;
-  // Optional-OUT props: mirror zod's handlePropertyResult, which suppresses
-  // issues for ABSENT keys (`if (isOptionalOut && !(key in input)) return`).
-  // That is how `z.exactOptional()` accepts a missing key while rejecting an
-  // explicit `undefined`.
+  // Absent keys follow zod's handlePropertyResult, keyed on the property's
+  // LIVE `optin`/`optout` rather than on the IR shape:
   //
-  // Gated on the property IR still being able to REPORT for an absent key, so
-  // the common `.optional()` field pays nothing: its compiled form short-
-  // circuits `undefined` and produces no issue to suppress. Testing
+  //   if (!isPresent && isOptionalOut && optin === "optional") return;
+  //   if (result.issues.length) {
+  //     if (optin !== undefined && isOptionalOut && !isPresent) return;
+  //     final.issues.push(...prefixIssues(key, result.issues));
+  //   }
+  //   if (!isPresent && optin === undefined) {
+  //     if (!result.issues.length) final.issues.push({ code: "invalid_type", expected: "nonoptional", ... });
+  //     return;
+  //   }
+  //
+  // The middle rung ("optional" in, optional out) contributes nothing for an
+  // absent key, so the property is skipped outright; the top rung ("defaulted")
+  // runs it and swallows a failure; the bottom rung (`optin` undefined) reports
+  // the absence itself when the property accepted `undefined`. Each list is
+  // gated on the property IR still being able to ACT on an absent key, so the
+  // common `.optional()` field pays nothing: its compiled form short-circuits
+  // `undefined` and produces neither an issue nor a value. Testing
   // `propIR.type === "fallback"` — as this once did — was too narrow by exactly
   // one wrapper: `z.exactOptional(z.string()).nullable()` extracts to
   // `nullable(fallback)`, keeps `optout === "optional"` (nullable propagates
   // it), and delegated `undefined` straight into zod's exactOptional, which
   // rejects it. The object then reported an `invalid_type` for a key zod does
   // not look at.
+  const skipAbsentKeys: string[] = [];
   const suppressAbsentKeys: string[] = [];
+  const nonoptionalKeys: string[] = [];
   const refMark = ctx.refs?.length ?? 0;
   for (const [key, value] of Object.entries(def.shape)) {
     // zod never runs the schema declared under `__proto__` (its shape loop
@@ -89,8 +105,11 @@ export function extractObject(def: ZodDef, ctx: ExtractorContext): SchemaIR {
     }
     const propIR = ctx.visit(value, `.shape[${JSON.stringify(key)}]`);
     properties[key] = propIR;
-    if (value._zod.optout === "optional" && reportsOnAbsentKey(propIR)) {
-      suppressAbsentKeys.push(key);
+    const { optin, optout } = value._zod;
+    if (optin === undefined) {
+      if (!rejectsUndefined(propIR)) nonoptionalKeys.push(key);
+    } else if (optout === "optional" && reportsOnAbsentKey(propIR)) {
+      (optin === "optional" ? skipAbsentKeys : suppressAbsentKeys).push(key);
     }
   }
 
@@ -104,7 +123,11 @@ export function extractObject(def: ZodDef, ctx: ExtractorContext): SchemaIR {
     if (ctx.refs) ctx.refs.length = refMark;
     return ctx.fallback("coalesced");
   }
-  const suppress = suppressAbsentKeys.length > 0 ? { suppressAbsentKeys } : {};
+  const suppress = {
+    ...(skipAbsentKeys.length > 0 ? { skipAbsentKeys } : {}),
+    ...(suppressAbsentKeys.length > 0 ? { suppressAbsentKeys } : {}),
+    ...(nonoptionalKeys.length > 0 ? { nonoptionalKeys } : {}),
+  };
 
   if (def.checks && def.checks.length > 0) {
     const { checkIRs, hasFallback } = extractChecks(

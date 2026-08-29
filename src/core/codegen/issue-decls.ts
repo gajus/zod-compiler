@@ -7,7 +7,7 @@
  *
  * Argument convention (positional, kept short to minimize call-site bytes):
  *   __zcTS(minimum, origin, inclusive, input, path, msg?)  — too_small
- *   __zcTSn(minimum, origin, input, path, msg?)            — too_small with NO `inclusive` key
+ *   __zcTSt(minimum, origin, input, path, msg?)            — too_small, tuple key order
  *   __zcTBt(maximum, origin, input, path, msg?)            — too_big, tuple key order
  *   __zcTB(maximum, origin, inclusive, input, path, msg?)  — too_big
  *   __zcIT(expected, input, path, msg?)                    — invalid_type
@@ -34,14 +34,13 @@ const ZC_TS_DECL =
   'function __zcTS(m,o,i,inp,p,msg){var r={origin:o,code:"too_small",minimum:m,inclusive:i,input:inp,path:p};if(msg!==undefined)r.message=msg;return r;}';
 
 /**
- * too_small with the `inclusive` key ABSENT, not false. $ZodTuple's under-length
- * branch pushes `{ code: "too_small", minimum: items.length }` and nothing else
- * — the over-length branch of the same ternary is the one that spells out
- * `inclusive: true` — so the tuple's issue must not carry the key at all.
- * Separate from __zcTS because the value cannot express absence.
+ * too_small in the TUPLE under-length key order. $ZodTuple pushes
+ * `{ code, minimum, inclusive: true, input, inst, origin }`, so its `origin`
+ * trails `inclusive` where every check-created size issue leads with it. Its
+ * over-length sibling is __zcTBt.
  */
-const ZC_TS_NO_INCLUSIVE_DECL =
-  'function __zcTSn(m,o,inp,p,msg){var r={code:"too_small",minimum:m,origin:o,input:inp,path:p,continue:false};if(msg!==undefined)r.message=msg;return r;}';
+const ZC_TS_TUPLE_DECL =
+  'function __zcTSt(m,o,inp,p,msg){var r={code:"too_small",minimum:m,inclusive:true,origin:o,input:inp,path:p,continue:false};if(msg!==undefined)r.message=msg;return r;}';
 
 const ZC_TS_EXACT_DECL =
   'function __zcTSx(m,o,inp,p,msg){var r={origin:o,code:"too_small",minimum:m,inclusive:true,exact:true,input:inp,path:p};if(msg!==undefined)r.message=msg;return r;}';
@@ -53,7 +52,7 @@ const ZC_TB_DECL =
  * too_big in the TUPLE over-length key order. $ZodTuple spreads
  * `{ code, maximum, inclusive }` and appends `origin` after `input`/`inst`, so
  * its `origin` trails `inclusive` where every check-created size issue leads
- * with it. Its under-length sibling is __zcTSn.
+ * with it. Its under-length sibling is __zcTSt.
  */
 const ZC_TB_TUPLE_DECL =
   'function __zcTBt(m,o,inp,p,msg){var r={code:"too_big",maximum:m,inclusive:true,origin:o,input:inp,path:p,continue:false};if(msg!==undefined)r.message=msg;return r;}';
@@ -99,7 +98,7 @@ const ZC_UK_DECL =
 /** All issue factory declarations indexed by helper name. */
 export const ISSUE_DECLS: Readonly<Record<string, string>> = {
   __zcTS: ZC_TS_DECL,
-  __zcTSn: ZC_TS_NO_INCLUSIVE_DECL,
+  __zcTSt: ZC_TS_TUPLE_DECL,
   __zcTSx: ZC_TS_EXACT_DECL,
   __zcTB: ZC_TB_DECL,
   __zcTBt: ZC_TB_TUPLE_DECL,

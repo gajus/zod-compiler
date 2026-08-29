@@ -123,9 +123,7 @@ function mergeDisjointStripObjects(left: SchemaIR, right: SchemaIR): ObjectIR | 
     left.catchall !== undefined ||
     right.catchall !== undefined ||
     left.checks !== undefined ||
-    right.checks !== undefined ||
-    left.suppressAbsentKeys !== undefined ||
-    right.suppressAbsentKeys !== undefined
+    right.checks !== undefined
   ) {
     return null;
   }
@@ -144,5 +142,20 @@ function mergeDisjointStripObjects(left: SchemaIR, right: SchemaIR): ObjectIR | 
   // parse could observe transform/refine callbacks in a different order.
   const expectedOrder = [...leftKeys, ...rightKeys];
   if (!Object.keys(properties).every((key, index) => key === expectedOrder[index])) return null;
-  return { type: "object", properties, stripUnknownKeys: true };
+  // The absent-key lists are per key, and the keys are disjoint, so each side's
+  // rules carry over to the merged shape unchanged.
+  const merged = (
+    field: "skipAbsentKeys" | "suppressAbsentKeys" | "nonoptionalKeys",
+  ): Partial<Pick<ObjectIR, typeof field>> => {
+    const keys = [...(left[field] ?? []), ...(right[field] ?? [])];
+    return keys.length > 0 ? { [field]: keys } : {};
+  };
+  return {
+    type: "object",
+    properties,
+    stripUnknownKeys: true,
+    ...merged("skipAbsentKeys"),
+    ...merged("suppressAbsentKeys"),
+    ...merged("nonoptionalKeys"),
+  };
 }

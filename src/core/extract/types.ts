@@ -114,16 +114,20 @@ export interface ZodSchema {
     /** Class trait names from zod's $constructor (e.g. "$ZodExactOptional"). */
     traits?: Set<string>;
     /** "optional" when the key may be absent in object output (zod optout). */
-    optout?: string;
+    optout?: "optional" | undefined;
     /**
-     * "optional" when the schema ACCEPTS an absent/undefined input — zod's
-     * `optin`. Set outright by `z.optional()`, `z.exactOptional()`,
-     * `z.undefined()`, `.default()` and `.prefault()`, and propagated by
-     * `.nullable()`, `.readonly()`, `.nonoptional()`, `z.lazy()`, a pipe (from
-     * its `in`) and a union (when ANY option has it). Drives which tuple items
-     * may be omitted and which branch `$ZodOptional` takes.
+     * zod's `optin`, a three-rung ladder: `undefined` (the slot must be
+     * present), `"optional"` (absence permitted, nothing supplied in its place
+     * — `z.optional()`, `z.exactOptional()`, `.catch()` over a plain schema)
+     * and `"defaulted"` (absence permitted, a value substituted — `.default()`,
+     * `.prefault()`, and `.optional()`/`.catch()` over one of those).
+     * Propagated by `.nullable()`, `.readonly()`, `z.lazy()`, a pipe (from its
+     * `in`) and a union (the highest rung any option reaches). `z.undefined()`,
+     * `z.any()` and `.nonoptional()` sit on the bottom rung. Drives which tuple
+     * items may be omitted, how an absent object key is treated and whether
+     * `$ZodOptional` short-circuits `undefined`.
      */
-    optin?: string;
+    optin?: "optional" | "defaulted" | undefined;
     /** Discriminator dispatch values per property key (discriminated unions). */
     propValues?: Record<string, Set<unknown> | undefined>;
   };
