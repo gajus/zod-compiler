@@ -5,9 +5,9 @@
 Keep your existing Zod schemas. Get **1.1-46x faster** validation, and up to **41x** on rejected
 input. No code changes required.
 
-Requires **Zod ≥ 4.5**. The compiled output reproduces 4.5's semantics exactly — code-point string
-lengths, symbol-keyed shapes, tuple issue order — so it does not match earlier 4.x releases. Stay on
-zod-compiler 1.x if you are on Zod 4.0–4.4.
+Requires **Zod ≥ 4.5**. Compiled output reproduces 4.5's semantics exactly, down to code-point string
+lengths, symbol-keyed shapes and tuple issue order, so it does not match earlier 4.x releases. Stay on
+zod-compiler 1.x for Zod 4.0–4.4.
 
 - [What Gets Compiled](#what-gets-compiled)
 - [Schema Hoisting](#schema-hoisting)
@@ -18,7 +18,7 @@ zod-compiler 1.x if you are on Zod 4.0–4.4.
 
 ## Usage
 
-Five ways to use zod-compiler — pick one:
+Five ways to use zod-compiler. Pick one:
 
 ### 1. Automatic Mode (Default)
 
@@ -50,7 +50,7 @@ export const CreateUserSchema = z.object({
 Use them as usual. Methods are installed on the original schema object, so `.shape`, `._zod`, Standard
 Schema, `instanceof` and `z.toJSONSchema()` keep working.
 
-Compiled schemas also expose **`.is(input): input is T`** — a zero-allocation drop-in for
+Compiled schemas also expose **`.is(input): input is T`**, a zero-allocation drop-in for
 `safeParse(x).success`.
 
 ### 2. compile() (Explicit)
@@ -74,7 +74,8 @@ validateUser.parse(data);
 validateUser.safeParse(data);
 ```
 
-`compile()` and auto mode coexist. Pair with `schemas: "explicit"` to make `compile()` the _only_ path — no automatic detection, no build-time execution of plain schema files.
+`compile()` and auto mode coexist. Pair with `schemas: "explicit"` to make `compile()` the _only_ path:
+no automatic detection, no build-time execution of plain schema files.
 
 ### 3. CLI (No Bundler)
 
@@ -99,7 +100,7 @@ npx zod-compiler generate src/ --emit compact
 
 ### 4. Runtime Compilation (No Build Step)
 
-`jit()` runs the same pipeline in-process, for `tsx`, `ts-node`, Jest — anywhere no plugin fires:
+`jit()` runs the same pipeline in-process for `tsx`, `ts-node`, Jest, and anywhere else no plugin fires:
 
 ```typescript
 import { jit } from "zod-compiler/jit";
@@ -108,12 +109,12 @@ export const UserSchema = jit(z.object({ name: z.string().min(1), email: z.email
 ```
 
 Same validators a build emits, installed on the schema object, so Zod interop is unchanged.
-Compilation is lazy — 0.1-0.3 ms on a schema's first parse; `{ eager: true }` compiles up front,
-`jitAll(namespace)` takes a whole module.
+Compilation is lazy, costing 0.1-0.3 ms on a schema's first parse. `{ eager: true }` compiles up front
+and `jitAll(namespace)` takes a whole module.
 
 The cost is the import: ~570 KB of codegen and `acorn`, **~10 ms of module load**. That suits a
-long-lived process, not a CLI, a cold serverless handler or a browser — use the build plugin there.
-Libraries should ship plain Zod and let the app decide.
+long-lived process, not a CLI, a cold serverless handler or a browser. Use the build plugin there, and
+have libraries ship plain Zod so the app can decide.
 
 Needs `new Function`, as Zod's own object fast-path does. `z.config({ jitless: true })` and a CSP
 that blocks eval both leave a working plain-Zod schema.
@@ -134,11 +135,11 @@ also chains with TypeScript runners:
 node --import zod-compiler/register --import tsx src/server.ts
 ```
 
-This is runtime JIT instrumentation, not the AOT source rewriting performed by the Vite, Rsbuild, and
-other build plugins. The hook identifies exported schema bindings and registers their live Zod objects;
-validators are generated in-process, lazily on first use. It does not execute modules twice and adds no
-transform cache beyond Node's module cache. Use a build plugin or the CLI when generated validator code
-must exist before Node starts or runtime `new Function` is unavailable.
+This is runtime JIT instrumentation, not the AOT source rewriting the build plugins perform. The hook
+registers the live Zod objects behind exported schema bindings and generates validators in-process on
+first use. It does not execute modules twice, and adds no cache beyond Node's own module cache. Use a
+build plugin or the CLI when validator code must exist before Node starts, or when `new Function` is
+unavailable at runtime.
 
 Optional settings come from `zod-compiler.json` in the working directory:
 
@@ -154,9 +155,9 @@ Optional settings come from `zod-compiler.json` in the working directory:
 }
 ```
 
-`output: "compact"` preserves the Zod schema and compiled valid-input fast path while delegating cold
-error production to Zod. Full `"schema"` output remains the default. `"bag"` is unavailable because a
-load hook cannot replace already-linked ESM export bindings safely.
+`output: "compact"` keeps the Zod schema and the compiled fast path, delegating cold error production
+to Zod. Full `"schema"` output stays the default. `"bag"` is unavailable here: a load hook cannot safely
+replace already-linked ESM export bindings.
 
 ## Build Plugin
 
@@ -176,8 +177,8 @@ load hook cannot replace already-linked ESM export bindings safely.
 | Bun                 | `import zodCompiler from "zod-compiler/bun"`      |
 | Farm                | `import zodCompiler from "zod-compiler/farm"`     |
 
-Turbopack takes a loader rather than a plugin — see [Next.js (Turbopack)](#nextjs-turbopack). Metro
-has neither — see [React Native / Expo](#react-native--expo).
+Turbopack takes a loader rather than a plugin; see [Next.js (Turbopack)](#nextjs-turbopack). Metro has
+neither; see [React Native / Expo](#react-native--expo).
 
 ### Options
 
@@ -186,13 +187,13 @@ has neither — see [React Native / Expo](#react-native--expo).
 | `schemas`     | `"auto" \| "explicit"`           | `"auto"`        | `"auto"` compiles every exported schema (and hoisted in-function ones); `"explicit"` only `compile()` calls |
 | `include`     | `string[]`                       | —               | Only process files matching these path globs                                                                |
 | `exclude`     | `string[]`                       | —               | Skip files matching these path globs                                                                        |
-| `output`      | `"schema" \| "bag" \| "compact"` | `"schema"`      | What a compiled export evaluates to — see [Compact Output](#compact-output-output-compact)                  |
+| `output`      | `"schema" \| "bag" \| "compact"` | `"schema"`      | What a compiled export evaluates to; see [Compact Output](#compact-output-output-compact)                   |
 | `verbose`     | `boolean`                        | `false`         | Log per-schema compilation status                                                                           |
-| `hoist`       | `boolean`                        | `true`          | Move schemas built inside functions to module scope — see [Schema Hoisting](#schema-hoisting)               |
+| `hoist`       | `boolean`                        | `true`          | Move schemas built inside functions to module scope; see [Schema Hoisting](#schema-hoisting)                |
 | `apply`       | `"build" \| "serve" \| "all"`    | builds + Vitest | **Vite only**: when the plugin runs                                                                         |
-| `codegenMode` | `"lean" \| "inline"`             | auto            | `"inline"` emits helpers per file; needed for transpile-only esbuild — see [SWC](#swc)                      |
+| `codegenMode` | `"lean" \| "inline"`             | auto            | `"inline"` emits helpers per file; needed for transpile-only esbuild (see [SWC](#swc))                      |
 | `cache`       | `boolean \| string`              | `true`          | Persistent transform cache in `node_modules/.cache/zod-compiler`                                            |
-| `parallel`    | `boolean \| number`              | `false`         | Run transforms on worker threads — see [Parallel Transforms](#parallel-transforms)                          |
+| `parallel`    | `boolean \| number`              | `false`         | Run transforms on worker threads; see [Parallel Transforms](#parallel-transforms)                           |
 
 ```typescript
 zodCompiler({
@@ -212,10 +213,9 @@ export default defineConfig({
 });
 ```
 
-> **Note:** Vitest is detected automatically (via the `VITEST` env var), so
-> tests compile and exercise the same validators that ship to production —
-> including their performance. Pass `apply: "build"` if you want tests to use
-> the plain Zod fallback instead.
+> **Note:** Vitest is detected automatically (via the `VITEST` env var), so tests exercise the same
+> validators that ship to production, performance included. Pass `apply: "build"` to have tests use the
+> plain Zod fallback instead.
 
 ### Bun
 
@@ -227,7 +227,7 @@ import zodCompiler from "zod-compiler/bun";
 await Bun.build({ entrypoints: ["./src/index.tsx"], outdir: "./dist", plugins: [zodCompiler()] });
 ```
 
-For code run straight from source (`bun run src/server.ts`) no build plugin fires — use
+No build plugin fires for code run straight from source (`bun run src/server.ts`). Use
 [`jit()`](#4-runtime-compilation-no-build-step) to compile in-process, or the
 [CLI](#3-cli-no-bundler) to compile ahead of time.
 
@@ -247,22 +247,22 @@ function getSchema() {
 ```
 
 Only expressions built from imported bindings and literals move; anything touching locals, `this` or
-`new Date()` stays put. Combinator chains on imported schemas qualify via `schemaNamePattern`
-(default `/ZodSchema$/`).
+`new Date()` stays put. Combinator chains on imported schemas qualify via `schemaNamePattern` (default
+`/ZodSchema$/`).
 
-In auto mode hoisted schemas also **compile**, rescuing the schema that never leaves a function (a
-slonik query, a tRPC input) and so is invisible to export scanning: ~16,700 ns → ~14 ns per call.
+In auto mode hoisted schemas also **compile**, rescuing schemas that never leave a function (a slonik
+query, a tRPC input) and are therefore invisible to export scanning: ~16,700 ns → ~14 ns per call.
 
 ### Bundle Size & Cross-File Dedup
 
 Validators share a runtime helper layer imported from one module, so each helper appears once per
-bundle. Schemas in a file sharing a structurally identical sub-shape emit its error walk once —
-**19-28% raw / 10-18% gzipped**, scaling with how much the file repeats.
+bundle. Schemas in a file that share a structurally identical sub-shape emit its error walk once, worth
+**19-28% raw / 10-18% gzipped** and scaling with how much the file repeats.
 
 Build plugins serve that module from a resolve hook (`virtual:zod-compiler/runtime`, or
 `__zod-compiler-runtime__` on webpack and rspack, which reject the `virtual:` scheme). A loader host
 has no hook, so [Turbopack](#nextjs-turbopack) imports the same code from the real subpath
-`zod-compiler/runtime` instead — opt-in there, since it only pays off where the host bundles that
+`zod-compiler/runtime` instead. It is opt-in there, since it only pays off where the host bundles that
 import rather than leaving it external.
 
 **Transpile-only esbuild builds** (no `--bundle`) never fire the bundler's resolve hooks, so the
@@ -277,7 +277,7 @@ Set `output: "bag"` to also drop the retained Zod schema when you don't need `.s
 
 ### Next.js (Turbopack)
 
-Turbopack — the default since Next.js 16 — [runs webpack loaders but no webpack
+Turbopack, the default since Next.js 16, [runs webpack loaders but no webpack
 plugins](https://nextjs.org/docs/app/api-reference/turbopack#webpack-plugins), so use the loader
 entry point:
 
@@ -304,20 +304,20 @@ const nextConfig: NextConfig = {
 export default nextConfig;
 ```
 
-Automatic mode, unchanged sources, `next dev` and `next build`. Options go in the object form —
-`loaders: [{ loader: "zod-compiler/turbopack", options: { verbose: true } }]` — and must be plain
-JSON, so `hoist.schemaNamePattern` takes a string, not a RegExp.
+Automatic mode, unchanged sources, `next dev` and `next build`. Options go in the object form,
+`loaders: [{ loader: "zod-compiler/turbopack", options: { verbose: true } }]`, and must be plain JSON,
+so `hoist.schemaNamePattern` takes a string, not a RegExp.
 
 Three things worth knowing:
 
 - **Keep the `content` pattern loose.** Narrowing it to `"zod"` skips `zod/v4`, `zod/mini` and the
-  `zod-compiler` import behind `schemas: "explicit"` — those files just quietly stay uncompiled.
+  `zod-compiler` import behind `schemas: "explicit"`, leaving those files quietly uncompiled.
 - **`codegenMode: "lean"` is App-Router-only.** It shares one copy of the helpers across the bundle,
   but Pages Router server code externalizes `node_modules` imports unless
   [`bundlePagesRouterDependencies`](https://nextjs.org/docs/pages/api-reference/config/next-config-js/bundlePagesRouterDependencies)
   is on, so a devDependency install throws `ERR_MODULE_NOT_FOUND` in production.
-- **A `"use server"` file can only export async functions**, so keep schemas there inside a function —
-  [hoisting](#schema-hoisting) still compiles them. `"use client"` modules need nothing special.
+- **A `"use server"` file can only export async functions**, so keep schemas there inside a function.
+  [Hoisting](#schema-hoisting) still compiles them. `"use client"` modules need nothing special.
 
 Turbopack caches loader results itself, so cache `.next/cache` in CI rather than
 `node_modules/.cache/zod-compiler`. `next dev --webpack` / `next build --webpack` still work, with
@@ -343,25 +343,25 @@ Defaults `codegenMode` to `"inline"` (SWC has no virtual-module hook); pass
 
 ### React Native / Expo
 
-There is no Metro plugin — unplugin has no Metro adapter. Use the [CLI](#3-cli-no-bundler); Metro
+There is no Metro plugin, since unplugin has no Metro adapter. Use the [CLI](#3-cli-no-bundler); Metro
 bundles what it emits as ordinary source:
 
 ```bash
 npx zod-compiler generate src/schemas/ -o src/schemas/compiled/ --watch
 ```
 
-Worth the step: **Hermes ships no JIT and no `new Function`**, so Zod's own object fast path is
-unavailable on device and [`jit()`](#4-runtime-compilation-no-build-step) cannot run there at all.
+The step pays for itself: **Hermes ships no JIT and no `new Function`**, so Zod's own object fast path
+is unavailable on device and [`jit()`](#4-runtime-compilation-no-build-step) cannot run there at all.
 
-Keep schema modules free of `react-native` and `expo-*` imports, transitively — discovery executes
-each file and its import graph in Node (in both modes), and one that throws falls back to runtime
-Zod silently.
+Keep schema modules free of `react-native` and `expo-*` imports, transitively. Discovery executes each
+file and its import graph in Node (in both modes), and one that throws falls back to runtime Zod
+silently.
 
 ### Compact Output (`output: "compact"`)
 
 Compiles the fast path and delegates the cold error path to the retained Zod schema, dropping
-**~73% raw / ~71% gzipped** on 50 distinct schemas. The hot path is unchanged and errors are Zod's own;
-only reading `.error` invokes Zod. Mutually exclusive with `output: "bag"`.
+**~73% raw / ~71% gzipped** across 50 distinct schemas. The hot path is unchanged and errors are Zod's
+own; only reading `.error` invokes Zod. Mutually exclusive with `output: "bag"`.
 
 ```typescript
 zodCompiler({ output: "compact" });
@@ -369,18 +369,16 @@ zodCompiler({ output: "compact" });
 
 ### Workers and Serverless Startup
 
-Workers often construct every imported schema during module initialization, even when an isolate only
-validates a few of them. Compiling all of those schemas can improve validation while increasing bundle
-size and startup work. Compact output reduces compiler-generated error-path code, but still retains the
-original Zod schema and does not make eager schema construction lazy.
+Workers construct every imported schema at module init, even when an isolate validates only a few.
+Compiling all of them buys validation speed at the cost of bundle size and startup work. Compact output
+trims the generated error path but still retains the Zod schema, and does not make eager construction
+lazy.
 
-Automatic discovery remains the default. If an application has a clear schema boundary, narrow
-`include` or use `schemas: "explicit"` to avoid compiling intermediate exports.
+If your app has a clear schema boundary, narrow `include` or use `schemas: "explicit"` to skip
+intermediate exports. Use `output: "bag"` only where consumers need no Zod APIs (`.shape`, `.extend()`,
+`.meta()`, `z.toJSONSchema()`); it can drop the retained schema entirely.
 
-Use `output: "bag"` only when consumers do not need Zod APIs such as `.shape`, `.extend()`, `.meta()`,
-or `z.toJSONSchema()`; it can omit the retained schema entirely.
-
-Measure startup separately from validation throughput using the target deployment and bundle.
+Measure startup separately from validation throughput, on the target deployment and bundle.
 
 ### Auto Mode: Side Effects Warning
 
@@ -388,8 +386,8 @@ Auto mode executes files to inspect their exports, so a file with schema-shaped 
 effects runs them at build time. Limit the scan with `include`.
 
 For the common `env.ts` that validates `process.env` and exits, zod-compiler sets
-`process.env.ZOD_COMPILER` during discovery and intercepts `process.exit`, so the build never crashes —
-those files just fall back to runtime Zod. To keep them compiled, guard on it:
+`process.env.ZOD_COMPILER` during discovery and intercepts `process.exit`, so the build never crashes.
+Those files fall back to runtime Zod. To keep them compiled, guard on it:
 
 ```typescript
 if (!process.env.ZOD_COMPILER) {
@@ -400,12 +398,12 @@ if (!process.env.ZOD_COMPILER) {
 With `@t3-oss/env-*`, pass `skipValidation: !!process.env.ZOD_COMPILER`.
 
 A schema whose SHAPE branches on an env var is baked at build time, and the cache key does not include
-the environment — give each environment its own `cache` directory if you share one across them.
+the environment. Give each environment its own `cache` directory if you share one across them.
 
 ### Large projects and CI
 
 Discovery executes each schema file inside the bundler's process, so the **first cold run** is the
-expensive one — later runs hit the persistent cache.
+expensive one. Later runs hit the persistent cache.
 
 ```yaml
 - uses: actions/cache@v4
@@ -419,10 +417,10 @@ never mention `zod` cost nothing.
 
 ### Parallel Transforms
 
-Discovery runs one file at a time on the bundler's own thread — executions are serialized so
-concurrent transforms cannot double-execute a shared dependency. `parallel` moves whole transforms
-onto worker threads instead, each with its own loader and module cache, which is what makes running
-them at the same time sound.
+Discovery runs one file at a time on the bundler's own thread, serializing executions so concurrent
+transforms cannot double-execute a shared dependency. `parallel` moves whole transforms onto worker
+threads instead, each with its own loader and module cache, which is what makes running them at the
+same time sound.
 
 ```typescript
 zodCompiler({ parallel: true }); // one worker per core, less one, capped at 4
@@ -431,34 +429,34 @@ zodCompiler({ parallel: 2 }); // or pick the count yourself
 
 **Whether it pays depends on your import graph, not your core count.** A module shared by many
 schema files is executed once in-process and once _per worker_ here. Files with independent graphs
-win; files chained through each other can lose. Both rows below are 120 files of 8 schemas each, on
-12 performance cores — the only difference is whether the files import one another:
+win; files chained through each other can lose. Both rows below are 120 files of 8 schemas each on
+12 performance cores, differing only in whether the files import one another:
 
 | Transform (120 files) | in-process |      n=2 |      n=4 |      n=8 |     n=12 |
 | --------------------- | ---------: | -------: | -------: | -------: | -------: |
 | independent graphs    |   3,633 ms | 2,263 ms | 1,508 ms | 1,786 ms | 2,119 ms |
 | 120-deep import chain |     945 ms |   977 ms | 1,045 ms | 1,796 ms | 3,332 ms |
 
-So measure before adopting it — `ZOD_COMPILER_TIMING=1` prints the per-phase breakdown, and the
-`discover` line is the one workers move. Throughput peaks around four workers and declines past it:
-beyond that point every extra worker re-executes more graph, holds another copy of it in memory, and
-adds to the generated source that the single receiving thread has to deserialize.
+So measure before adopting it. `ZOD_COMPILER_TIMING=1` prints the per-phase breakdown, and `discover`
+is the line workers move. Throughput peaks around four workers and declines past it: every extra worker
+re-executes more graph, holds another copy in memory, and adds to the generated source that the single
+receiving thread has to deserialize.
 
-Emitted code, sourcemaps and cache entries are identical either way — `parallel` is not part of the
-cache key, so a parallel build and a serial one share the same cache. The disk cache and dependency
-crawling stay on the bundler thread, and if a worker cannot start or dies mid-build its file is
-retried in-process rather than failing the build.
+Emitted code, sourcemaps and cache entries are identical either way. `parallel` is not part of the
+cache key, so parallel and serial builds share one cache. Disk caching and dependency crawling stay on
+the bundler thread, and a worker that cannot start or dies mid-build has its file retried in-process
+rather than failing the build.
 
-A **warm cache still beats parallelism**, and costs no memory — reach for `parallel` for the cold
-runs the cache cannot help with.
+A **warm cache still beats parallelism** and costs no memory. Reach for `parallel` on the cold runs the
+cache cannot help with.
 
 ## Framework Examples
 
-Nothing framework-specific is needed — exported schemas are compiled in place, so anything accepting
-a Zod schema picks up the compiled version:
+Nothing framework-specific is needed. Exported schemas are compiled in place, so anything accepting a
+Zod schema picks up the compiled version:
 
 ```typescript
-// tRPC — no .input(compile(...)) needed
+// tRPC: no .input(compile(...)) needed
 t.procedure.input(CreateUserSchema).mutation(({ input }) => createUser(input));
 
 // Hono
@@ -468,7 +466,7 @@ app.post("/users", zValidator("json", UserSchema), (c) => c.json(c.req.valid("js
 useForm({ resolver: zodResolver(SignupSchema) });
 ```
 
-The same applies to any [Standard Schema](https://standardschema.dev) consumer — `~standard.validate`
+The same applies to any [Standard Schema](https://standardschema.dev) consumer: `~standard.validate`
 routes through the compiled validator.
 
 Compiled methods live on the schema object, so Zod's functional API (`z.safeParse(Schema, x)`) and a
@@ -527,7 +525,7 @@ npx zod-compiler check src/schemas.ts --json --fail-under 80
 
 ### Fully Compiled (1.1-46x faster)
 
-Every Zod type except the fallbacks below — all primitives, `object` / `strictObject` / `looseObject`,
+Every Zod type except the fallbacks below: all primitives, `object` / `strictObject` / `looseObject`,
 `array`, `tuple`, `record`, `set`, `map`, `union`, `discriminatedUnion`, `intersection`, `pipe`,
 the `optional` / `nullable` / `readonly` / `default` / `catch` / `coerce` wrappers, `templateLiteral`,
 recursive `lazy` (self, mutual and nested), `custom` / `instanceof`, and
@@ -550,7 +548,7 @@ A schema delegates to Zod when it reaches JavaScript the generated code cannot r
 | Dynamic error maps, unresolvable `z.lazy()`          | Not knowable at build time                                                 |
 
 Everything else compiles, including context-free `preprocess` callbacks and
-`transform`/`refine`/`superRefine` whether or not the callback captures — a zero-capture one is inlined,
+`transform`/`refine`/`superRefine` whether or not the callback captures. A zero-capture one is inlined,
 a capturing one called by reference. Delegation is per-sub-schema: one uncompilable field goes to Zod,
 not the whole object. Run `zod-compiler check` to see what compiled.
 
@@ -638,11 +636,11 @@ vp run benchmark # run locally
 
 ### Performance Architecture
 
-An eligible schema compiles to a **fast path** — one `&&` chain validating the whole input with zero
-allocations, reused by `.is()` and `parse()` — plus a **slow path** that collects errors, run only on
-failure and deferred until `.error` is read. A `z.object()` strips, so it instead compiles to a single
-pass that validates and rebuilds together, bailing on the first failure — including the reshaping
-idioms (array size checks, `.refine()`, `.default()`, `.trim()`, `.transform()`).
+An eligible schema compiles to a **fast path**, one `&&` chain validating the whole input with zero
+allocations and reused by `.is()` and `parse()`, plus a **slow path** that collects errors, runs only on
+failure, and is deferred until `.error` is read. A `z.object()` strips, so it instead compiles to a
+single pass that validates and rebuilds together and bails on the first failure, covering the reshaping
+idioms too (array size checks, `.refine()`, `.default()`, `.trim()`, `.transform()`).
 
 Regexes are pre-compiled with bounded repeats unrolled, checks run cheapest-first, discriminated unions
 dispatch through a jump table (plain tagged unions are auto-discriminated into it), and oversized check
@@ -652,9 +650,10 @@ and build their output in one pass. An intersection of two objects with disjoint
 same single pass over the merged shape, and `z.custom()` / `z.instanceof()` compile to a direct predicate
 call.
 
-Where success is cheaper to compile than failure, only the verdict and output are compiled: intersections
-and `custom` keep the original Zod schema to construct issues, so a rejection still reports exactly what
-Zod would — including an intersection's one-issue-per-side shape — without slowing the hot path.
+Where success is cheaper to compile than failure, only the verdict and output are compiled.
+Intersections and `custom` keep the original Zod schema to construct issues, so a rejection still
+reports exactly what Zod would, an intersection's one-issue-per-side shape included, without slowing the
+hot path.
 
 ## Development
 
