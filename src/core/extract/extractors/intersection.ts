@@ -57,10 +57,21 @@ export const extractIntersection: Extractor = (def, ctx) => {
  * pass alike.
  *
  * Mirrors {@link hasMutation}'s recursion for which node kinds hold children.
- * Only `object.strict` reaches zod's `handleCatchall` unrecognized-keys push;
- * the sole other producer — a record over a finite key set — already falls back
- * at extraction, so a compiled `record` cannot raise it.
+ *
+ * zod 4.5 widened the reconciliation to `invalid_key` as well — `collect` takes
+ * any `unrecognized_keys` at the root AND any record `invalid_key` one segment
+ * deep — so this covers both producers. `object.strict` reaches the
+ * `handleCatchall` unrecognized-keys push; a record reaches one or the other
+ * depending on its key schema (see the `record` case). A partial record over a
+ * finite key set now COMPILES rather than falling back, so the old claim that a
+ * compiled `record` could never raise these no longer holds.
  */
+function isTotalKeySchema(ir: SchemaIR): boolean {
+  // The same shape `fastRecord` treats as always-satisfied: for-in yields only
+  // strings, so an unconstrained, non-coercing string schema accepts them all.
+  return ir.type === "string" && ir.checks.length === 0 && ir.coerce !== true;
+}
+
 function canReportUnrecognizedKeys(ir: SchemaIR): boolean {
   switch (ir.type) {
     case "object":
@@ -76,7 +87,16 @@ function canReportUnrecognizedKeys(ir: SchemaIR): boolean {
         ir.items.some(canReportUnrecognizedKeys) ||
         (ir.rest !== null && canReportUnrecognizedKeys(ir.rest))
       );
+    // A record raises a RECONCILED key issue two ways: `unrecognized_keys` when
+    // an enumerable key schema declares the owned set, and `invalid_key` when a
+    // constrained key schema rejects one. An unconstrained string key schema
+    // accepts every own enumerable string key and so raises neither.
     case "record":
+      return (
+        ir.enumerableKeys === true ||
+        !isTotalKeySchema(ir.keyType) ||
+        canReportUnrecognizedKeys(ir.valueType)
+      );
     case "set":
       return canReportUnrecognizedKeys(ir.valueType);
     case "map":

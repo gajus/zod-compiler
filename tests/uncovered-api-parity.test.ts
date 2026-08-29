@@ -2375,3 +2375,57 @@ describe("unions whose options rewrite the value", () => {
   it("CONTROL: a union of pure validators still takes the fast path", () =>
     expectParity(z.union([z.string(), z.number()]), ["x", 1, true]));
 });
+
+/**
+ * zod 4.5 added SYMBOL keys to `$ZodObject`'s shape walk — `normalizeDef` now
+ * builds `allKeys` as `[...Object.keys(shape), ...getOwnPropertySymbols(shape)]`
+ * — so a symbol-keyed property is validated, reported absent, and copied to the
+ * output exactly like a string-keyed one. The IR is keyed by string throughout,
+ * so such a shape is delegated rather than silently dropping the property.
+ */
+describe("symbol-keyed shape properties", () => {
+  const SYM = Symbol.for("zod-compiler-test-symbol");
+  it("a symbol-keyed property is delegated, not ignored", () => {
+    const schema = z.object({ [SYM]: z.string(), a: z.number() });
+    expectParity(schema, [{ a: 1 }, { a: 1, [SYM]: "s" }, { a: 1, [SYM]: 2 }, {}]);
+  });
+  it("a symbol-only shape is delegated too", () =>
+    expectParity(z.object({ [SYM]: z.string() }), [{}, { [SYM]: "s" }, { [SYM]: 2 }]));
+  it("string-keyed shapes still compile", () =>
+    expectCompiled(z.object({ a: z.number(), b: z.string() })));
+});
+
+/**
+ * zod 4.5's `handleIntersectionResults` reconciles record `invalid_key` issues
+ * the same way it always reconciled `unrecognized_keys`: `collect` takes any
+ * root-level `unrecognized_keys` AND any record `invalid_key` one segment deep,
+ * and re-reports only the keys BOTH sides rejected. A sequential two-pass run
+ * cannot pair those key sets, so a record that can raise either issue has to
+ * delegate — including the partial record over a finite key set, which this
+ * release started compiling.
+ */
+describe("intersections of records reconcile key issues", () => {
+  it("partial records over disjoint enum key sets", () =>
+    expectParity(
+      z.intersection(
+        z.partialRecord(z.enum(["a"]), z.number()),
+        z.partialRecord(z.enum(["b"]), z.number()),
+      ),
+      [{}, { a: 1 }, { b: 2 }, { a: 1, b: 2 }, { c: 3 }],
+    ));
+  it("records over disjoint constrained key schemas", () =>
+    expectParity(
+      z.intersection(
+        z.record(z.string().regex(/^a/), z.number()),
+        z.record(z.string().regex(/^b/), z.number()),
+      ),
+      [{}, { a1: 1 }, { b1: 2 }, { a1: 1, b1: 2 }, { c1: 3 }],
+    ));
+  // CONTROL: an unconstrained string key schema accepts every own enumerable
+  // string key, so it raises neither reconciled issue and must not be delegated
+  // by the widened gate.
+  it("an unconstrained string key schema still compiles", () =>
+    expectCompiled(
+      z.intersection(z.record(z.string(), z.number()), z.record(z.string(), z.number())),
+    ));
+});

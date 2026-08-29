@@ -55,6 +55,18 @@ export function extractObject(def: ZodDef, ctx: ExtractorContext): SchemaIR {
   const strictFlag = strict ? { strict: true } : {};
   const stripFlag = def.catchall ? {} : { stripUnknownKeys: true };
 
+  // zod 4.5 added SYMBOL keys to the shape walk: `normalizeDef` builds
+  // `allKeys` as `[...Object.keys(shape), ...getOwnPropertySymbols(shape)]` and
+  // every pass — properties, strict, catchall — iterates that. Everything
+  // downstream here is keyed by string (`properties` is a string record, the
+  // strict pass compares against `Object.keys`, paths carry strings), so a
+  // symbol-keyed property would be silently dropped: never validated, never
+  // reported absent, never copied to the output. Delegating is the only honest
+  // answer until the IR can carry a symbol key.
+  if (Object.getOwnPropertySymbols(def.shape).length > 0) {
+    return ctx.fallback("unsupported");
+  }
+
   // Null-prototype: on a normal object `properties["__proto__"] = ir` sets the
   // prototype instead of defining a key, so a shape declaring `__proto__` (only
   // reachable via a computed key or a dynamically built shape — an object
