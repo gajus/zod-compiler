@@ -77,6 +77,16 @@ export function extractObject(def: ZodDef, ctx: ExtractorContext): SchemaIR {
   const suppressAbsentKeys: string[] = [];
   const refMark = ctx.refs?.length ?? 0;
   for (const [key, value] of Object.entries(def.shape)) {
+    // zod never runs the schema declared under `__proto__` (its shape loop
+    // skips the key outright and the output never carries it), so nothing here
+    // should either: the key stays in `properties` as a recognized name for the
+    // strict pass, holding a placeholder that codegen skips (see
+    // parsedProperties) — the real schema is not visited, so it registers no
+    // refs and cannot pull the object into a fallback.
+    if (key === "__proto__") {
+      properties[key] = { type: "unknown" };
+      continue;
+    }
     const propIR = ctx.visit(value, `.shape[${JSON.stringify(key)}]`);
     properties[key] = propIR;
     if (value._zod.optout === "optional" && reportsOnAbsentKey(propIR)) {

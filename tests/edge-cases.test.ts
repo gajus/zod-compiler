@@ -640,6 +640,9 @@ describe("edge cases — wrapper chains, pipe+coerce, ISO options, zero boundari
  * by-reference default differs for this key and is pinned in
  * known-divergences.test.ts.
  */
+// zod's shape loop skips a declared `__proto__` outright: the key is
+// recognized (never reported as unknown) but its schema never runs and the
+// output never carries it, in every object mode.
 describe("edge cases — a shape declaring __proto__", () => {
   const shapeWith = (inner: z.ZodType): Record<string, z.ZodType> =>
     Object.fromEntries([
@@ -677,13 +680,13 @@ describe("edge cases — a shape declaring __proto__", () => {
     }
   };
 
-  it("z.object validates the declared key", () =>
+  it("z.object strips the declared key without validating it", () =>
     expectVerdictParity(z.object(shapeWith(z.string())), inputs, "protoObject"));
   it("z.strictObject recognizes it rather than reporting it unknown", () =>
     expectVerdictParity(z.strictObject(shapeWith(z.string())), inputs, "protoStrict"));
-  it("z.looseObject validates it", () =>
+  it("z.looseObject skips it too", () =>
     expectVerdictParity(z.looseObject(shapeWith(z.string())), inputs, "protoLoose"));
-  it("validates when nested", () =>
+  it("skips it when nested", () =>
     expectVerdictParity(
       z.object({ outer: z.object(shapeWith(z.string())) }),
       [
@@ -693,7 +696,7 @@ describe("edge cases — a shape declaring __proto__", () => {
       ],
       "protoNested",
     ));
-  it("carries its own checks and wrappers", () => {
+  it("its checks and wrappers never run", () => {
     expectVerdictParity(
       z.object(shapeWith(z.string().min(3))),
       [JSON.parse('{"__proto__":"abc","b":"x"}'), JSON.parse('{"__proto__":"ab","b":"x"}')],
@@ -711,7 +714,7 @@ describe("edge cases — a shape declaring __proto__", () => {
   });
 
   // Strip mode rebuilds the output exactly as Zod does, so full parity —
-  // including the data Zod produces for this key — holds there.
+  // including the absence of this key from the data — holds there.
   it("full parity under stripUnknownKeys", () =>
     expectParity(z.object(shapeWith(z.string())), inputs, "protoStrip", {
       stripUnknownKeys: true,

@@ -198,6 +198,11 @@ export const ZC_SIZE_ORIGIN_DECL =
  * compiled path anyway — so classifying by code alone is exact for generated
  * issues.
  *
+ * `unrecognized_keys` is the one parse-level issue zod pushes WITH
+ * `continue: true`: it describes the shape of the input rather than the
+ * validity of the parsed value, so the parse still fails but the object's own
+ * refines run first and a union does not count the option as aborted.
+ *
  * Read by {@link ZC_AB_DECL} and by the union's option-pruning loop, which
  * applies the same rule inline over a per-option issue array.
  */
@@ -205,7 +210,6 @@ const ABORTING_ISSUE_CODES: readonly string[] = [
   "invalid_type",
   "invalid_value",
   "invalid_union",
-  "unrecognized_keys",
   "invalid_key",
   "invalid_element",
 ];
@@ -315,8 +319,10 @@ export const ZC_CUSTOM_OK_DECL =
 /**
  * superRefine slow-path merge: run the callback, then move its issues onto the
  * validator's list the way zod's finalizeIssue does — the node's path prefixed
- * onto any path the user supplied, and the internal `inst`/`continue` fields
- * dropped (they are zod bookkeeping, deleted before the issue is user-visible).
+ * onto any path the user supplied, the internal `inst`/`continue` fields
+ * dropped (they are zod bookkeeping, deleted before the issue is user-visible),
+ * and the owning schema's static message `m` applied to an issue that carries
+ * none of its own, since zod stamps the owner onto every issue a check raises.
  *
  * Returns the payload, so the caller can write `.value` back (the callback may
  * have rewritten it) and read `.aborted`. Aborted is set when any issue aborts
@@ -328,11 +334,12 @@ export const ZC_CUSTOM_OK_DECL =
  * `invalid_union`.
  */
 export const ZC_SR_DECL =
-  "function __zcSr(f,v,p,e){var q={value:v,issues:[]};__zcSrRun(f,q);" +
+  "function __zcSr(f,v,p,e,m){var q={value:v,issues:[]};__zcSrRun(f,q);" +
   "for(var i=0;i<q.issues.length;i++){var s=q.issues[i],t={};" +
   'for(var k in s){if(k!=="inst"&&k!=="continue")t[k]=s[k];}' +
   "if(s.continue!==true)q.aborted=true;" +
-  "t.path=s.path&&s.path.length?p.concat(s.path):p;e.push(t);}return q;}";
+  "t.path=s.path&&s.path.length?p.concat(s.path):p;" +
+  "if(t.message===undefined&&m!==undefined)t.message=m;e.push(t);}return q;}";
 
 /** Non-issue runtime helper declarations hosted in the virtual module. */
 export const RUNTIME_HELPER_DECLS: Readonly<Record<string, string>> = {

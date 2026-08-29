@@ -33,13 +33,13 @@ export function slowFile(ir: FileIR, g: SlowGen): string {
           if (check.mime.length === 1) {
             code += emit`
               if(${g.input}.type!==${escapeString(check.mime[0] as string)}){
-                ${invalidValue(g, mimeValuesExpr, { message: check.message, useTypeMsg: false })}
+                ${invalidValue(g, mimeValuesExpr, { message: check.message })}
               }`;
           } else {
             const setVar = g.set("mime", check.mime);
             code += emit`
               if(!${setVar}.has(${g.input}.type)){
-                ${invalidValue(g, mimeValuesExpr, { message: check.message, useTypeMsg: false })}
+                ${invalidValue(g, mimeValuesExpr, { message: check.message })}
               }`;
           }
           break;

@@ -1970,7 +1970,7 @@ describe("records accept only plain objects, as $ZodRecord does", () => {
 // `__proto__` data property — which `JSON.parse` creates, and which is how
 // prototype-pollution payloads arrive — is neither key-validated nor
 // value-validated. The compiled walk validated it and reported issues zod never
-// raises.
+// raises. An object's catchall pass skips it the same way.
 
 describe("records skip an own `__proto__` key, as zod does", () => {
   // Inputs are chosen so BOTH sides reject: on success the comparison would be
@@ -1990,7 +1990,7 @@ describe("records skip an own `__proto__` key, as zod does", () => {
   it("holds on the rebuilding path", () =>
     expectParity(z.record(z.string(), z.string().trim().min(20)), [badProtoValue()]));
 
-  it("CONTROL: an object catchall has no such exemption", () =>
+  it("an object catchall skips it the same way", () =>
     expectParity(z.object({ a: z.number() }).catchall(z.number()), [badProtoValue()]));
 });
 

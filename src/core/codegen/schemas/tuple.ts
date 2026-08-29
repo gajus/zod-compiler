@@ -81,9 +81,9 @@ export function slowTuple(ir: SchemaIR & { type: "tuple" }, g: SlowGen): string 
     const start = ir.optStart;
     code += emit`
       if(${g.input}.length>${len}){
-        ${tooBig(g, len, "array", true, { useTypeMsg: true, layout: "tuple", aborts: true })}
+        ${tooBig(g, len, "array", true, { layout: "tuple", aborts: true })}
       }else if(${g.input}.length<${start - 1}){
-        ${tooSmall(g, len, "array", "omit", { useTypeMsg: true, aborts: true })}
+        ${tooSmall(g, len, "array", "omit", { aborts: true })}
       }else{
         ${itemsCode}
       }`;
