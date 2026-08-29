@@ -248,7 +248,10 @@ describe("jit() — installed surface", () => {
     expect(compiled).toBe(original);
     expect(compiled).toBeInstanceOf(z.ZodObject);
     expect(Object.keys(compiled.shape)).toStrictEqual(["a"]);
-    expect(z.toJSONSchema(compiled)).toMatchObject({ title: "T", type: "object" });
+    expect(z.toJSONSchema(compiled)).toMatchObject({
+      $ref: "#/$defs/MySchema",
+      $defs: { MySchema: { title: "T", type: "object" } },
+    });
     expect(z.object({ nested: compiled }).safeParse({ nested: { a: "y" } }).success).toBe(true);
   });
 });

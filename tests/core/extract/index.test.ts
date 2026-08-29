@@ -396,6 +396,13 @@ describe("extractSchema — record", () => {
     expect(ir.type).toBe("record");
     expect(ir.keyType.type).toBe("enum");
     expect(ir.valueType.type).toBe("string");
+    expect(ir.enumerableKeys).toBe(true);
+  });
+
+  it("marks enumerable keys only when the key schema declares values", () => {
+    const ir = extractSchema(z.partialRecord(z.string(), z.string())) as RecordIR;
+    expect(ir.type).toBe("record");
+    expect(ir.enumerableKeys).toBeUndefined();
   });
 });
 

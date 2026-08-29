@@ -184,6 +184,16 @@ export const ZC_PLAIN_DECL =
 export const ZC_LENGTH_ORIGIN_DECL =
   'function __zcLo(v){return Array.isArray(v)?"array":typeof v==="string"?"string":"unknown";}';
 
+/**
+ * Code points in a string — zod's `util.codePointLength`, verbatim. A surrogate
+ * pair counts once and a lone surrogate as itself. The regex probe is the fast
+ * exit for a string with no astral characters, and the hand-rolled loop avoids
+ * the allocating string iterator. Only reached from a length check whose
+ * UTF-16 count leaves the verdict in doubt (see stringLengthTests).
+ */
+export const ZC_CPL_DECL =
+  "function __zcCpl(s){var n=s.length;if(!/[\\uD800-\\uDBFF]/.test(s))return n;var c=n;for(var i=0;i<n-1;i++){if((s.charCodeAt(i)&0xfc00)===0xd800&&(s.charCodeAt(i+1)&0xfc00)===0xdc00){c--;i++;}}return c;}";
+
 export const ZC_SIZE_ORIGIN_DECL =
   'function __zcSo(v){return v instanceof Set?"set":v instanceof Map?"map":' +
   '(typeof File!=="undefined"&&v instanceof File)?"file":"unknown";}';
@@ -349,6 +359,7 @@ export const RUNTIME_HELPER_DECLS: Readonly<Record<string, string>> = {
   __zcHop: ZC_HOP_DECL,
   __zcLo: ZC_LENGTH_ORIGIN_DECL,
   __zcSo: ZC_SIZE_ORIGIN_DECL,
+  __zcCpl: ZC_CPL_DECL,
   __zcPlain: ZC_PLAIN_DECL,
   __zcPfx: ZC_PFX_DECL,
   __zcCu: ZC_CUSTOM_OK_DECL,

@@ -12,7 +12,7 @@ import { emit } from "../emit.js";
 import { invalidFormat, invalidType, tooBig, tooSmall } from "../emit-issue.js";
 import { EMAIL_REGEX_SOURCE, fastTestSource, UUID_REGEX_SOURCE } from "../well-known-regex.js";
 import { refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
-import { whenGatedSizeChecks } from "./sizeable.js";
+import { stringLengthTests, whenGatedSizeChecks } from "./sizeable.js";
 
 /** `re.lastIndex=0;` reset statement for stateful (g/y-flagged) regexes. */
 function lastIndexReset(regexVar: string, flags: string | undefined): string {
@@ -20,13 +20,28 @@ function lastIndexReset(regexVar: string, flags: string | undefined): string {
 }
 
 /**
+ * `regexes.httpProtocol.source`. `parseURLObject` compares a url check's
+ * protocol SOURCE against it — not the schema constructor — so any check whose
+ * protocol is spelled this way gets the guard, `z.httpUrl()` or not.
+ */
+const HTTP_PROTOCOL_SOURCE = "^https?$";
+
+/**
  * Generate the url check, mirroring $ZodURL semantics:
- * trim → new URL(trimmed) → optional hostname/protocol regex tests →
- * write back url.href (normalize) or the trimmed input.
+ * trim → (for an http(s)-protocol check without normalize) require `://` →
+ * new URL(trimmed) → optional hostname/protocol regex tests → write back
+ * url.href (normalize) or the trimmed input with its tabs and newlines deleted.
+ *
+ * The `://` guard is `parseURLObject`'s: without it the URL parser accepts
+ * `http:example.com`, and its rejection is a distinct issue (`note: "Invalid
+ * URL format"`, no `pattern`) pushed BEFORE the parser runs. The deletion of
+ * `\t`, `\n` and `\r` (`stripTabAndNewline`) matches what the parser itself
+ * drops before it reads the host, so the returned value names the host that was
+ * validated.
  *
  * $ZodURL is another constructor that OVERRIDES the `??=`-installed default
- * check, so none of the three issues below carries `origin` — and the two that
- * do carry a `pattern` use `regex.source`, not the default check's
+ * check, so none of the issues below carries `origin` — and the two that do
+ * carry a `pattern` use `regex.source`, not the default check's
  * `regex.toString()` (no delimiters, no flags). Both are reproduced verbatim.
  */
 function slowUrlCheck(check: CheckStringFormat, g: SlowGen): string {
@@ -57,9 +72,11 @@ function slowUrlCheck(check: CheckStringFormat, g: SlowGen): string {
       }`;
   }
   // Zod writes the value back even when hostname/protocol issues were pushed.
-  inner += `${g.output}=${check.normalize ? `${urlVar}.href` : trimmedVar};`;
-  return emit`
-    var ${trimmedVar}=${g.input}.trim();
+  const stripped = check.normalize
+    ? `${urlVar}.href`
+    : `${trimmedVar}.replace(${g.regex("tnl", "[\\t\\n\\r]", "g")},"")`;
+  inner += `${g.output}=${stripped};`;
+  let parse = emit`
     var ${urlVar}=null;
     try{${urlVar}=new URL(${trimmedVar});}catch(_){}
     if(${urlVar}===null){
@@ -67,6 +84,18 @@ function slowUrlCheck(check: CheckStringFormat, g: SlowGen): string {
     }else{
       ${inner}
     }`;
+  if (!check.normalize && check.protocol === HTTP_PROTOCOL_SOURCE) {
+    const re = g.regex("httpUrl", "^https?:\\/\\/", "i");
+    parse = emit`
+      if(!${re}.test(${trimmedVar})){
+        ${invalidFormat(g, "url", { extra: `note:"Invalid URL format"`, message: check.message })}
+      }else{
+        ${parse}
+      }`;
+  }
+  return emit`
+    var ${trimmedVar}=${g.input}.trim();
+    ${parse}`;
 }
 
 export function slowString(ir: StringIR, g: SlowGen): string {
@@ -86,26 +115,31 @@ export function slowString(ir: StringIR, g: SlowGen): string {
     // the slow path collects all issues with no short-circuit.
     for (const check of ir.checks) {
       switch (check.kind) {
+        // Length is measured in code points where the unit count leaves the
+        // verdict in doubt — see stringLengthTests.
         case "min_length":
           code += emit`
-            if(${g.input}.length<${check.minimum}){
+            if(${stringLengthTests.minFails(g.input, check.minimum, g.ctx)}){
               ${tooSmall(g, check.minimum, "string", true, { message: check.message })}
             }`;
           break;
         case "max_length":
           code += emit`
-            if(${g.input}.length>${check.maximum}){
+            if(${stringLengthTests.maxFails(g.input, check.maximum, g.ctx)}){
               ${tooBig(g, check.maximum, "string", true, { message: check.message })}
             }`;
           break;
-        case "length_equals":
+        case "length_equals": {
+          const length = g.temp("cl");
           code += emit`
-            if(${g.input}.length<${check.length}){
+            var ${length}=${stringLengthTests.measure(g.input, check.length, g.ctx)};
+            if(${length}<${check.length}){
               ${tooSmall(g, check.length, "string", true, { exact: true, message: check.message })}
-            }else if(${g.input}.length>${check.length}){
+            }else if(${length}>${check.length}){
               ${tooBig(g, check.length, "string", true, { exact: true, message: check.message })}
             }`;
           break;
+        }
         // includes/starts_with/ends_with each carry `origin:"string"` but NO
         // `pattern`: $ZodCheckIncludes/StartsWith/EndsWith bypass
         // $ZodCheckStringFormat entirely (they init from $ZodCheck and assign
@@ -219,11 +253,11 @@ export function slowString(ir: StringIR, g: SlowGen): string {
 export function fastStringCheck(check: CheckIR, x: string, ctx: CodeGenContext): string | null {
   switch (check.kind) {
     case "min_length":
-      return `${x}.length>=${check.minimum}`;
+      return stringLengthTests.min(x, check.minimum, ctx);
     case "max_length":
-      return `${x}.length<=${check.maximum}`;
+      return stringLengthTests.max(x, check.maximum, ctx);
     case "length_equals":
-      return `${x}.length===${check.length}`;
+      return stringLengthTests.equals(x, check.length, ctx);
     case "includes":
       return check.position !== undefined
         ? `${x}.includes(${escapeString(check.includes)},${check.position})`
