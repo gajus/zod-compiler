@@ -13,12 +13,13 @@ import { generateValidator } from "#src/core/codegen/index.js";
 import type { RefEntry } from "#src/core/extract/index.js";
 import { extractSchema } from "#src/core/extract/index.js";
 import { FAIL_CLASS_DECL, FIN_DECL, FIN_DEFERRED_DECL } from "#src/core/iife.js";
+import { zcMsg } from "../../parity-harness.js";
 
 const localizedFin = new Function(
   "__zcMsg",
   "__zcZodError",
   `${FAIL_CLASS_DECL}${FIN_DECL}; return __zcFin;`,
-)(z.config().localeError, ZodRealError);
+)(zcMsg, ZodRealError);
 
 function compileLikeProduction(schema: unknown): {
   fn: (input: unknown) => { success: boolean; data?: unknown; error?: { issues: unknown[] } };
@@ -35,7 +36,7 @@ function compileLikeProduction(schema: unknown): {
     `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\n${generated.code}\nreturn ${generated.functionDef};`,
   );
   const fn = factory(
-    z.config().localeError,
+    zcMsg,
     ZodRealError,
     localizedFin,
     refEntries.map((e) => e.schema),

@@ -13,9 +13,22 @@ import {
 } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType, unrecognizedKeys } from "../emit-issue.js";
-import { ZC_AB_DECL } from "../issue-decls.js";
+import { ZC_AB_DECL, ZC_PROTO_SCRUB_DECL } from "../issue-decls.js";
 import { orderByRuntimeCost } from "../fast-size.js";
 import { refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
+
+/**
+ * The shape entries whose schemas actually RUN. `$ZodObject` skips a declared
+ * `__proto__` key in its shape loop (`if (key === "__proto__") continue`), so
+ * that property is never validated and never written to the output — it is
+ * only a recognized name for the strict/catchall passes, which read
+ * `Object.keys(ir.properties)` directly. Writing it would be worse than
+ * pointless: `{__proto__: v}` in an object literal, and `o["__proto__"] = v`
+ * on a plain object, both SET THE PROTOTYPE rather than define a key.
+ */
+export function parsedProperties(ir: ObjectIR): [string, SchemaIR][] {
+  return Object.entries(ir.properties).filter(([key]) => key !== "__proto__");
+}
 
 export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): string {
   let code = emit`
@@ -36,6 +49,12 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
     // Spread, not Object.assign: V8's CloneObjectIC makes `{...x}` ~25% faster
     // on the whole safeParse call for mutation-bearing schemas.
     code += needsClone ? `var ${objVar}={...${g.input}};` : `var ${objVar}=${g.input};`;
+    // A loose or catchall output is the INPUT, or a spread of it — and spread
+    // copies an own `__proto__` as a plain data property — where zod's fresh
+    // `{}` never receives the key at all. Scrub it (see ZC_PROTO_SCRUB_DECL); a
+    // strip object rebuilds and needs nothing here.
+    const scrub = emitRuntimeHelper(g.ctx, "__zcPs", ZC_PROTO_SCRUB_DECL);
+    code += `${objVar}=${scrub}(${objVar});`;
   }
 
   // Object-level refines are gated on zod's ABORT rule, not on "did anything
@@ -43,18 +62,21 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
   // payload and then skips its check chain only when `util.aborted` holds — i.e.
   // when one of those issues is non-continuable. A property that failed its own
   // `min`/format check reports a CONTINUABLE issue, so the outer refine still
-  // runs and both messages surface; a property that failed to parse at all
-  // (`invalid_type`, an unrecognized key, a bad record key) aborts and
-  // suppresses it. Snapshot the issue count before the properties so the scan
-  // covers exactly this node's own parse, as zod's fresh sub-payload does.
+  // runs and both messages surface — and so does an unrecognized key, which zod
+  // pushes with `continue: true`; a property that failed to parse at all
+  // (`invalid_type`, a bad record key) aborts and suppresses it. Snapshot the
+  // issue count before the properties so the scan covers exactly this node's
+  // own parse, as zod's fresh sub-payload does.
   const refineMark = ir.checks && ir.checks.length > 0 ? g.temp("rm") : "";
   if (refineMark) code += `var ${refineMark}=${g.issues}.length;`;
 
+  const skipAbsent = new Set(ir.skipAbsentKeys ?? []);
   const suppressAbsent = new Set(ir.suppressAbsentKeys ?? []);
+  const nonoptional = new Set(ir.nonoptionalKeys ?? []);
   /** Strip only: per-property output slot + whether it is always in the result. */
   const slots: { always: boolean; keyStr: string; value: string }[] = [];
 
-  for (const [key, propIR] of Object.entries(ir.properties)) {
+  for (const [key, propIR] of parsedProperties(ir)) {
     const keyStr = escapeString(key);
     const propPath = extendStaticPath(g.path, key);
     // Strip validates the value read from the INPUT, held in a local, and
@@ -68,15 +90,49 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
       slots.push({ always: outputAlwaysDefined(propIR), keyStr, value: propExpr });
     }
     const propCode = g.visit(propIR, { input: propExpr, output: propExpr, path: propPath });
-    if (suppressAbsent.has(key)) {
-      // Mirrors zod's handlePropertyResult: optional-out fallback props run,
-      // but their issues are discarded when the key is absent from the input.
+    // The three absent-key rules of zod's handlePropertyResult (see ObjectIR).
+    // Presence is tested on the ORIGINAL input, as zod's `key in input` is —
+    // a clone would hide an inherited key.
+    //
+    // The two rules that test presence AFTER running the property snapshot it
+    // FIRST. Running the property can create the very key the test asks about:
+    // where nothing mutates, `objVar` IS `g.input`, so the write-back of a
+    // property that accepted `undefined` (`o[key]=result`) adds an own `key`
+    // and the guard then reads it as present. `z.looseObject({a: z.custom()})`
+    // on `{}` lost its `nonoptional` issue entirely that way — the fast path
+    // still rejected on `"a" in x`, so `safeParse` failed with an EMPTY issue
+    // array — and left the caller's object carrying an `a` zod never writes.
+    const dropValue = strip ? `${propExpr}=undefined;` : `delete ${objVar}[${keyStr}];`;
+    if (skipAbsent.has(key)) {
+      code += emit`if(${keyStr} in ${g.input}){${propCode}}`;
+    } else if (suppressAbsent.has(key)) {
+      // A defaulted optional-out property runs, but a failure on an absent key
+      // is discarded whole: issues and whatever value it wrote before failing.
       const beforeVar = g.temp("ob");
+      const presentVar = g.temp("op");
       code += emit`
+        var ${presentVar}=${keyStr} in ${g.input};
         var ${beforeVar}=${g.issues}.length;
         ${propCode}
-        if(!(${keyStr} in ${strip ? g.input : objVar})&&${g.issues}.length>${beforeVar}){
-          ${g.issues}.length=${beforeVar};
+        if(!${presentVar}&&${g.issues}.length>${beforeVar}){
+          ${g.issues}.length=${beforeVar};${dropValue}
+        }`;
+    } else if (nonoptional.has(key)) {
+      // A required key that is absent fails as such when its schema raised
+      // nothing for the `undefined` it saw. zod pushes this one without an
+      // `inst`, so no schema-level message reaches it — and it returns without
+      // assigning, so whatever the property made of `undefined` is dropped.
+      const beforeVar = g.temp("ob");
+      const presentVar = g.temp("op");
+      code += emit`
+        var ${presentVar}=${keyStr} in ${g.input};
+        var ${beforeVar}=${g.issues}.length;
+        ${propCode}
+        if(!${presentVar}){
+          ${dropValue}
+          if(${g.issues}.length===${beforeVar}){
+            ${invalidType(g, "nonoptional", { input: "undefined", path: propPath, codeFirst: true, useTypeMsg: false })}
+          }
         }`;
     } else {
       code += propCode;
@@ -133,7 +189,11 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
   // .catchall(schema): validate every key NOT in the shape, mirroring zod's
   // handleCatchall — same bare for-in over the ORIGINAL input as the strict
   // pass (inherited enumerable keys count, no hasOwnProperty guard), each
-  // issue reported at the key. Runs after the properties, as zod does.
+  // issue reported at the key. Runs after the properties, as zod does. An
+  // undeclared `__proto__` is skipped like zod skips it: never validated, and
+  // never assigned, since `o["__proto__"]=v` on the clone would replace its
+  // prototype instead of adding a key. (The strict pass above still REPORTS
+  // it — there it is an unknown key like any other.)
   //
   // The key's slot is BOTH the input and the output, exactly as a shape
   // property's is: a value-rewriting catchall (coerce, .trim(), a default)
@@ -153,7 +213,7 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
     const seed = needsClone ? `${slot}=${g.input}[${kVar}];` : "";
     code += emit`
       for(var ${kVar} in ${g.input}){
-        if(!(${test})){
+        if(!(${test})&&${kVar}!=="__proto__"){
           ${seed}
           ${g.visit(ir.catchall, {
             input: slot,
@@ -164,7 +224,9 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
       }`;
   }
 
-  if (needsClone) {
+  // `!strip` also writes back: the scrub above may have re-pointed `objVar` at
+  // a copy even where nothing else mutates.
+  if (needsClone || !strip) {
     code += `${g.output}=${objVar};`;
   }
 
@@ -199,7 +261,7 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
  * output is the issue list, whose order is part of zod parity.
  */
 function orderedProperties(ir: ObjectIR, g: FastGen): [string, SchemaIR][] {
-  return orderByRuntimeCost(Object.entries(ir.properties), ([, propIR]) => propIR, g.ctx);
+  return orderByRuntimeCost(parsedProperties(ir), ([, propIR]) => propIR, g.ctx);
 }
 
 /**
@@ -214,13 +276,25 @@ function orderedProperties(ir: ObjectIR, g: FastGen): [string, SchemaIR][] {
 function fastObjectBody(ir: ObjectIR, g: FastGen, skipKey?: string): string[] | null {
   const x = g.input;
   const parts: string[] = [];
+  const absentAccepts = new Set([...(ir.skipAbsentKeys ?? []), ...(ir.suppressAbsentKeys ?? [])]);
+  const nonoptional = new Set(ir.nonoptionalKeys ?? []);
 
   for (const [key, propIR] of orderedProperties(ir, g)) {
     if (key === skipKey) continue;
-    const propExpr = `${x}[${escapeString(key)}]`;
-    const propCheck = g.visit(propIR, { input: propExpr });
+    const keyStr = escapeString(key);
+    const propCheck = g.visit(propIR, { input: `${x}[${keyStr}]` });
     if (propCheck === null) return null; // All-or-nothing
-    parts.push(propCheck);
+    // Presence rules keyed on the schema's `optin`/`optout` (see ObjectIR): a
+    // required key must be there whatever its schema makes of `undefined`, and
+    // an optional-out key on the "optional"/"defaulted" rungs is accepted when
+    // it is not, whatever the property would say.
+    if (nonoptional.has(key)) {
+      parts.push(propCheck === "true" ? `${keyStr} in ${x}` : `${keyStr} in ${x}&&${propCheck}`);
+    } else if (absentAccepts.has(key)) {
+      parts.push(`(!(${keyStr} in ${x})||${propCheck})`);
+    } else {
+      parts.push(propCheck);
+    }
   }
 
   // Strict unknown-key pass: hosted boolean helper (a for-in loop cannot live
@@ -252,7 +326,7 @@ function fastObjectBody(ir: ObjectIR, g: FastGen, skipKey?: string): string[] | 
       const fnName = g.temp("co");
       const test = keyMembershipTest(g.ctx, Object.keys(ir.properties), kv);
       g.ctx.preamble.push(
-        `function ${fnName}(o){${declareFastTemps(catchallGen.scope)}var ${kv},${vv};for(${kv} in o){if(!(${test})){${vv}=o[${kv}];if(!(${valCheck}))return false;}}return true;}`,
+        `function ${fnName}(o){${declareFastTemps(catchallGen.scope)}var ${kv},${vv};for(${kv} in o){if(!(${test})&&${kv}!=="__proto__"){${vv}=o[${kv}];if(!(${valCheck}))return false;}}return true;}`,
       );
       parts.push(`${fnName}(${x})`);
     }

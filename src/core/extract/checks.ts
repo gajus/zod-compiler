@@ -119,7 +119,15 @@ const PATTERNLESS_FORMATS = new Set(["email", "uuid", "url"]);
  * — in both directions — is tests/string-format-parity.test.ts, which fuzzes
  * every reachable string format against Zod over one shared corpus.
  */
-const NON_AUTHORITATIVE_PATTERN_FORMATS = new Set(["base64", "base64url", "cidrv6", "ipv6"]);
+const NON_AUTHORITATIVE_PATTERN_FORMATS = new Set([
+  "base64",
+  "base64url",
+  "cidrv6",
+  // $ZodCreditCard's pattern is shape-only by design ("the Luhn check below is
+  // not expressible as a pattern"); its `_zod.check` runs the checksum on top.
+  "credit_card",
+  "ipv6",
+]);
 
 /**
  * True when a `string_format` check is a `$ZodCustomStringFormat` — the family

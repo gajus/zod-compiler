@@ -7,7 +7,7 @@
  *
  * Argument convention (positional, kept short to minimize call-site bytes):
  *   __zcTS(minimum, origin, inclusive, input, path, msg?)  — too_small
- *   __zcTSn(minimum, origin, input, path, msg?)            — too_small with NO `inclusive` key
+ *   __zcTSt(minimum, origin, input, path, msg?)            — too_small, tuple key order
  *   __zcTBt(maximum, origin, input, path, msg?)            — too_big, tuple key order
  *   __zcTB(maximum, origin, inclusive, input, path, msg?)  — too_big
  *   __zcIT(expected, input, path, msg?)                    — invalid_type
@@ -34,14 +34,13 @@ const ZC_TS_DECL =
   'function __zcTS(m,o,i,inp,p,msg){var r={origin:o,code:"too_small",minimum:m,inclusive:i,input:inp,path:p};if(msg!==undefined)r.message=msg;return r;}';
 
 /**
- * too_small with the `inclusive` key ABSENT, not false. $ZodTuple's under-length
- * branch pushes `{ code: "too_small", minimum: items.length }` and nothing else
- * — the over-length branch of the same ternary is the one that spells out
- * `inclusive: true` — so the tuple's issue must not carry the key at all.
- * Separate from __zcTS because the value cannot express absence.
+ * too_small in the TUPLE under-length key order. $ZodTuple pushes
+ * `{ code, minimum, inclusive: true, input, inst, origin }`, so its `origin`
+ * trails `inclusive` where every check-created size issue leads with it. Its
+ * over-length sibling is __zcTBt.
  */
-const ZC_TS_NO_INCLUSIVE_DECL =
-  'function __zcTSn(m,o,inp,p,msg){var r={code:"too_small",minimum:m,origin:o,input:inp,path:p,continue:false};if(msg!==undefined)r.message=msg;return r;}';
+const ZC_TS_TUPLE_DECL =
+  'function __zcTSt(m,o,inp,p,msg){var r={code:"too_small",minimum:m,inclusive:true,origin:o,input:inp,path:p,continue:false};if(msg!==undefined)r.message=msg;return r;}';
 
 const ZC_TS_EXACT_DECL =
   'function __zcTSx(m,o,inp,p,msg){var r={origin:o,code:"too_small",minimum:m,inclusive:true,exact:true,input:inp,path:p};if(msg!==undefined)r.message=msg;return r;}';
@@ -53,7 +52,7 @@ const ZC_TB_DECL =
  * too_big in the TUPLE over-length key order. $ZodTuple spreads
  * `{ code, maximum, inclusive }` and appends `origin` after `input`/`inst`, so
  * its `origin` trails `inclusive` where every check-created size issue leads
- * with it. Its under-length sibling is __zcTSn.
+ * with it. Its under-length sibling is __zcTSt.
  */
 const ZC_TB_TUPLE_DECL =
   'function __zcTBt(m,o,inp,p,msg){var r={code:"too_big",maximum:m,inclusive:true,origin:o,input:inp,path:p,continue:false};if(msg!==undefined)r.message=msg;return r;}';
@@ -99,7 +98,7 @@ const ZC_UK_DECL =
 /** All issue factory declarations indexed by helper name. */
 export const ISSUE_DECLS: Readonly<Record<string, string>> = {
   __zcTS: ZC_TS_DECL,
-  __zcTSn: ZC_TS_NO_INCLUSIVE_DECL,
+  __zcTSt: ZC_TS_TUPLE_DECL,
   __zcTSx: ZC_TS_EXACT_DECL,
   __zcTB: ZC_TB_DECL,
   __zcTBt: ZC_TB_TUPLE_DECL,
@@ -113,11 +112,20 @@ export const ISSUE_DECLS: Readonly<Record<string, string>> = {
 
 /**
  * Float-safe remainder — byte-for-byte port of zod's util.floatSafeRemainder.
- * Raw `%` mis-rejects valid multiples of decimal steps (0.3 % 0.1 !== 0);
- * zod scales both operands to integers by their decimal-place count first.
+ * Raw `%` mis-rejects valid multiples of decimal steps (0.3 % 0.1 !== 0).
+ *
+ * zod 4.5 REPLACED the decimal-scaling implementation this once mirrored with a
+ * ratio-and-tolerance one, and the two disagree in both directions: the old form
+ * accepted `1e-7` as a multiple of 3 (its `toFixed` scaling collapsed the value
+ * to 0) and rejected `1e21` (where `toFixed` yields exponential notation and
+ * `parseInt` then reads 1). The tolerance is 4x epsilon because `val` and `step`
+ * each round to a double before the division rounds again, so a true decimal
+ * multiple's quotient can sit up to 1.5 scaled epsilons from the integer.
  */
 export const ZC_FSR_DECL =
-  'function __zcFsr(v,s){var vd=((""+v).split(".")[1]||"").length;var ss=""+s;var sd=(ss.split(".")[1]||"").length;if(sd===0&&/\\d?e-\\d?/.test(ss)){var m=ss.match(/\\d?e-(\\d?)/);if(m&&m[1]){sd=parseInt(m[1],10);}}var d=vd>sd?vd:sd;var vi=parseInt(v.toFixed(d).replace(".",""),10);var si=parseInt(s.toFixed(d).replace(".",""),10);return (vi%si)/Math.pow(10,d);}';
+  "function __zcFsr(v,s){var r=v/s;var q=Math.round(r);" +
+  "var t=4*Number.EPSILON*Math.max(Math.abs(r),1);" +
+  "return Math.abs(r-q)<t?0:r-q;}";
 
 /**
  * Hoisted `Object.prototype.hasOwnProperty` reference. Record fast/slow paths
@@ -184,6 +192,36 @@ export const ZC_PLAIN_DECL =
 export const ZC_LENGTH_ORIGIN_DECL =
   'function __zcLo(v){return Array.isArray(v)?"array":typeof v==="string"?"string":"unknown";}';
 
+/**
+ * Drop an own `__proto__` from a container the parse hands back BY REFERENCE.
+ *
+ * zod never lets the key into an output: `$ZodObject`'s shape loop strips a
+ * declared one, `handleCatchall` skips an undeclared one, and `$ZodRecord` skips
+ * it while copying — all so the assignment into their fresh `{}` cannot replace
+ * the result's prototype. A compiled loose/catchall object or record IS its
+ * input, so the key has to be removed here instead; leaving it made
+ * `Object.assign({}, parsed)` a prototype-pollution sink, since [[Set]] runs the
+ * inherited setter the spread that built the value did not.
+ *
+ * Copies rather than editing in place: the divergence note promises the caller
+ * its own container back, not one with a key silently deleted from it. The
+ * common object has no such key and is returned untouched, so the cost is one
+ * `hasOwnProperty` call.
+ */
+export const ZC_PROTO_SCRUB_DECL =
+  'function __zcPs(o){if(!Object.prototype.hasOwnProperty.call(o,"__proto__"))return o;' +
+  'var c={...o};delete c["__proto__"];return c;}';
+
+/**
+ * Code points in a string — zod's `util.codePointLength`, verbatim. A surrogate
+ * pair counts once and a lone surrogate as itself. The regex probe is the fast
+ * exit for a string with no astral characters, and the hand-rolled loop avoids
+ * the allocating string iterator. Only reached from a length check whose
+ * UTF-16 count leaves the verdict in doubt (see stringLengthTests).
+ */
+export const ZC_CPL_DECL =
+  "function __zcCpl(s){var n=s.length;if(!/[\\uD800-\\uDBFF]/.test(s))return n;var c=n;for(var i=0;i<n-1;i++){if((s.charCodeAt(i)&0xfc00)===0xd800&&(s.charCodeAt(i+1)&0xfc00)===0xdc00){c--;i++;}}return c;}";
+
 export const ZC_SIZE_ORIGIN_DECL =
   'function __zcSo(v){return v instanceof Set?"set":v instanceof Map?"map":' +
   '(typeof File!=="undefined"&&v instanceof File)?"file":"unknown";}';
@@ -198,6 +236,11 @@ export const ZC_SIZE_ORIGIN_DECL =
  * compiled path anyway — so classifying by code alone is exact for generated
  * issues.
  *
+ * `unrecognized_keys` is the one parse-level issue zod pushes WITH
+ * `continue: true`: it describes the shape of the input rather than the
+ * validity of the parsed value, so the parse still fails but the object's own
+ * refines run first and a union does not count the option as aborted.
+ *
  * Read by {@link ZC_AB_DECL} and by the union's option-pruning loop, which
  * applies the same rule inline over a per-option issue array.
  */
@@ -205,7 +248,6 @@ const ABORTING_ISSUE_CODES: readonly string[] = [
   "invalid_type",
   "invalid_value",
   "invalid_union",
-  "unrecognized_keys",
   "invalid_key",
   "invalid_element",
 ];
@@ -315,8 +357,10 @@ export const ZC_CUSTOM_OK_DECL =
 /**
  * superRefine slow-path merge: run the callback, then move its issues onto the
  * validator's list the way zod's finalizeIssue does — the node's path prefixed
- * onto any path the user supplied, and the internal `inst`/`continue` fields
- * dropped (they are zod bookkeeping, deleted before the issue is user-visible).
+ * onto any path the user supplied, the internal `inst`/`continue` fields
+ * dropped (they are zod bookkeeping, deleted before the issue is user-visible),
+ * and the owning schema's static message `m` applied to an issue that carries
+ * none of its own, since zod stamps the owner onto every issue a check raises.
  *
  * Returns the payload, so the caller can write `.value` back (the callback may
  * have rewritten it) and read `.aborted`. Aborted is set when any issue aborts
@@ -328,11 +372,12 @@ export const ZC_CUSTOM_OK_DECL =
  * `invalid_union`.
  */
 export const ZC_SR_DECL =
-  "function __zcSr(f,v,p,e){var q={value:v,issues:[]};__zcSrRun(f,q);" +
+  "function __zcSr(f,v,p,e,m){var q={value:v,issues:[]};__zcSrRun(f,q);" +
   "for(var i=0;i<q.issues.length;i++){var s=q.issues[i],t={};" +
   'for(var k in s){if(k!=="inst"&&k!=="continue")t[k]=s[k];}' +
   "if(s.continue!==true)q.aborted=true;" +
-  "t.path=s.path&&s.path.length?p.concat(s.path):p;e.push(t);}return q;}";
+  "t.path=s.path&&s.path.length?p.concat(s.path):p;" +
+  "if(t.message===undefined&&m!==undefined)t.message=m;e.push(t);}return q;}";
 
 /** Non-issue runtime helper declarations hosted in the virtual module. */
 export const RUNTIME_HELPER_DECLS: Readonly<Record<string, string>> = {
@@ -342,6 +387,8 @@ export const RUNTIME_HELPER_DECLS: Readonly<Record<string, string>> = {
   __zcHop: ZC_HOP_DECL,
   __zcLo: ZC_LENGTH_ORIGIN_DECL,
   __zcSo: ZC_SIZE_ORIGIN_DECL,
+  __zcCpl: ZC_CPL_DECL,
+  __zcPs: ZC_PROTO_SCRUB_DECL,
   __zcPlain: ZC_PLAIN_DECL,
   __zcPfx: ZC_PFX_DECL,
   __zcCu: ZC_CUSTOM_OK_DECL,

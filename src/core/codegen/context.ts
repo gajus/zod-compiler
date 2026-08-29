@@ -810,20 +810,54 @@ function hasSuperRefine(checks: readonly { kind: string }[] | undefined): boolea
  * path, and by the shared-walk dedup + intersection extractor to exclude them.
  */
 /**
- * Can this tuple's output be LONGER than its input?
+ * Can this tuple's output differ from a SHORT input it accepts?
  *
- * `handleTupleResult` assigns `final.value[i] = result.value` for every item it
- * runs, and $ZodTuple runs every item below `optStart` even when the input is
- * shorter — so a required slot past the end is written with the `undefined` its
- * schema returned, extending the array. `z.tuple([z.any(), z.any()])` therefore
- * answers `["x"]` with `["x", undefined]`, length 2. A required item that
- * REJECTS undefined can't produce that: the parse fails and the value is never
- * read. So the extension is possible exactly when some required item accepts
- * `undefined` — which also makes the tuple a mutating node, since its output is
- * then not its input.
+ * $ZodTuple runs every item even when the input is shorter, and
+ * `handleTupleResults` writes each result back (`final.value[i] = r.value`)
+ * unless the slot is at or past `optoutStart` and on the "optional" rung of
+ * `optin` — that one ends the output where the input ended. Every other absent
+ * slot lands in the output: below `optoutStart` as whatever the item made of
+ * `undefined` (an own `undefined` for `z.string().optional()`, "c" for
+ * `.catch("c")`), at or past it as a substituted value (a "defaulted" item).
+ * `z.tuple([z.string(), z.number().default(1)])` therefore answers `["x"]` with
+ * `["x", 1]`, length 2, and `z.tuple([z.any()]).rest(z.number())` answers `[]`
+ * with `[undefined]`. So the tuple is a mutating node — its output is not its
+ * input — exactly when some slot that CAN be absent is not a truncating one.
+ * Without a rest element only slots from `optStart` on can be absent (a shorter
+ * input is `too_small`); with one, any slot can.
  */
-export function tuplePadsShortInput(ir: SchemaIR & { type: "tuple" }): boolean {
-  return ir.items.some((item, index) => index < ir.optStart && !rejectsUndefined(item));
+export function tupleRewritesShortInput(ir: SchemaIR & { type: "tuple" }): boolean {
+  const len = ir.items.length;
+  const optoutStart = ir.optoutStart ?? len;
+  const optionalIn = ir.optionalIn ?? [];
+  for (let i = ir.rest === null ? ir.optStart : 0; i < len; i++) {
+    if (i < optoutStart || !optionalIn.includes(i)) return true;
+  }
+  return false;
+}
+
+/**
+ * Does this node hand back a container that could still carry an own
+ * `__proto__` zod would have stripped?
+ *
+ * True for the shapes whose output IS their input: a LOOSE or CATCHALL object
+ * (a stripping one rebuilds from the declared keys, and `parsedProperties`
+ * already drops the key) and any record. See {@link ZC_PROTO_SCRUB_DECL} for
+ * what zod does and why the difference matters.
+ */
+export function needsProtoScrub(ir: SchemaIR): boolean {
+  // Every record: the walk skips `__proto__` but the container is handed back.
+  if (ir.type === "record") return true;
+  if (ir.type !== "object") return false;
+  // A STRIPPING object rebuilds from the declared keys and `parsedProperties`
+  // drops `__proto__`, so its output can never carry one.
+  if (ir.stripUnknownKeys === true) return false;
+  // A STRICT object reports an undeclared `__proto__` as an unrecognized key
+  // and fails, so the only way one reaches its output is by being DECLARED —
+  // which zod's shape loop strips while still counting the name as recognized.
+  if (ir.strict === true) return Object.hasOwn(ir.properties, "__proto__");
+  // Loose or catchall: an undeclared `__proto__` rides through untouched.
+  return true;
 }
 
 export function hasMutation(ir: SchemaIR): boolean {
@@ -869,7 +903,7 @@ export function hasMutation(ir: SchemaIR): boolean {
       return (
         ir.items.some(hasMutation) ||
         (ir.rest !== null && hasMutation(ir.rest)) ||
-        tuplePadsShortInput(ir)
+        tupleRewritesShortInput(ir)
       );
     case "record":
       return hasMutation(ir.valueType);
@@ -920,10 +954,11 @@ export function outputAlwaysDefined(ir: SchemaIR): boolean {
 /**
  * Does this schema reject `undefined` outright?
  *
- * Read as "can this slot be ABSENT from the input" by the tuple build, whose
- * output length depends on it — zod marks a defaulted or optional item
- * `optin: "optional"` and accepts a shorter array. Conservative: anything that
- * might accept, produce, or default to `undefined` answers false.
+ * Read as "does an absent key already fail on its own" by the object extractor,
+ * which otherwise has to report the absence itself (zod's `nonoptional`
+ * issue), and as "is a fixed-length rebuild exact" by the tuple build.
+ * Conservative: anything that might accept, produce, or default to `undefined`
+ * answers false.
  */
 export function rejectsUndefined(ir: SchemaIR): boolean {
   switch (ir.type) {

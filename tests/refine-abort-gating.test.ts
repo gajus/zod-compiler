@@ -86,6 +86,13 @@ describe("refine gating — a continuable inner failure keeps the outer refine",
       z.object({ n: z.object({ a: z.string().min(2, "inner") }) }),
       { n: { a: "x" } },
     ],
+    // zod pushes unrecognized_keys with `continue: true`: it describes the
+    // input's shape, not the parsed value, so the parse fails without aborting.
+    [
+      "unrecognized_keys (nested strict)",
+      z.object({ a: z.strictObject({ b: z.string() }) }),
+      { a: { b: "x", c: 1 } },
+    ],
   ])("%s", (_label, base, input) => {
     const schema = (base as z.ZodObject).refine(() => false, { error: "outer" });
     expect(compiledIssues(schema, input, "keep")).toContain("custom@");
@@ -105,11 +112,6 @@ describe("refine gating — a non-continuable inner failure suppresses the outer
       z.object({ a: z.record(z.string().min(3), z.number()) }),
       { a: { xy: 1 } },
     ],
-    [
-      "unrecognized_keys (nested strict)",
-      z.object({ a: z.strictObject({ b: z.string() }) }),
-      { a: { b: "x", c: 1 } },
-    ],
     ["nested object invalid_type", z.object({ a: z.object({ b: z.string() }) }), { a: 5 }],
     ["array element invalid_type", z.object({ a: z.array(z.string()) }), { a: [5] }],
   ])("%s", (_label, base, input) => {
@@ -126,13 +128,25 @@ describe("refine gating — a non-continuable inner failure suppresses the outer
     );
   });
 
-  it("the object's own unrecognized_keys pass suppresses its refine", () => {
+  it("the object's own unrecognized_keys pass still runs its refine", () => {
     const predicate = vi.fn(() => false);
     const schema = z.strictObject({ a: z.string() }).refine(predicate, { error: "outer" });
-    expect(compiledIssues(schema, { a: "x", b: 1 }, "strictDrop")).toStrictEqual([
+    expect(compiledIssues(schema, { a: "x", b: 1 }, "strictKeep")).toStrictEqual([
+      "unrecognized_keys@",
+      "custom@",
+    ]);
+    expect(predicate).toHaveBeenCalledTimes(1);
+    expectIssueParity(schema, { a: "x", b: 1 }, "strictKeepParity");
+  });
+
+  it("a union does not count a strict option's unrecognized_keys as aborting", () => {
+    // The strict object is the sole non-aborted option, so zod surfaces its own
+    // issue directly instead of wrapping both options in an invalid_union.
+    const schema = z.union([z.strictObject({ a: z.string() }), z.number()]);
+    expect(compiledIssues(schema, { a: "x", b: 1 }, "strictUnion")).toStrictEqual([
       "unrecognized_keys@",
     ]);
-    expect(predicate).not.toHaveBeenCalled();
+    expectIssueParity(schema, { a: "x", b: 1 }, "strictUnionParity");
   });
 });
 

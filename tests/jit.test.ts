@@ -15,7 +15,11 @@
  *    `.safeParse`;
  *  - anything that stops runtime codegen — `z.config({ jitless: true })`, a
  *    CSP that blocks `new Function`, a schema the pipeline throws on — leaves
- *    a working plain-Zod schema rather than a broken one.
+ *    a working plain-Zod schema rather than a broken one;
+ *  - Zod keeps the parse methods on the prototype and installs a bound own
+ *    copy on first read, so a schema reaches `jit()` either untouched (no own
+ *    `safeParse` at all) or already carrying the copies. Both shapes compile,
+ *    and both degrade back to exactly what they held.
  */
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { core, z } from "zod";
@@ -52,16 +56,29 @@ function safeParseName(schema: object): string | undefined {
 }
 
 /**
- * Is `slot` fronted by a getter rather than holding a method outright? Only
- * meaningful for the slots Zod defines as plain values — `~standard` is a lazy
- * getter on an untouched schema, so this cannot distinguish it.
+ * Is `slot` fronted by an own getter rather than holding a method outright?
+ * Zod's own getters live on the prototype, so an untouched schema answers
+ * `false` for every slot; only `jit()` puts an accessor on the instance.
  */
 function isAccessor(target: object, slot: string): boolean {
   return typeof Object.getOwnPropertyDescriptor(target, slot)?.get === "function";
 }
 
-/** The `.name` Zod's own `safeParse` carries — how a test tells "not compiled". */
-const ZOD_SAFE_PARSE_NAME = safeParseName(z.object({ a: z.string() }));
+/** Read every slot `jit()` fronts, so Zod installs its bound own copies first. */
+function materializedByZod<T extends z.ZodType>(schema: T): T {
+  const record = schema as unknown as Record<string, unknown>;
+  for (const slot of ["parse", "safeParse", "parseAsync", "safeParseAsync", "~standard"]) {
+    void record[slot];
+  }
+  return schema;
+}
+
+/**
+ * The `.name` of the own `safeParse` Zod installs on first read — how a test
+ * tells "plain Zod, not compiled". An untouched schema has no own `safeParse`
+ * at all, so this is taken after one read.
+ */
+const ZOD_OWN_SAFE_PARSE_NAME = safeParseName(materializedByZod(z.object({ a: z.string() })));
 
 function expectParity(make: () => z.ZodType, inputs: unknown[]): void {
   const plain = make();
@@ -101,9 +118,23 @@ describe("jit() — lazy installation", () => {
   });
 
   it("preserves Zod's own-key enumerability, so the schema's shape is unchanged", () => {
+    // An untouched schema has no own method keys; one Zod already read has
+    // enumerable own copies. The accessor fronting each slot must match.
     expect(Object.keys(jit(z.object({ a: z.string() })))).toStrictEqual(
       Object.keys(z.object({ a: z.string() })),
     );
+    expect(Object.keys(jit(materializedByZod(z.object({ a: z.string() }))))).toStrictEqual(
+      Object.keys(materializedByZod(z.object({ a: z.string() }))),
+    );
+  });
+
+  it("fronts the own copies Zod already installed and compiles over them", () => {
+    const schema = materializedByZod(z.object({ a: z.string() }));
+    expect(safeParseName(schema)).toBe(ZOD_OWN_SAFE_PARSE_NAME);
+    jit(schema);
+    expect(isAccessor(schema, "safeParse")).toBe(true);
+    expect(schema.safeParse({ a: "x" }).success).toBe(true);
+    expect(safeParseName(schema)).toBe("safeParse_jit");
   });
 
   it("is idempotent — a second call neither recompiles nor throws", () => {
@@ -217,7 +248,10 @@ describe("jit() — installed surface", () => {
     expect(compiled).toBe(original);
     expect(compiled).toBeInstanceOf(z.ZodObject);
     expect(Object.keys(compiled.shape)).toStrictEqual(["a"]);
-    expect(z.toJSONSchema(compiled)).toMatchObject({ title: "T", type: "object" });
+    expect(z.toJSONSchema(compiled)).toMatchObject({
+      $ref: "#/$defs/MySchema",
+      $defs: { MySchema: { title: "T", type: "object" } },
+    });
     expect(z.object({ nested: compiled }).safeParse({ nested: { a: "y" } }).success).toBe(true);
   });
 });
@@ -286,7 +320,25 @@ describe("jit() — degradation", () => {
     const schema = jit(z.object({ a: z.string().min(2) }));
     expect(schema.safeParse({ a: "xy" }).success).toBe(true);
     expect(schema.safeParse({ a: "x" }).success).toBe(false);
-    expect(safeParseName(schema)).toBe(ZOD_SAFE_PARSE_NAME);
+    // The accessor is gone and the slot holds what a never-jitted schema would
+    // after one read: the bound own copy Zod's prototype getter installs.
+    expect(isAccessor(schema, "safeParse")).toBe(false);
+    expect(safeParseName(schema)).toBe(ZOD_OWN_SAFE_PARSE_NAME);
+  });
+
+  it("hands back the very own copies Zod had installed before jit()", () => {
+    core.globalConfig.jitless = true;
+    const schema = materializedByZod(z.object({ a: z.string().min(2) }));
+    const ownValue = (slot: string): unknown =>
+      Object.getOwnPropertyDescriptor(schema, slot)?.value;
+    const own = ownValue("safeParse");
+    const standard = ownValue("~standard");
+    jit(schema);
+    expect(schema.safeParse({ a: "x" }).success).toBe(false);
+    // Restored by identity, not re-bound: the own copy taken before jit() and
+    // the one on the slot after it are the same function.
+    expect(ownValue("safeParse")).toBe(own);
+    expect(ownValue("~standard")).toBe(standard);
   });
 
   it("yields to an AOT install without recursing (jit() plus the build plugin)", () => {
@@ -304,8 +356,9 @@ describe("jit() — degradation", () => {
 
   it("does not throw when a method slot is locked non-configurable", () => {
     // `jit()` is called at module scope, so a throw here takes down the
-    // importing app at boot. Zod 4.3.x leaves every slot configurable, but that
-    // is an unversioned internal — and another wrapper can lock one too.
+    // importing app at boot. The own copy Zod installs on first read is
+    // configurable, but that is an unversioned internal — and another wrapper
+    // can lock a slot too.
     const schema = z.object({ a: z.string().min(2) });
     Object.defineProperty(schema, "safeParse", {
       configurable: false,
@@ -335,6 +388,23 @@ describe("jit() — degradation", () => {
     expect(hostile.safeParse({ a: "xy" }).success).toBe(true);
   });
 
+  it("does not throw when the target refuses every accessor install", () => {
+    // Refuses exactly what jit() does — an accessor — while accepting the data
+    // property Zod's own getter installs, so the schema stays usable through
+    // the wrapper on Zod's path.
+    const schema = z.object({ a: z.string().min(2) });
+    const hostile = new Proxy(schema, {
+      defineProperty: (target, key, descriptor) => {
+        if (typeof descriptor.get === "function") throw new Error("accessor refused");
+        return Reflect.defineProperty(target, key, descriptor);
+      },
+    });
+    expect(() => jit(hostile)).not.toThrow();
+    expect(isAccessor(schema, "parse")).toBe(false);
+    expect(hostile.safeParse({ a: "xy" }).success).toBe(true);
+    expect(hostile.safeParse({ a: "x" }).success).toBe(false);
+  });
+
   it("does not throw when the target refuses defineProperty on every slot", () => {
     const schema = z.object({ a: z.string().min(2) });
     const hostile = new Proxy(schema, {
@@ -343,23 +413,38 @@ describe("jit() — degradation", () => {
       },
     });
     expect(() => jit(hostile)).not.toThrow();
-    expect(hostile.safeParse({ a: "xy" }).success).toBe(true);
-    expect(hostile.safeParse({ a: "x" }).success).toBe(false);
+    expect(isAccessor(schema, "safeParse")).toBe(false);
+    // Through the wrapper, Zod's own getter meets the same refusal when it
+    // installs its bound copy — so the one error a read surfaces is the trap's,
+    // with nothing of jit()'s in front of it.
+    expect(() => hostile.safeParse({ a: "xy" })).toThrow("defineProperty refused");
+    // Nothing landed on the schema, which still works when reached directly.
+    expect(schema.safeParse({ a: "xy" }).success).toBe(true);
+    expect(schema.safeParse({ a: "x" }).success).toBe(false);
   });
 
   /**
    * Installation reaches the slots before `safeParseAsync` and then throws, so
-   * rollback has real work: those slots must go back to Zod's own descriptors
-   * even though the refusing one cannot.
+   * rollback has real work: those slots must go back to what Zod had even
+   * though the refusing one cannot. Rollback is a delete on an untouched
+   * schema (the slot goes back to the prototype) and a defineProperty on one
+   * Zod already materialized (the own copy goes back), so both are recorded.
    */
-  it("rolls back the slots it can when the target refuses one", () => {
-    const schema = z.object({ a: z.string().min(2) });
+  it.each([
+    ["an untouched schema", (schema: z.ZodType): z.ZodType => schema],
+    ["a schema Zod already materialized", materializedByZod],
+  ])("rolls back the slots it can when the target refuses one, on %s", (_name, shape) => {
+    const schema = shape(z.object({ a: z.string().min(2) }));
     const seenKeys: string[] = [];
     const hostile = new Proxy(schema, {
       defineProperty: (target, key, descriptor) => {
         seenKeys.push(String(key));
         if (key === "safeParseAsync") throw new Error("defineProperty refused");
         return Reflect.defineProperty(target, key, descriptor);
+      },
+      deleteProperty: (target, key) => {
+        seenKeys.push(String(key));
+        return Reflect.deleteProperty(target, key);
       },
     });
     expect(() => jit(hostile)).not.toThrow();
@@ -376,10 +461,12 @@ describe("jit() — degradation", () => {
   });
 
   /**
-   * A target that refuses EVERY rollback keeps its accessors, so the getter is
-   * the last line of defence: `trigger()` is spent, and re-reading the slot
-   * would re-enter the getter until the stack blows. It must serve Zod's own
-   * method from the snapshot instead.
+   * A target that refuses EVERY rollback — the delete that returns an untouched
+   * slot to the prototype as much as a defineProperty — keeps its accessors, so
+   * the getter is the last line of defence: `trigger()` is spent, and re-reading
+   * the slot would re-enter the getter until the stack blows. It must serve
+   * Zod's own method instead, and Zod's own getter is no help here: it installs
+   * its bound copy with the same refused defineProperty.
    */
   it("keeps a schema usable when no slot can be rolled back", () => {
     const schema = z.object({ a: z.string().min(2) });
@@ -390,6 +477,9 @@ describe("jit() — degradation", () => {
         if (installs > 1) throw new Error("defineProperty refused");
         return Reflect.defineProperty(target, key, descriptor);
       },
+      deleteProperty: () => {
+        throw new Error("deleteProperty refused");
+      },
     });
     expect(() => jit(hostile)).not.toThrow();
     // `parse` is the slot that took an accessor and could not be rolled back.
@@ -397,12 +487,16 @@ describe("jit() — degradation", () => {
     expect(() => hostile.parse({ a: "xy" })).not.toThrow();
     expect(hostile.parse({ a: "xy" })).toStrictEqual({ a: "xy" });
     expect(() => hostile.parse({ a: "x" })).toThrow();
+    expect(isAccessor(schema, "parse")).toBe(true);
   });
 
   /**
    * `Object.freeze(jit(schema))` is an ordinary defensive export. Freezing after
    * installation means the first read triggers a materialize whose restore the
-   * frozen object refuses — the same stranding, reached without any Proxy.
+   * frozen object refuses — the same stranding, reached without any Proxy. Zod
+   * alone does not survive this: its getter installs the bound copy on first
+   * read, which a frozen object refuses, so the accessor's fallback is the
+   * only thing that makes the schema readable at all.
    */
   it("keeps a schema usable when it is frozen after jit()", () => {
     const schema = Object.freeze(jit(z.object({ a: z.string().min(2) })));
@@ -456,7 +550,8 @@ describe("jit() — degradation", () => {
       const schema = jit(z.object({ a: z.string().min(2) }));
       expect(schema.safeParse({ a: "xy" }).success).toBe(true);
       expect(schema.safeParse({ a: "x" }).success).toBe(false);
-      expect(safeParseName(schema)).toBe(ZOD_SAFE_PARSE_NAME);
+      expect(isAccessor(schema, "safeParse")).toBe(false);
+      expect(safeParseName(schema)).toBe(ZOD_OWN_SAFE_PARSE_NAME);
     } finally {
       globalThis.Function = RealFunction;
     }

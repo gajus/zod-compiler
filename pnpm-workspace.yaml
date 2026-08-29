@@ -8,7 +8,7 @@ catalog:
   typescript: ^6.0.3
   vite: npm:@voidzero-dev/vite-plus-core@0.2.6
   vitest: 4.1.10
-  zod: ^4.0.0
+  zod: ^4.5.2
   vite-plus: 0.2.6
   "@vitest/coverage-v8": 4.1.10
 overrides:

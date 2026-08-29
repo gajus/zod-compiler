@@ -1323,14 +1323,13 @@ describe("issue fields beyond code and path", () => {
     }
   }
 
-  it("tuple length issues: too_small omits `inclusive`, too_big keeps it", () => {
+  it("tuple length issues: too_small and too_big both spell out `inclusive: true`", () => {
     const pair = z.tuple([z.string(), z.number()]);
     expectCompiled(pair);
-    // No `inclusive` — zod's under-length branch never writes one. The locale
-    // reads its absence as the exclusive phrasing (">2 items"), which is why the
-    // message matched all along while the shape did not.
-    expectIssueFields(pair, [], "tupleTooSmall", ["code", "message", "minimum", "origin", "path"]);
-    // Its sibling in the same ternary DOES spell out `inclusive: true`.
+    // zod's under-length push mirrors its over-length one: `{ code, minimum,
+    // inclusive: true, ..., origin }`, phrased ">=2 items" by the locale.
+    const keys = ["code", "inclusive", "message", "minimum", "origin", "path"];
+    expectIssueFields(pair, [], "tupleTooSmall", keys);
     expectIssueFields(pair, ["a", 1, 2], "tupleTooBig", [
       "code",
       "inclusive",
@@ -1339,16 +1338,23 @@ describe("issue fields beyond code and path", () => {
       "origin",
       "path",
     ]);
-    // An omittable tail moves `optStart`, not the issue's shape.
+    // An omittable tail moves `optStart` (the `minimum`), not the issue's shape.
     const withOptionalTail = z.tuple([z.string(), z.number(), z.string().optional()]);
     expectCompiled(withOptionalTail);
-    expectIssueFields(withOptionalTail, [], "tupleOptTailTooSmall", [
-      "code",
-      "message",
-      "minimum",
-      "origin",
-      "path",
-    ]);
+    expectIssueFields(withOptionalTail, [], "tupleOptTailTooSmall", keys);
+  });
+
+  it('an absent required key reports `invalid_type` with `expected: "nonoptional"`', () => {
+    // Pushed by $ZodObject itself, `code` first and without an `inst` — so the
+    // object's own `error` does not reach it where it reaches every other
+    // issue the node creates.
+    const required = z.object({ a: z.any() }, { error: "object-level" });
+    expectCompiled(required);
+    expectIssueFields(required, {}, "nonoptionalKey", ["code", "expected", "message", "path"]);
+    expect(compileLikeProduction(required)({}).error?.issues[0]?.message).toBe(
+      "Invalid input: expected nonoptional, received undefined",
+    );
+    expect(compileLikeProduction(required)(1).error?.issues[0]?.message).toBe("object-level");
   });
 
   it("CONTROL: check-created size issues still carry `inclusive`", () => {
@@ -1470,14 +1476,29 @@ describe("issue fields beyond code and path", () => {
     ).toMatch(/^\/.*\/$/);
   });
 
-  it("discriminated-union no-match issue carries no `options`", () => {
-    const keys = ["code", "discriminator", "errors", "message", "note", "path"];
+  it("discriminated-union no-match issue carries `options` in dispatch-map order", () => {
+    const keys = ["code", "discriminator", "errors", "message", "note", "options", "path"];
     const du = z.discriminatedUnion("t", [
       z.object({ t: z.literal("a"), a: z.string() }),
       z.object({ t: z.literal("b"), b: z.number() }),
     ]);
     expectCompiled(du);
     expectIssueFields(du, { t: "z" }, "duNoMatch", keys);
+    // `options` is the dispatch map's key order: option by option, each option's
+    // values in ITS order, with an omittable discriminator's `undefined` (and a
+    // nullable's `null`) trailing that option's own values — not a sorted or
+    // deduplicated set.
+    const ladder = z.discriminatedUnion("t", [
+      z.object({ t: z.literal(["a", "c"]).optional() }),
+      z.object({ t: z.enum(["b", "d"]).nullable() }),
+    ]);
+    expectCompiled(ladder);
+    expectIssueFields(ladder, { t: "z" }, "duLadderNoMatch", keys);
+    expect(
+      (ladder.safeParse({ t: "z" }) as { error?: { issues: { options?: unknown }[] } }).error
+        ?.issues[0]?.options,
+      "zod's own options order",
+    ).toStrictEqual(["a", "c", undefined, "b", "d", null]);
     // Same issue, unchanged, when the union sits under a container — the path
     // gains the parent segments and nothing else.
     expectIssueFields(z.object({ v: du }), { v: { t: "z" } }, "duNoMatchInObject", keys);
@@ -1970,7 +1991,7 @@ describe("records accept only plain objects, as $ZodRecord does", () => {
 // `__proto__` data property — which `JSON.parse` creates, and which is how
 // prototype-pollution payloads arrive — is neither key-validated nor
 // value-validated. The compiled walk validated it and reported issues zod never
-// raises.
+// raises. An object's catchall pass skips it the same way.
 
 describe("records skip an own `__proto__` key, as zod does", () => {
   // Inputs are chosen so BOTH sides reject: on success the comparison would be
@@ -1990,7 +2011,7 @@ describe("records skip an own `__proto__` key, as zod does", () => {
   it("holds on the rebuilding path", () =>
     expectParity(z.record(z.string(), z.string().trim().min(20)), [badProtoValue()]));
 
-  it("CONTROL: an object catchall has no such exemption", () =>
+  it("an object catchall skips it the same way", () =>
     expectParity(z.object({ a: z.number() }).catchall(z.number()), [badProtoValue()]));
 });
 
@@ -2008,7 +2029,7 @@ describe("tuple items that zod treats as omittable", () => {
     ["exactOptional", () => z.exactOptional(z.string())],
     ["default", () => z.string().default("d")],
     ["prefault", () => z.string().prefault("d")],
-    ["z.undefined()", () => z.undefined()],
+    ["catch", () => z.string().catch("c")],
     ["nullable over optional", () => z.string().optional().nullable()],
     ["readonly over optional", () => z.string().optional().readonly()],
     ["lazy over optional", () => z.lazy(() => z.string().optional())],
@@ -2031,37 +2052,97 @@ describe("tuple items that zod treats as omittable", () => {
     it(`${label}: is still required when a required item follows it`, () =>
       expectParity(z.tuple([make(), z.string()]), [[], ["a"], ["a", "b"]]));
   }
+
+  // Accepting `undefined` is not the same as permitting absence: these sit on
+  // the bottom rung of `optin`, so a short input is `too_small` and only an
+  // explicit `undefined` reaches the item.
+  it("z.undefined() and z.any() are required-in", () => {
+    for (const make of [() => z.undefined(), () => z.any(), () => z.string().or(z.undefined())]) {
+      expectParity(z.tuple([make()]), [[], [undefined], ["s"]]);
+      expectParity(z.tuple([z.string(), make()]), [[], ["a"], ["a", undefined]]);
+    }
+  });
 });
 
-// A required slot past the end of a short input is RUN by zod, and
-// `handleTupleResult` writes its result back — so the output array is longer
-// than the input whenever that item accepts `undefined`.
-describe("tuple output is padded up to optStart, as handleTupleResult does", () => {
-  it("a required any/unknown slot past the end lands as an own undefined", () => {
+// Without a rest element a required slot past the end is `too_small` before
+// any item runs. With one there is no length gate: zod RUNS the item on
+// `undefined` and `handleTupleResults` writes its result back, so the output
+// is longer than the input whenever that item accepts `undefined`.
+describe("a required slot past the end", () => {
+  it("is too_small without a rest element, whatever the item accepts", () => {
     expectParity(z.tuple([z.any(), z.any()]), [["x"], ["x", "y"], []]);
     expectParity(z.tuple([z.unknown(), z.unknown()]), [["x"], []]);
     expectParity(z.tuple([z.any(), z.string().default("d")]), [[], ["x"], ["x", "y"]]);
   });
 
-  it("with a rest element, where no length gate hides the short input", () =>
+  it("lands as an own undefined with a rest element, where no length gate hides it", () =>
     expectParity(z.tuple([z.any(), z.any()]).rest(z.number()), [[], ["x"], ["x", "y", 1]]));
 
   it("CONTROL: a required slot that REJECTS undefined fails instead of padding", () =>
     expectParity(z.tuple([z.string(), z.string()]), [["x"], []]));
 });
 
-// ─── `.optional()` over an optional-IN inner ────────────────────────────────
-// `$ZodOptional.parse` takes a different branch when `innerType._zod.optin ===
-// "optional"`: it RUNS the inner on `undefined` (so a `.default()`/`.prefault()`
-// underneath fires) instead of short-circuiting, then discards the failure only
-// if the value is still undefined. The compiled short-circuit models the other
-// branch, and the `.default()` case explicitly; everything else delegates.
+// ─── Absent omittable slots: handleTupleResults ─────────────────────────────
+// Every item runs, and the walk over the results decides the output's length:
+// at or past `optoutStart` an absent "optional"-rung slot ends the output and a
+// failed "defaulted" one does the same with its issues dropped; below it the
+// result is written back so a later required-out slot keeps its index; and a
+// trailing run of `undefined`s from absent optional-out slots is trimmed.
+
+describe("absent tuple slots shape the output as handleTupleResults does", () => {
+  it("below optoutStart the slot is written back, issues and all", () => {
+    expectParity(z.tuple([z.string(), z.string().optional(), z.string().catch("c")]), [
+      ["a"],
+      ["a", undefined],
+      ["a", "b"],
+      ["a", 1],
+    ]);
+    expectParity(z.tuple([z.string(), z.string().optional().pipe(z.string())]), [
+      ["a"],
+      ["a", "b"],
+    ]);
+    expectParity(z.tuple([z.string(), z.string().min(5).prefault("ab")]), [["a"], ["a", "abcdef"]]);
+  });
+
+  it("at or past optoutStart a defaulted slot keeps its value and a failed one ends the output", () => {
+    const failing = () => z.string().min(5).prefault("ab").optional();
+    expectParity(z.tuple([z.string(), z.string().default("d").optional()]), [["a"], ["a", "b"]]);
+    expectParity(z.tuple([z.string(), failing()]), [["a"], ["a", "abcdef"], ["a", "ab"]]);
+    expectParity(z.tuple([z.string(), failing(), z.string().default("e")]), [["a"], ["a", "x"]]);
+    expectParity(z.tuple([z.string().optional(), z.exactOptional(z.string())]), [[], ["a"]]);
+    expectParity(z.tuple([z.string().default("d").optional(), z.exactOptional(z.string())]), [[]]);
+  });
+
+  it("a trailing undefined from an absent optional-out slot is trimmed, an explicit one kept", () => {
+    const opts = z.tuple([z.string(), z.string().optional(), z.string().optional()]);
+    expectParity(opts, [["a"], ["a", undefined], ["a", undefined, undefined], ["a", "b"]]);
+    expectParity(z.tuple([z.string().pipe(z.string().optional())]).rest(z.number()), [
+      [],
+      [undefined],
+    ]);
+  });
+
+  it("too_big no longer skips the items: their issues follow it", () => {
+    expectParity(z.tuple([z.string()]), [
+      [1, 2],
+      ["a", 2],
+    ]);
+    expectParity(z.union([z.tuple([z.string()]), z.number()]), [[1, 2]]);
+  });
+});
+
+// ─── `.optional()` over a "defaulted" inner ─────────────────────────────────
+// `$ZodOptional.parse` short-circuits `undefined` unless `innerType._zod.optin`
+// is `"defaulted"`: then it RUNS the inner on a payload of its own (so a
+// `.default()`/`.prefault()` underneath fires) and, if that failed, yields
+// `undefined` with the failure dropped. The compiled short-circuit models the
+// other branch, and the `.default()` case explicitly; everything else delegates.
 
 describe("optional() wrapping a schema that consumes undefined itself", () => {
   it("prefault fires through the optional", () =>
     expectParity(z.string().prefault("d").optional(), [undefined, "x", 1]));
 
-  it("a prefault whose value fails its own checks keeps the failure", () =>
+  it("a prefault whose value fails its own checks yields undefined, not the failure", () =>
     expectParity(z.string().min(5).prefault("ab").optional(), [undefined, "abcdef", "ab"]));
 
   it("default fires through the optional, including under a nullable", () => {
@@ -2077,14 +2158,26 @@ describe("optional() wrapping a schema that consumes undefined itself", () => {
     expectParity(z.string().optional().optional(), [undefined, "x", 1]);
     expectParity(z.exactOptional(z.string()).optional(), [undefined, "x", 1]);
     expectParity(z.undefined().optional(), [undefined, "x"]);
+    expectParity(z.string().catch("c").optional(), [undefined, "x", 1]);
     expectParity(z.string().optional().nullable().optional(), [undefined, null, "x", 1]);
   });
 });
 
-// ─── Absent-key issue suppression follows `optout`, not the IR shape ────────
-// `handlePropertyResult` drops a property's issues when the schema is
-// optional-OUT and the key is missing. Keying that off "the property extracted
-// to a fallback" was one wrapper too narrow.
+// ─── Absent keys follow the `optin` ladder, not the IR shape ────────────────
+// `handlePropertyResult` reads the schema's `optin`/`optout`: an absent key on
+// the "optional" rung contributes nothing, on the "defaulted" rung runs with a
+// failure swallowed, and on the bottom rung is an `invalid_type` of its own
+// (`expected: "nonoptional"`) whenever the schema accepted the `undefined` it
+// saw. Keying any of that off "the property extracted to a fallback" was one
+// wrapper too narrow.
+
+const OBJECT_VARIANTS = (make: () => z.ZodType): z.ZodType[] => [
+  z.object({ a: make() }),
+  z.object({ a: make(), b: z.number() }),
+  z.strictObject({ a: make(), b: z.number() }),
+  z.looseObject({ a: make(), b: z.number() }),
+  z.object({ a: make() }).catchall(z.number()),
+];
 
 describe("optional-out properties whose key is absent", () => {
   const OPTOUT: [string, () => z.ZodType][] = [
@@ -2092,18 +2185,83 @@ describe("optional-out properties whose key is absent", () => {
     ["nullable over exactOptional", () => z.exactOptional(z.string()).nullable()],
     ["readonly over exactOptional", () => z.exactOptional(z.string()).readonly()],
     ["nullable over optional", () => z.string().min(5).optional().nullable()],
-    ["z.undefined()", () => z.undefined()],
+    ["pipe between optionals", () => z.string().optional().pipe(z.string().min(5).optional())],
   ];
   for (const [label, make] of OPTOUT) {
     it(`${label}: absent key raises nothing, explicit undefined still does`, () => {
       const inputs = [{}, { a: undefined }, { a: "abcdef" }, { a: 1 }];
-      expectParity(z.object({ a: make() }), inputs);
-      expectParity(z.object({ a: make(), b: z.number() }), inputs);
-      expectParity(z.strictObject({ a: make(), b: z.number() }), inputs);
-      expectParity(z.looseObject({ a: make(), b: z.number() }), inputs);
-      expectParity(z.object({ a: make() }).catchall(z.number()), inputs);
+      for (const schema of OBJECT_VARIANTS(make)) expectParity(schema, inputs);
     });
   }
+
+  it("a defaulted property runs for an absent key and swallows its own failure", () => {
+    const inputs = [{}, { a: undefined }, { a: "abcdef" }, { a: "ab" }];
+    for (const schema of OBJECT_VARIANTS(() => z.string().min(5).prefault("ab").optional())) {
+      expectParity(schema, inputs);
+    }
+    for (const schema of OBJECT_VARIANTS(() => z.string().prefault("abcdef").optional())) {
+      expectParity(schema, inputs);
+    }
+  });
+});
+
+describe("required properties whose key is absent", () => {
+  const REQUIRED: [string, () => z.ZodType][] = [
+    ["z.undefined()", () => z.undefined()],
+    ["z.any()", () => z.any()],
+    ["z.unknown()", () => z.unknown()],
+    ["union with an undefined option", () => z.string().or(z.undefined())],
+    ["nullable over any", () => z.any().nullable()],
+    ["nonoptional over optional", () => z.string().optional().nonoptional()],
+    ["pipe into an optional", () => z.any().pipe(z.string().optional())],
+    // A delegating property that ACCEPTS `undefined` and writes its result
+    // back. Where the object needs no clone the write target IS the input, so
+    // running the property created the key the absent-key guard then tested —
+    // and the issue was never raised. The fast path still rejected on
+    // `"a" in x`, so `safeParse` failed with an empty `issues` array.
+    ["z.custom()", () => z.custom()],
+    ["z.custom() over a truthy predicate", () => z.custom(() => true)],
+  ];
+  for (const [label, make] of REQUIRED) {
+    it(`${label}: absent key is nonoptional, explicit undefined is the schema's call`, () => {
+      const inputs = [{}, { a: undefined }, { a: "abcdef" }, { a: 1 }];
+      for (const schema of OBJECT_VARIANTS(make)) expectParity(schema, inputs);
+    });
+  }
+
+  it("the absence aborts, so an object-level refine does not run", () =>
+    expectParity(
+      z.object({ a: z.any() }).refine(() => false, "never runs"),
+      [{}, { a: 1 }],
+    ));
+
+  /**
+   * zod's `handlePropertyResult` RETURNS on the absent-required-key branch
+   * without assigning, so nothing the property made of `undefined` reaches the
+   * output — or the input. The compiled walk writes a delegating property's
+   * result straight back through the slot it read from, which on a
+   * clone-free object is the caller's own object, so the drop has to be
+   * explicit. Checked on the input rather than the output because the parse
+   * always fails here and the output is discarded.
+   */
+  it("a delegating required property leaves no key on the caller's input", () => {
+    for (const schema of OBJECT_VARIANTS(() => z.custom())) {
+      const compiled = compileLikeProduction(schema);
+      const zodInput: Record<string, unknown> = { b: 1 };
+      const compiledInput: Record<string, unknown> = { b: 1 };
+      // The error is built lazily, and it is the slow walk that writes back —
+      // so the issues have to be read before the input is inspected.
+      void schema.safeParse(zodInput).error?.issues;
+      void compiled(compiledInput).error?.issues;
+      expect(Object.keys(compiledInput)).toStrictEqual(Object.keys(zodInput));
+    }
+  });
+
+  it("CONTROL: a property that rejects undefined reports its own issue instead", () =>
+    expectParity(z.object({ a: z.string(), b: z.string().pipe(z.string().optional()) }), [
+      {},
+      { a: "x" },
+    ]));
 });
 
 // ─── Length/size checks run even after the type check failed ────────────────
@@ -2216,4 +2374,235 @@ describe("unions whose options rewrite the value", () => {
 
   it("CONTROL: a union of pure validators still takes the fast path", () =>
     expectParity(z.union([z.string(), z.number()]), ["x", 1, true]));
+});
+
+/**
+ * zod 4.5 added SYMBOL keys to `$ZodObject`'s shape walk — `normalizeDef` now
+ * builds `allKeys` as `[...Object.keys(shape), ...getOwnPropertySymbols(shape)]`
+ * — so a symbol-keyed property is validated, reported absent, and copied to the
+ * output exactly like a string-keyed one. The IR is keyed by string throughout,
+ * so such a shape is delegated rather than silently dropping the property.
+ */
+describe("symbol-keyed shape properties", () => {
+  const SYM = Symbol.for("zod-compiler-test-symbol");
+  it("a symbol-keyed property is delegated, not ignored", () => {
+    const schema = z.object({ [SYM]: z.string(), a: z.number() });
+    expectParity(schema, [{ a: 1 }, { a: 1, [SYM]: "s" }, { a: 1, [SYM]: 2 }, {}]);
+  });
+  it("a symbol-only shape is delegated too", () =>
+    expectParity(z.object({ [SYM]: z.string() }), [{}, { [SYM]: "s" }, { [SYM]: 2 }]));
+  it("string-keyed shapes still compile", () =>
+    expectCompiled(z.object({ a: z.number(), b: z.string() })));
+});
+
+/**
+ * zod 4.5's `handleIntersectionResults` reconciles record `invalid_key` issues
+ * the same way it always reconciled `unrecognized_keys`: `collect` takes any
+ * root-level `unrecognized_keys` AND any record `invalid_key` one segment deep,
+ * and re-reports only the keys BOTH sides rejected. A sequential two-pass run
+ * cannot pair those key sets, so a record that can raise either issue has to
+ * delegate — including the partial record over a finite key set, which this
+ * release started compiling.
+ */
+describe("intersections of records reconcile key issues", () => {
+  it("partial records over disjoint enum key sets", () =>
+    expectParity(
+      z.intersection(
+        z.partialRecord(z.enum(["a"]), z.number()),
+        z.partialRecord(z.enum(["b"]), z.number()),
+      ),
+      [{}, { a: 1 }, { b: 2 }, { a: 1, b: 2 }, { c: 3 }],
+    ));
+  it("records over disjoint constrained key schemas", () =>
+    expectParity(
+      z.intersection(
+        z.record(z.string().regex(/^a/), z.number()),
+        z.record(z.string().regex(/^b/), z.number()),
+      ),
+      [{}, { a1: 1 }, { b1: 2 }, { a1: 1, b1: 2 }, { c1: 3 }],
+    ));
+  // CONTROL: an unconstrained string key schema accepts every own enumerable
+  // string key, so it raises neither reconciled issue and must not be delegated
+  // by the widened gate.
+  it("an unconstrained string key schema still compiles", () =>
+    expectCompiled(
+      z.intersection(z.record(z.string(), z.number()), z.record(z.string(), z.number())),
+    ));
+});
+
+/**
+ * A tuple with `.rest()` reports its REST issues before its fixed-item ones.
+ * `$ZodTuple` collects the fixed items into `itemResults` without touching the
+ * payload, runs the rest loop (which pushes through `handleTupleResult`), and
+ * only then calls `handleTupleResults` to push what it buffered. Since
+ * `ZodError.message` is `JSON.stringify(issues, null, 2)`, both `issues[0]` and
+ * the rendered message depend on getting this right.
+ */
+describe("rest tuples report rest issues before fixed-item issues", () => {
+  it("one fixed item and one rest element, both failing", () =>
+    expectParity(z.tuple([z.string()]).rest(z.number()), [
+      [1, "b"],
+      ["a", 1],
+      [1, 2],
+      ["a", "b"],
+    ]));
+  it("two fixed items and a rest element", () =>
+    expectParity(z.tuple([z.string(), z.string()]).rest(z.number()), [
+      [1, 2, "c"],
+      ["a", "b", 3],
+      [1, "b", "c"],
+    ]));
+  it("the trailing trim still runs after the rest loop", () =>
+    expectParity(z.tuple([z.string().optional()]).rest(z.number()), [[], [undefined], ["a", 1]]));
+});
+
+/**
+ * A tuple whose output can differ from a short input it ACCEPTS is not its own
+ * input, so it must not reach the build path's `passthrough`. `fastTuple`
+ * narrows a `pad`/`tail` slot to "present" — sound for the root shortcut, which
+ * only reads a TRUE result — but `passthrough` reads a FALSE one as rejection,
+ * which turned a valid short input into a failure carrying NO issues at all.
+ *
+ * The top-level tuple was already pinned; the nested one is the case that got
+ * through, because only there does the object's build path consume the tuple's
+ * fast check as a verdict.
+ */
+describe("a rewriting tuple nested in a stripping object", () => {
+  it("a rest tuple's absent required slot still parses", () =>
+    expectParity(z.object({ a: z.tuple([z.any()]).rest(z.number()) }), [
+      { a: [] },
+      { a: [1] },
+      { a: ["x", 1, 2] },
+      { a: "no" },
+    ]));
+  it("the same tuple under z.preprocess()", () =>
+    expectParity(
+      z.preprocess((v) => v, z.tuple([z.any()]).rest(z.number())),
+      [[], [1], ["x", 1]],
+    ));
+});
+
+/**
+ * `z.preprocess()` is the only visit site where `input` and `output` are
+ * DIFFERENT identifiers (slowEffect passes `{ input: valueVar, output:
+ * g.output }`); every `createSlowGen` root passes the same one. slowTuple used
+ * to read the input and write the output directly, so its short-input copy
+ * landed in `g.output` while the item writes went on hitting the original — the
+ * output kept the pristine short array and the CALLER's array collected the
+ * padding.
+ */
+describe("preprocess over a tuple that rewrites a short input", () => {
+  it("the padded slot reaches the output", () =>
+    expectParity(
+      z.preprocess((v) => v, z.tuple([z.string(), z.number().default(1)])),
+      [["x"], ["x", 5], []],
+    ));
+  it("the caller's array is not extended", () => {
+    const schema = z.preprocess((v: unknown) => v, z.tuple([z.string(), z.number().default(1)]));
+    const compiled = compileLikeProduction(schema, "preTuple");
+    const zodInput = ["x"];
+    const compiledInput = ["x"];
+    schema.safeParse(zodInput);
+    compiled(compiledInput);
+    expect(compiledInput).toStrictEqual(zodInput);
+  });
+});
+
+/**
+ * `z.looseRecord()` sets `def.mode = "loose"`, which `$ZodRecord` consults
+ * BEFORE asking whether a key is recognized: an unrecognized key is copied to
+ * the output verbatim and raises nothing. The compiled walk runs the key schema
+ * over every key, so it rejected input zod passes straight through.
+ */
+describe("z.looseRecord copies unrecognized keys through", () => {
+  it("a key the key schema rejects is not an error", () =>
+    expectParity(z.looseRecord(z.string().regex(/^a/), z.number()), [
+      {},
+      { a1: 1 },
+      { b: 1 },
+      { a1: 1, b: 2 },
+      { b: "not a number" },
+    ]));
+  it("an enum-keyed loose record", () =>
+    expectParity(z.looseRecord(z.enum(["a", "b"]), z.number()), [{}, { a: 1 }, { c: 3 }]));
+  // CONTROL: a plain record still compiles.
+  it("a plain record still compiles", () => expectCompiled(z.record(z.string(), z.number())));
+});
+
+/**
+ * `__proto__` never reaches an output, because zod never lets it: the shape
+ * loop strips a declared one, `handleCatchall` skips an undeclared one, and
+ * `$ZodRecord` skips it while copying — all so the assignment into their fresh
+ * `{}` cannot replace the result's prototype.
+ *
+ * A compiled loose/catchall object or record hands its INPUT back, so it has to
+ * remove the key itself (`__zcPs`). This is not cosmetic: an own `__proto__`
+ * that survives into the parsed value turns `Object.assign({}, parsed)` into a
+ * prototype-pollution sink, since [[Set]] runs the inherited setter where the
+ * spread that produced the value did not.
+ *
+ * A STRICT object is exempt unless the key is declared — an undeclared one is
+ * an unrecognized key and the parse fails — and a STRIPPING object rebuilds
+ * from the declared keys, which `parsedProperties` drops.
+ */
+describe("`__proto__` never reaches a compiled output", () => {
+  const polluting = (): Record<string, unknown> =>
+    JSON.parse('{"a":1,"__proto__":{"polluted":true}}') as Record<string, unknown>;
+
+  const CONTAINERS: [string, () => z.ZodType][] = [
+    ["looseObject", () => z.looseObject({ a: z.number() })],
+    ["catchall", () => z.object({ a: z.number() }).catchall(z.any())],
+    ["record", () => z.record(z.string(), z.any())],
+    ["record with a coerced value", () => z.record(z.string(), z.coerce.number())],
+    ["looseObject with a coerced prop", () => z.looseObject({ a: z.coerce.number() })],
+  ];
+
+  for (const [label, make] of CONTAINERS) {
+    it(`${label}: the key is dropped, as zod drops it`, () =>
+      expectParity(make(), [polluting(), { a: 1 }, {}]));
+
+    it(`${label}: the result is not a pollution sink`, () => {
+      const compiled = compileLikeProduction(make(), `proto_${label.replace(/\W/g, "_")}`);
+      const result = compiled(polluting()) as { success: boolean; data?: object };
+      expect(result.success).toBe(true);
+      const assigned = Object.assign({}, result.data) as { polluted?: boolean };
+      expect(assigned.polluted).toBeUndefined();
+      expect(Object.getPrototypeOf(assigned)).toBe(Object.prototype);
+    });
+  }
+
+  // The scrub copies rather than editing, so the caller keeps its own object.
+  it("the caller's input is left alone", () => {
+    const input = polluting();
+    compileLikeProduction(z.looseObject({ a: z.number() }), "protoInputIntact")(input);
+    expect(Object.hasOwn(input, "__proto__")).toBe(true);
+  });
+
+  // NESTED containers too: the root shortcut only filters the outer value, so a
+  // schema with a scrub-needing descendant must not take it.
+  const NESTED: [string, () => z.ZodType, unknown][] = [
+    ["in a stripping object", () => z.object({ v: z.looseObject({ a: z.number() }) }), { v: null }],
+    ["in an array", () => z.array(z.record(z.string(), z.any())), null],
+    ["in a tuple", () => z.tuple([z.looseObject({ a: z.number() })]), null],
+    ["in a loose object", () => z.looseObject({ v: z.record(z.string(), z.any()) }), { v: null }],
+    ["two deep", () => z.object({ o: z.object({ v: z.looseObject({ a: z.number() }) }) }), null],
+  ];
+  for (const [label, make, _shape] of NESTED) {
+    it(`${label}: the nested container is scrubbed too`, () => {
+      const wrap = (inner: Record<string, unknown>): unknown =>
+        label === "in an array" || label === "in a tuple"
+          ? [inner]
+          : label === "two deep"
+            ? { o: { v: inner } }
+            : { v: inner };
+      expectParity(make(), [wrap(polluting()), wrap({ a: 1 })]);
+    });
+  }
+
+  // CONTROL: a container with no such key is still handed back by reference.
+  it("an ordinary container is still returned by reference", () => {
+    const input = { a: 1 };
+    const compiled = compileLikeProduction(z.looseObject({ a: z.number() }), "protoByRef");
+    expect((compiled(input) as { data: object }).data).toBe(input);
+  });
 });

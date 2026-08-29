@@ -15,7 +15,8 @@
  *   - `z.string().min(2)` over `[]` losing the `too_small` that zod's `when`
  *     predicate lets through;
  *   - `z.exactOptional(z.string()).nullable()` reporting for a key zod skips;
- *   - `z.tuple([z.any(), z.any()])` not padding a short input's output.
+ *   - a rest tuple's required `z.any()` slot past the end not landing as an
+ *     own `undefined` in the output.
  *
  * Failures are reproducible: the label IS the seed, and `buildSeed(n)` rebuilds
  * that exact schema. The generator uses an explicit LCG rather than

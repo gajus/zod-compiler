@@ -7,6 +7,13 @@
  *
  * Pattern sources are matched verbatim (string equality). Add new entries as Zod
  * exposes additional well-known formats and we want bundle-wide dedup.
+ *
+ * Verbatim matching means an entry goes STALE SILENTLY when Zod edits a pattern:
+ * nothing breaks, the lookup just stops hitting and every transformed file
+ * re-declares its own RegExp. The 4.5 bump did exactly that to `cuid`, `ulid`
+ * and `iso.datetime` — the last being the ~330-character source this table
+ * exists for. tests/core/codegen/well-known-regex.test.ts pins every entry
+ * against the live Zod pattern so the next upgrade fails loudly instead.
  */
 
 import { unrollRepeats } from "./regex-unroll.js";
@@ -48,9 +55,9 @@ export interface WellKnownRegex {
 export const WELL_KNOWN_REGEXES: readonly WellKnownRegex[] = [
   { name: "__zcReEmail", source: EMAIL_REGEX_SOURCE, testSource: EMAIL_FAST_REGEX_SOURCE },
   { name: "__zcReUuid", source: UUID_REGEX_SOURCE },
-  { name: "__zcReCuid", source: "^[cC][^\\s-]{8,}$" },
+  { name: "__zcReCuid", source: "^[cC][0-9a-z]{6,}$" },
   { name: "__zcReCuid2", source: "^[0-9a-z]+$" },
-  { name: "__zcReUlid", source: "^[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$" },
+  { name: "__zcReUlid", source: "^[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$" },
   { name: "__zcReNanoid", source: "^[a-zA-Z0-9_-]{21}$" },
   { name: "__zcReXid", source: "^[0-9a-vA-V]{20}$" },
   { name: "__zcReKsuid", source: "^[A-Za-z0-9]{27}$" },
@@ -90,7 +97,7 @@ export const WELL_KNOWN_REGEXES: readonly WellKnownRegex[] = [
   {
     name: "__zcReIsoDateTime",
     source:
-      "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+      "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
   },
   {
     name: "__zcReIsoDuration",

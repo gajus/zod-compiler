@@ -144,6 +144,25 @@ const HAND_PICKED = [
   "2naeRjTrKbDPVJEXBTGfAP1H3Kz",
   "V1StGXR8_Z5jdHi6B-myT",
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhIjoxfQ.sig",
+  // Credit cards. The regex is SHAPE ONLY (12-19 digits, optional `-`/` `
+  // separators) — $ZodCreditCard overrides its check with a Luhn checksum, so
+  // every well-shaped number below that fails Luhn is a pattern/check
+  // disagreement.
+  "4111111111111111", // Luhn-valid
+  "4111111111111112", // Luhn-invalid, same shape
+  "4111111111111110",
+  "5500005555555559",
+  "5500005555555558",
+  "378282246310005",
+  "378282246310006",
+  "4111-1111-1111-1111",
+  "4111 1111 1111 1111",
+  "4111-1111-1111-1112",
+  "1234567890123456",
+  "0000000000000000",
+  "411111111111", // 12 digits, the shortest the shape allows
+  "41111111111", // 11 digits, too short
+  "41111111111111111111", // 20 digits, too long
   // Misc.
   "+14155552671",
   "😀",
@@ -187,6 +206,7 @@ const FORMATS: [name: string, schema: z.ZodType][] = [
   ["nanoid", z.nanoid()],
   ["jwt", z.jwt()],
   ["e164", z.e164()],
+  ["creditCard", z.creditCard()],
   ["emoji", z.emoji()],
   ["iso.datetime", z.iso.datetime()],
   ["iso.date", z.iso.date()],
@@ -495,13 +515,32 @@ describe("invalid_format issue fields", () => {
       "ftp://example.com",
       ["code", "format", "message", "note", "path", "pattern"],
     ],
+    // ── the `://` guard: an http(s) check without normalize rejects before the
+    // parser and before the protocol probe, with a note and no pattern ───────
     [
       "httpUrl (bad protocol)",
       z.httpUrl(),
       "ftp://example.com",
+      ["code", "format", "message", "note", "path"],
+    ],
+    [
+      "httpUrl (bad format)",
+      z.httpUrl(),
+      "not a url",
+      ["code", "format", "message", "note", "path"],
+    ],
+    [
+      "httpUrl (bad protocol, normalize)",
+      z.httpUrl({ normalize: true }),
+      "ftp://example.com",
       ["code", "format", "message", "note", "path", "pattern"],
     ],
-    ["httpUrl (unparseable)", z.httpUrl(), "not a url", ["code", "format", "message", "path"]],
+    [
+      "httpUrl (unparseable, normalize)",
+      z.httpUrl({ normalize: true }),
+      "not a url",
+      ["code", "format", "message", "path"],
+    ],
   ];
 
   for (const [name, schema, input, zodKeys] of FIELD_CASES) {

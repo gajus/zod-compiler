@@ -2,8 +2,8 @@ import type { RecordIR, SchemaIR } from "../../types.js";
 import type { FastGen, SlowGen } from "../context.js";
 import { declareFastTemps, emitRuntimeHelper, extendPath, hasMutation } from "../context.js";
 import { emit } from "../emit.js";
-import { invalidType } from "../emit-issue.js";
-import { ZC_FZ_DECL, ZC_HOP_DECL, ZC_PLAIN_DECL } from "../issue-decls.js";
+import { invalidType, unrecognizedKeys } from "../emit-issue.js";
+import { ZC_FZ_DECL, ZC_HOP_DECL, ZC_PLAIN_DECL, ZC_PROTO_SCRUB_DECL } from "../issue-decls.js";
 
 /**
  * `$ZodRecord` gates on `util.isPlainObject`, NOT the looser `util.isObject`
@@ -33,6 +33,11 @@ export function slowRecord(ir: SchemaIR & { type: "record" }, g: SlowGen): strin
   if (hasMutation(ir.valueType)) {
     code += `${g.output}={...${g.input}};`;
   }
+  // PROTO_SKIP keeps `__proto__` out of the WALK; this keeps it out of the
+  // OUTPUT, which zod also does — it copies into a fresh `{}` and skips the key
+  // (see ZC_PROTO_SCRUB_DECL). Runs before the walk so the loop iterates the
+  // same container the caller gets back.
+  code += `${g.output}=${emitRuntimeHelper(g.ctx, "__zcPs", ZC_PROTO_SCRUB_DECL)}(${g.input});`;
 
   const keyVar = g.temp("rkey");
   const keyIssuesVar = g.temp("rki");
@@ -54,18 +59,29 @@ export function slowRecord(ir: SchemaIR & { type: "record" }, g: SlowGen): strin
   // leaked absolute paths and the raw `input` into the reported error.
   const fz = emitRuntimeHelper(g.ctx, "__zcFz", ZC_FZ_DECL);
 
+  // A key the enumerable key schema rejects is unrecognized, not invalid: zod
+  // collects those and pushes ONE `unrecognized_keys` after the walk, so it
+  // trails every value issue (see RecordIR.enumerableKeys).
+  const unrecognizedVar = ir.enumerableKeys ? g.temp("ruk") : null;
+  const onKeyFailure =
+    unrecognizedVar === null
+      ? `${g.issues}.push({code:"invalid_key",origin:"record",issues:${fz}(${keyIssuesVar}),input:${keyVar},path:${keyPath}${g.typeMsg === undefined ? "" : `,message:${JSON.stringify(g.typeMsg)}`}});`
+      : `(${unrecognizedVar}=${unrecognizedVar}||[]).push(${keyVar});`;
+
   code += emit`
+    ${unrecognizedVar === null ? "" : `var ${unrecognizedVar}=null;`}
     for(var ${keyVar} in ${g.input}){
       if(!${hop}.call(${g.input},${keyVar}))continue;
       ${PROTO_SKIP(keyVar)}
       var ${keyIssuesVar}=[];
       ${g.visit(ir.keyType, { input: keyVar, output: keyVar, path: "[]", issues: keyIssuesVar })}
       if(${keyIssuesVar}.length>0){
-        ${g.issues}.push({code:"invalid_key",origin:"record",issues:${fz}(${keyIssuesVar}),input:${keyVar},path:${keyPath}${g.typeMsg === undefined ? "" : `,message:${JSON.stringify(g.typeMsg)}`}});
+        ${onKeyFailure}
       }else{
         ${g.visit(ir.valueType, { input: valExpr, output: valExpr, path: keyPath })}
       }
     }
+    ${unrecognizedVar === null ? "" : `if(${unrecognizedVar}!==null){${unrecognizedKeys(g, unrecognizedVar)}}`}
   }`;
   return `${code}\n`;
 }

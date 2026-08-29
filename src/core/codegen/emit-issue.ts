@@ -12,17 +12,16 @@
  * Centralizing all issue emission here means schema codegen files don't carry
  * the inline/lean branching; they just call `tooSmall(g, ...)` etc.
  *
- * Message resolution mirrors Zod, which consults the error map of the
- * INSTANCE that created the issue:
- *  - check-created issues (min/max/format/refine): per-check message only
- *    (options.message, extracted from `.min(3, "msg")`)
- *  - schema-created issues (invalid_type, enum/literal invalid_value, tuple
- *    length, invalid_union, invalid_key): schema-level message (g.typeMsg,
- *    from `z.string({ error: "msg" })`)
- * Helpers default per the most common call-site kind; size-issue emitters
- * accept `useTypeMsg: true` for node-level uses (tuple), and invalidValue
- * accepts `useTypeMsg: false` for check-level uses (file mime).
- * When no message lands, the __zcFin finalizer applies the locale default.
+ * Message resolution mirrors zod's `finalizeIssue`, which consults the error
+ * map of the INSTANCE that created the issue first and then the map of the
+ * SCHEMA that owns it: a check stamps its owner onto every issue it raises
+ * (`attachSchema`), so `z.string({ error: "msg" }).min(3)` reports "msg" for the
+ * `too_small` as well as for the `invalid_type`. Every emitter therefore takes
+ * the per-check message (options.message, extracted from `.min(3, "msg")`) and
+ * falls back to the node's schema-level message (g.typeMsg, from
+ * `z.string({ error: "msg" })`), which is scoped to the node being generated and
+ * never inherited by a child node's issues. When no message lands, the __zcFin
+ * finalizer applies the locale default.
  *
  * KEY ORDER MATTERS, and is reproduced from zod issue by issue. `ZodError`
  * builds its `message` as `JSON.stringify(issues, …, 2)`, so insertion order is
@@ -55,13 +54,9 @@ function pushIssue(g: IssueGen, body: string): string {
   return `${g.issues}.push(${body});`;
 }
 
-/** Resolve the effective static message for an issue site. */
-function resolveMessage(
-  g: IssueGen,
-  explicit: string | undefined,
-  useTypeMsg: boolean,
-): string | undefined {
-  return explicit ?? (useTypeMsg ? g.typeMsg : undefined);
+/** Resolve the effective static message for an issue site: the check's own message, else the owning schema's. */
+function resolveMessage(g: IssueGen, explicit: string | undefined): string | undefined {
+  return explicit ?? g.typeMsg;
 }
 
 /** `,message:"..."` fragment for inline object literals ("" when no message). */
@@ -111,23 +106,18 @@ export function tooSmall(
   g: IssueGen,
   minimum: string | number,
   origin: Origin,
-  /**
-   * `"omit"` leaves the key OFF the issue entirely — not the same as `false`.
-   * $ZodTuple's under-length branch pushes a bare
-   * `{ code: "too_small", minimum: items.length }` (its over-length sibling in
-   * the very same ternary spells out `inclusive: true`), so a tuple issue
-   * carrying `inclusive: false` has a field zod never wrote. Every check-created
-   * size issue (array/string/set/number/bigint/date min) does carry it, `false`
-   * included — that is what `.gt()`/`.lt()` report.
-   */
-  inclusive: boolean | "omit",
+  inclusive: boolean,
   options?: {
     exact?: boolean;
     input?: string;
     path?: string;
     message?: string | undefined;
-    /** Set for node-level issues (tuple length) where schema error applies. */
-    useTypeMsg?: boolean;
+    /**
+     * `"tuple"` selects $ZodTuple's under-length key order — `code, minimum,
+     * inclusive, origin` — where a check-created size issue leads with `origin`.
+     * Same shape as its over-length sibling in {@link tooBig}.
+     */
+    layout?: "tuple";
     /** Emit the union-abort marker; see {@link abortsProp}. */
     aborts?: boolean;
   },
@@ -135,7 +125,7 @@ export function tooSmall(
   const input = options?.input ?? g.input;
   const path = options?.path ?? g.path;
   const exact = options?.exact === true;
-  const m = resolveMessage(g, options?.message, options?.useTypeMsg === true);
+  const m = resolveMessage(g, options?.message);
   if (g.ctx.mode === "lean") {
     if (exact) {
       g.ctx.usedHelpers.add("__zcTSx");
@@ -144,11 +134,11 @@ export function tooSmall(
         `__zcTSx(${minimum},${originExpr(origin)},${input},${path}${messageArg(m)})`,
       );
     }
-    if (inclusive === "omit") {
-      g.ctx.usedHelpers.add("__zcTSn");
+    if (options?.layout === "tuple") {
+      g.ctx.usedHelpers.add("__zcTSt");
       return pushIssue(
         g,
-        `__zcTSn(${minimum},${originExpr(origin)},${input},${path}${messageArg(m)})`,
+        `__zcTSt(${minimum},${originExpr(origin)},${input},${path}${messageArg(m)})`,
       );
     }
     g.ctx.usedHelpers.add("__zcTS");
@@ -163,12 +153,10 @@ export function tooSmall(
       `{origin:${originExpr(origin)},code:"too_small",minimum:${minimum},inclusive:true,exact:true,input:${input},path:${path}${messageProp(m)}}`,
     );
   }
-  // The tuple's under-length branch is the only caller that omits `inclusive`,
-  // and it also puts `origin` last — see __zcTSn.
-  if (inclusive === "omit") {
+  if (options?.layout === "tuple") {
     return pushIssue(
       g,
-      `{code:"too_small",minimum:${minimum},origin:${originExpr(origin)},input:${input},path:${path}${messageProp(m)}${abortsProp(options?.aborts)}}`,
+      `{code:"too_small",minimum:${minimum},inclusive:${inclusive},origin:${originExpr(origin)},input:${input},path:${path}${messageProp(m)}${abortsProp(options?.aborts)}}`,
     );
   }
   return pushIssue(
@@ -187,8 +175,6 @@ export function tooBig(
     input?: string;
     path?: string;
     message?: string | undefined;
-    /** Set for node-level issues (tuple length) where schema error applies. */
-    useTypeMsg?: boolean;
     /**
      * `"tuple"` selects $ZodTuple's over-length key order — `code, maximum,
      * inclusive, origin` — where a check-created size issue leads with `origin`.
@@ -204,7 +190,7 @@ export function tooBig(
   const input = options?.input ?? g.input;
   const path = options?.path ?? g.path;
   const exact = options?.exact === true;
-  const m = resolveMessage(g, options?.message, options?.useTypeMsg === true);
+  const m = resolveMessage(g, options?.message);
   if (g.ctx.mode === "lean") {
     if (exact) {
       g.ctx.usedHelpers.add("__zcTBx");
@@ -260,17 +246,24 @@ export function invalidType(
      */
     extraBeforeCode?: boolean;
     /**
-     * Lead with `code` instead of `expected`. Only `$ZodDiscriminatedUnion`'s
-     * non-object guard writes the issue that way; every other schema in zod puts
-     * `expected` first.
+     * Lead with `code` instead of `expected`. `$ZodDiscriminatedUnion`'s
+     * non-object guard and `$ZodObject`'s absent-required-key issue
+     * (`expected: "nonoptional"`) write the issue that way; every other schema
+     * in zod puts `expected` first.
      */
     codeFirst?: boolean;
+    /**
+     * Set to false for the one `invalid_type` zod pushes WITHOUT an `inst`:
+     * the object's `nonoptional` issue for an absent required key, which no
+     * schema-level `error` reaches.
+     */
+    useTypeMsg?: boolean;
   },
 ): string {
   const input = options?.input ?? g.input;
   const path = options?.path ?? g.path;
-  // invalid_type is always created by the schema node — schema error applies.
-  const m = resolveMessage(g, options?.message, true);
+  // The schema's own message applies unless the issue is raised inst-less, as the nonoptional issue is.
+  const m = options?.useTypeMsg === false ? options?.message : resolveMessage(g, options?.message);
   if (g.ctx.mode === "lean" && !options?.extra) {
     const helper = options?.codeFirst ? "__zcITc" : "__zcIT";
     g.ctx.usedHelpers.add(helper);
@@ -311,8 +304,7 @@ export function invalidFormat(
   const input = options?.input ?? g.input;
   const path = options?.path ?? g.path;
   const formatExpr = typeof format === "string" ? escapeString(format) : format.expr;
-  // Format issues are created by check instances — schema error never applies.
-  const m = options?.message;
+  const m = resolveMessage(g, options?.message);
   if (g.ctx.mode === "lean") {
     g.ctx.usedHelpers.add("__zcIF");
     const originArg = options?.origin === undefined ? "undefined" : escapeString(options.origin);
@@ -337,8 +329,7 @@ export function unrecognizedKeys(
 ): string {
   const input = options?.input ?? g.input;
   const path = options?.path ?? g.path;
-  // unrecognized_keys is created by the object schema node — schema error applies.
-  const m = resolveMessage(g, options?.message, true);
+  const m = resolveMessage(g, options?.message);
   if (g.ctx.mode === "lean") {
     g.ctx.usedHelpers.add("__zcUK");
     return pushIssue(g, `__zcUK(${keysExpr},${input},${path}${messageArg(m)})`);
@@ -365,14 +356,11 @@ export function invalidValue(
      */
     extra?: string | undefined;
     message?: string | undefined;
-    /** Set to false for check-level issues (file mime) where schema error does not apply. */
-    useTypeMsg?: boolean;
   },
 ): string {
   const input = options?.input ?? g.input;
   const path = options?.path ?? g.path;
-  // Default: enum/literal invalid_value is created by the schema node.
-  const m = resolveMessage(g, options?.message, options?.useTypeMsg !== false);
+  const m = resolveMessage(g, options?.message);
   if (g.ctx.mode === "lean") {
     g.ctx.usedHelpers.add("__zcIV");
     const extraArg = options?.extra ? `,{${options.extra}}` : m !== undefined ? ",undefined" : "";

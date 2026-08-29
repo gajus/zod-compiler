@@ -20,6 +20,13 @@
  * ones. Importing a module of 500 schemas therefore costs nothing, and a
  * serverless invocation touching three of them pays for three.
  *
+ * Zod itself keeps the parse methods on the PROTOTYPE (since 4.4): each is a
+ * getter that binds the method on first read and installs the bound copy as an
+ * own data property, so a fresh schema carries no own `parse` / `safeParse` at
+ * all, while one that has been read already does. `jit()` meets both shapes —
+ * it snapshots whatever the slots hold, fronts them with its own accessors, and
+ * hands back exactly what it found whenever it has to step aside.
+ *
  * Runtime code generation is not always permitted — a strict CSP without
  * `unsafe-eval`, some edge runtimes. Zod v4 has the same constraint (its object
  * fast-pass is itself a `new Function`) and already exposes the two switches
@@ -121,10 +128,15 @@ export function jit<T extends ZodType>(
     return schema as T & CompiledSchema<output<T>>;
   }
 
-  // Snapshot Zod's own descriptors first: materialize() restores them before
-  // handing the object to `__zcMkv`, so the generated code sees a pristine
-  // schema — it captures the original `parseAsync` / `safeParseAsync` as its
-  // throw paths, and capturing a stub there would loop back into itself.
+  // Snapshot what each slot holds before anything is installed: materialize()
+  // restores it before handing the object to `__zcMkv`, so the generated code
+  // sees a pristine schema — it captures the original `parseAsync` /
+  // `safeParseAsync` as its throw paths, and capturing a stub there would loop
+  // back into itself. An untouched schema holds NOTHING here: Zod keeps the
+  // methods on the prototype and only installs a bound own copy on first read,
+  // so `undefined` is the common entry and means "back to the prototype". A
+  // schema that was read before `jit()` — or that the build plugin's `__zcMkv`
+  // already materialized — carries the copies, and those go back verbatim.
   const original = new Map<string, PropertyDescriptor | undefined>();
   try {
     for (const slot of SLOTS) {
@@ -182,9 +194,9 @@ export function jit<T extends ZodType>(
 /**
  * Front every installed method with a compile-on-read accessor. `trigger`
  * materializes the schema, which normally replaces these accessors with the
- * compiled methods (or restores Zod's own). When that replacement does not take,
- * the getter falls back to the snapshot rather than re-reading the slot — see
- * the re-entrancy note in the body.
+ * compiled methods (or restores what Zod had). When that replacement does not
+ * take, the getter serves Zod's own method rather than re-reading the slot —
+ * see the re-entrancy note in the body.
  */
 function installAccessors(
   target: Record<string, unknown>,
@@ -195,20 +207,26 @@ function installAccessors(
   for (const slot of SLOTS) {
     // Re-entrancy is settled structurally rather than by inspection. Reading the
     // slot again is how this getter normally hands over — to the compiled method
-    // materialize() installed, or to Zod's own that restore() put back — but the
+    // materialize() installed, or to whatever restore() put back — but the
     // handover can fail to take: a target frozen after `jit()` refuses both, and
     // a second copy of this module in the graph leaves ITS accessor on the slot,
     // so the two bounce reads between them. `trigger()` is spent by then, so
     // either way the read recurses until the stack blows. While a read is already
-    // in flight, serve Zod's own method from the snapshot: a schema that cannot
-    // be compiled still parses.
+    // in flight, or once the accessor is known to be stranded, serve Zod's own
+    // method instead: a schema that cannot be compiled still parses.
     let reading = false;
+    // A stranded accessor is permanent, so what it serves is resolved once.
+    let stranded: { value: unknown } | undefined;
+    const serveZod = (): unknown => {
+      stranded ??= { value: fromZod(target, original, slot) };
+      return stranded.value;
+    };
     const read = function (): unknown {
-      if (reading) return fromSnapshot(target, original, slot);
+      if (reading) return serveZod();
       reading = true;
       try {
         trigger();
-        if (stillFrontedBy(target, slot, read)) return fromSnapshot(target, original, slot);
+        if (stillFrontedBy(target, slot, read)) return serveZod();
         return target[slot];
       } finally {
         reading = false;
@@ -216,16 +234,26 @@ function installAccessors(
     };
     Object.defineProperty(target, slot, {
       configurable: true,
-      // Preserve Zod's own visibility: parse/safeParse/... are enumerable own
-      // properties, `~standard` is not. `is` does not exist on a Zod schema, so
-      // it follows the non-enumerable convention `compile()` already uses.
+      // Keep the schema's own-key set as it was. A slot Zod already materialized
+      // is an enumerable own copy, so the accessor fronting it is enumerable too;
+      // an untouched slot has no own key at all, and `is` never exists on a Zod
+      // schema, so those stay out of `Object.keys` — the non-enumerable
+      // convention `compile()` already uses.
       enumerable: original.get(slot)?.enumerable ?? false,
       get: read,
       set(value: unknown) {
         // Someone overwrote a method before first use (a test double, another
         // wrapper). Their value wins, and compilation is cancelled outright —
-        // materializing later would restore Zod's descriptors over it.
+        // materializing later would restore the snapshot over it. With the
+        // accessor gone the write does what it would have without `jit()`:
+        // overwrite the own copy, or run Zod's prototype setter, which installs
+        // one. Only a target that refused the rollback still routes here, and a
+        // direct define is the one way left to honour the write.
         cancel();
+        if (!stillFrontedBy(target, slot, read)) {
+          target[slot] = value;
+          return;
+        }
         Object.defineProperty(target, slot, {
           configurable: true,
           enumerable: original.get(slot)?.enumerable ?? false,
@@ -256,20 +284,37 @@ function stillFrontedBy(
 }
 
 /**
- * What Zod had in `slot`, taken from the snapshot made before installation.
- * `undefined` for `is`, which no plain Zod schema carries — the same thing every
- * other degradation path leaves there.
+ * Zod's own value for `slot`, bypassing the accessor that fronts it.
+ *
+ * A slot the snapshot holds is answered from the snapshot. One it does not hold
+ * lives on the prototype, where Zod's getter binds the method to its receiver
+ * and installs the bound copy as an own property — on a target that accepts
+ * the install, that also replaces the stranded accessor with the copy, which is
+ * the handover materialize() could not make. A target that refuses the install
+ * (frozen, or a wrapper that vetoes `defineProperty`) makes Zod's getter throw
+ * instead; there the read goes through a stand-in that inherits from the target,
+ * so the copy lands on the stand-in and the method reaches `_zod` through the
+ * chain. `undefined` for `is`, which no plain Zod schema carries — the same
+ * thing every other degradation path leaves there.
  */
-function fromSnapshot(
+function fromZod(
   target: Record<string, unknown>,
   original: ReadonlyMap<string, PropertyDescriptor | undefined>,
   slot: string,
 ): unknown {
   const descriptor = original.get(slot);
-  if (descriptor === undefined) return undefined;
-  // `~standard` is a lazy getter on a Zod schema, so invoke it rather than
-  // reading a `value` it does not have.
-  return descriptor.get === undefined ? descriptor.value : descriptor.get.call(target);
+  if (descriptor !== undefined) {
+    // A snapshot can hold another accessor (a second copy of this module
+    // installed first), so invoke it rather than reading a `value` it lacks.
+    return descriptor.get === undefined ? descriptor.value : descriptor.get.call(target);
+  }
+  const proto = Object.getPrototypeOf(target) as object | null;
+  if (proto === null) return undefined;
+  try {
+    return Reflect.get(proto, slot, target);
+  } catch {
+    return Reflect.get(proto, slot, Object.create(target));
+  }
 }
 
 /**
@@ -291,7 +336,11 @@ export function jitAll(schemas: object, options?: JitOptions): void {
   }
 }
 
-/** Put Zod's own descriptors back, dropping the compile-on-read accessors. */
+/**
+ * Put back what the snapshot holds, dropping the compile-on-read accessors: the
+ * own copy Zod (or the build plugin) had installed, or nothing at all, so the
+ * slot reads through to Zod's prototype getter again.
+ */
 function restore(
   target: Record<string, unknown>,
   original: ReadonlyMap<string, PropertyDescriptor | undefined>,
@@ -300,8 +349,8 @@ function restore(
     // Per slot, because this also runs as the rollback for a failed install: a
     // target that refuses one slot must not cost the others their restoration.
     // A slot left fronted by its accessor still reads correctly — the getter
-    // serves Zod's own method from the snapshot — but it keeps a redundant
-    // indirection, so restoring what can be restored is worth the try/catch.
+    // serves Zod's own method — but it keeps a redundant indirection, so
+    // restoring what can be restored is worth the try/catch.
     try {
       const descriptor = original.get(slot);
       if (descriptor === undefined) delete target[slot];

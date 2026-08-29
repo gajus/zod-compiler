@@ -55,11 +55,12 @@ export function slowEffect(ir: TransformEffectIR | PreprocessEffectIR, g: SlowGe
  * @param g - SlowGen context (provides path, issues)
  */
 export function refineCheck(check: RefineEffectCheckIR, expr: string, g: SlowGen): string {
-  // Custom issues are created by the refine check instance, so only the
-  // refine's own message applies (never the schema-level error). With no
-  // message baked in, __zcFin applies the locale default ("Invalid input").
-  const messageProp =
-    check.message === undefined ? "" : `,message:${JSON.stringify(check.message)}`;
+  // The refine's own message wins; without one, zod's finalizeIssue falls
+  // through to the error map of the schema the check is attached to (the check
+  // stamps its owner onto the issue), so the node's schema-level message is the
+  // next rung. With neither, __zcFin applies the locale default.
+  const message = check.message ?? g.typeMsg;
+  const messageProp = message === undefined ? "" : `,message:${JSON.stringify(message)}`;
   // `.refine(fn, { path })` reports against a member of the refined value, so
   // the configured segments extend this node's path.
   const path = (check.path ?? []).reduce<string>(
@@ -131,7 +132,10 @@ export function superRefineCheck(
   const helper = emitRuntimeHelper(g.ctx, "__zcSr", ZC_SR_DECL);
   const fn = emitEffectCallable(g.ctx, check);
   const p = g.temp("sp");
-  let code = `var ${p}=${helper}(${fn},${expr},${g.path},${g.issues});${g.output}=${p}.value;`;
+  // The owning schema's message covers an added issue that carries none of its
+  // own, as it does for a refine (see refineCheck); the helper applies it.
+  const msgArg = g.typeMsg === undefined ? "" : `,${JSON.stringify(g.typeMsg)}`;
+  let code = `var ${p}=${helper}(${fn},${expr},${g.path},${g.issues}${msgArg});${g.output}=${p}.value;`;
   // Inside a union option, an aborting issue must mark the option aborted so
   // pruning matches zod (see ZC_SR_DECL); elsewhere the flag is unobserved.
   if (g.aborted) code += `if(${p}.aborted){${g.aborted}=true;}`;

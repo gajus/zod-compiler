@@ -5,90 +5,184 @@ import {
   extendPath,
   extendStaticPathIndex,
   hasMutation,
-  tuplePadsShortInput,
+  outputAlwaysDefined,
+  tupleRewritesShortInput,
 } from "../context.js";
 import { orderByRuntimeCost } from "../fast-size.js";
 import { emit } from "../emit.js";
 import { invalidType, tooBig, tooSmall } from "../emit-issue.js";
 
 /**
- * Mirrors $ZodTuple: without rest, over-length input emits a single too_big
- * and `length < optStart - 1` a single too_small (minimum = items.length) —
- * both created by the tuple node (schema error applies) and both skip item
- * validation. Anything else validates items; missing required items read as
- * undefined and fail their item schema's type check at the right path.
+ * What an ABSENT slot (index at or past the input's length) does to the output,
+ * per zod's `handleTupleResults`:
  *
- * The two halves of zod's ternary are NOT symmetric about `inclusive`:
- * `tooBig ? { code: "too_big", maximum: items.length, inclusive: true } :
- * { code: "too_small", minimum: items.length }`. The under-length issue has no
- * `inclusive` key at all, so it is emitted with `"omit"` rather than `false` —
- * which would be an invented field. The locale phrases it ">N items" off the
- * key's absence, which is why the message matched even while the shape did not.
+ *  - `present`: can never be absent — below `optStart` without a rest element,
+ *    where a shorter input is already `too_small`.
+ *  - `skip`: at or past `optoutStart` and on the "optional" rung of `optin`.
+ *    The output ends here; the item is not consulted and nothing after it runs.
+ *  - `tail`: at or past `optoutStart` on any other rung. The item runs on
+ *    `undefined`; a failure ends the output here with its issues dropped, a
+ *    success is written back and may be trimmed later if it is `undefined`.
+ *  - `pad`: below `optoutStart`, so a later slot has to keep its index. The
+ *    item runs on `undefined`, its issues count, and its result — an own
+ *    `undefined` at the least — is written back.
+ */
+type SlotKind = "present" | "skip" | "tail" | "pad";
+
+function slotKinds(ir: TupleIR): SlotKind[] {
+  const len = ir.items.length;
+  const optoutStart = ir.optoutStart ?? len;
+  const optionalIn = new Set(ir.optionalIn ?? []);
+  const absentFrom = ir.rest === null ? ir.optStart : 0;
+  return ir.items.map((_, i) => {
+    if (i < absentFrom) return "present";
+    if (i < optoutStart) return "pad";
+    return optionalIn.has(i) ? "skip" : "tail";
+  });
+}
+
+/**
+ * Mirrors $ZodTuple. Without rest, an input shorter than `optStart` is a single
+ * `too_small` (`minimum: optStart`, `inclusive: true`) that skips item
+ * validation, and a longer one a single `too_big` that does NOT — zod pushes it
+ * and runs the items anyway, so their issues follow it. Both are created by
+ * the tuple node (schema error applies) and both share the `code, minimum |
+ * maximum, inclusive, origin` key order that check-created size issues do not.
+ *
+ * Every item then runs, absent slots included, and the output is shaped by
+ * {@link slotKinds}. The generated code keeps zod's invariant that the output
+ * grows one slot at a time from the input's length: a slot that is about to be
+ * handled as absent is exactly the output's current length, and once a `skip`
+ * or a failed `tail` ends the output, every later absent slot sees a shorter
+ * array and falls through. Ending the output at slot `i` needs no truncation
+ * beyond what the failed item may have written, because nothing past `i` was
+ * ever assigned.
  */
 export function slowTuple(ir: SchemaIR & { type: "tuple" }, g: SlowGen): string {
   const len = ir.items.length;
+  const kinds = slotKinds(ir);
+  const optoutStart = ir.optoutStart ?? len;
+
+  // Every read and write goes through ONE binding, seeded from the input and
+  // re-pointed by each copy, with the result written to `g.output` at the end.
+  // Reading `g.input` and writing `g.output` directly only worked while the two
+  // were the same identifier — true at every `createSlowGen` root, but NOT under
+  // `z.preprocess()`, which visits with `{ input: valueVar, output: g.output }`
+  // (see slowEffect). There a copy landed in `g.output` while the item writes
+  // went on hitting the original, so the output kept the pristine short array
+  // and the caller's array collected the padding instead.
+  const x = g.temp("ta");
+
+  // With a rest element the fixed items' issues are BUFFERED and flushed after
+  // the rest loop, because that is the order zod reports them in: `$ZodTuple`
+  // collects the fixed items into `itemResults` WITHOUT touching the payload,
+  // runs the rest loop (which pushes through `handleTupleResult`), and only
+  // then calls `handleTupleResults`, which pushes what it buffered. So
+  // `z.tuple([z.string()]).rest(z.number())` on `[1,"b"]` reports the rest
+  // element's issue first. `ZodError.message` is `JSON.stringify(issues)`, so
+  // the order is user-visible, not just an array detail.
+  const itemIssues = ir.rest === null ? g.issues : g.temp("tqi");
 
   let code = emit`
     if(!Array.isArray(${g.input})){
       ${invalidType(g, "tuple")}
-    }else{`;
+    }else{
+      var ${x}=${g.input};
+      ${ir.rest === null ? "" : `var ${itemIssues}=[];`}`;
 
   let itemsCode = "";
-  if (ir.items.some(hasMutation) || (ir.rest !== null && hasMutation(ir.rest))) {
-    itemsCode += `${g.output}=${g.input}.slice();`;
+  const mutates = ir.items.some(hasMutation) || (ir.rest !== null && hasMutation(ir.rest));
+  if (mutates) {
+    itemsCode += `${x}=${x}.slice();`;
   }
 
-  // Pad a short input up to `optStart`. zod runs every item below that index
-  // whatever the input's length and writes each result back
-  // (`final.value[i] = result.value`), so a required slot past the end lands as
-  // an own `undefined` and the output array is LONGER than the input — visible
-  // only when that item accepts undefined, which is what tuplePadsShortInput
-  // tests (`z.tuple([z.any(), z.any()]).parse(["x"])` is `["x", undefined]`).
-  // Guarded on the length, so a well-formed input never allocates: this runs
-  // only where the item loop is about to read past the end anyway.
-  if (tuplePadsShortInput(ir)) {
-    const padVar = g.temp("tp");
-    itemsCode += emit`
-      if(${g.input}.length<${ir.optStart}){
-        ${g.output}=${g.input}.slice();
-        for(var ${padVar}=${g.input}.length;${padVar}<${ir.optStart};${padVar}++){
-          ${g.input}[${padVar}]=undefined;
-        }
-      }`;
+  // The input's length, read once: absent slots are written back and would
+  // otherwise shift the presence test for the slots after them.
+  const lenVar = kinds.some((k) => k !== "present") ? g.temp("tl") : "";
+  if (lenVar) itemsCode += `var ${lenVar}=${x}.length;`;
+  // A short input gains slots, so it is copied before the first write — the
+  // caller's array must not grow. Guarded on the length so a well-formed input
+  // never allocates; a mutating item has already paid for the copy.
+  if (!mutates && tupleRewritesShortInput(ir)) {
+    itemsCode += `if(${lenVar}<${len}){${x}=${x}.slice();}`;
   }
 
   for (let i = 0; i < len; i++) {
     const itemIR = ir.items[i] as SchemaIR;
-    const elemExpr = `${g.input}[${i}]`;
+    const elemExpr = `${x}[${i}]`;
     const elemPath = extendStaticPathIndex(g.path, i);
-    const skipMissingOptional = i >= ir.optStart;
-    const itemCode = g.visit(itemIR, { input: elemExpr, output: elemExpr, path: elemPath });
-    // Zod skips absent omittable items entirely (no default materialization).
-    itemsCode += skipMissingOptional ? emit`if(${i}<${g.input}.length){${itemCode}}` : itemCode;
+    const itemCode = g.visit(itemIR, {
+      input: elemExpr,
+      output: elemExpr,
+      path: elemPath,
+      issues: itemIssues,
+    });
+    // One copy of the item code per slot: an absent slot is materialized as an
+    // own `undefined` first (`x[i] = undefined`, which is also what extends the
+    // copied array), then validated exactly as a present one would be.
+    const absent = `${i}>=${lenVar}`;
+    switch (kinds[i]) {
+      case "present":
+        itemsCode += itemCode;
+        break;
+      case "skip":
+        itemsCode += emit`if(${i}<${lenVar}){${itemCode}}`;
+        break;
+      case "tail": {
+        const beforeVar = g.temp("tb");
+        itemsCode += emit`
+          if(${i}<${lenVar}||${x}.length===${i}){
+            var ${beforeVar}=${itemIssues}.length;
+            if(${absent}){${elemExpr}=undefined;}
+            ${itemCode}
+            if(${absent}&&${itemIssues}.length>${beforeVar}){${itemIssues}.length=${beforeVar};${x}.length=${i};}
+          }`;
+        break;
+      }
+      case "pad":
+        itemsCode += emit`if(${absent}){${elemExpr}=undefined;}${itemCode}`;
+        break;
+    }
+  }
+
+  // zod's trailing trim: absent slots that produced `undefined` are dropped
+  // from the end while the item is optional-out. Only a `tail` slot can leave
+  // one behind (a `pad` slot sits below `optoutStart`, a `skip` slot writes
+  // nothing), so the loop is emitted only when some tail item might.
+  if (kinds.some((k, i) => k === "tail" && !outputAlwaysDefined(ir.items[i] as SchemaIR))) {
+    const tVar = g.temp("tt");
+    const floor = optoutStart > 0 ? `${tVar}>=${optoutStart}&&` : "";
+    itemsCode += `for(var ${tVar}=${x}.length-1;${floor}${tVar}>=${lenVar}&&${x}[${tVar}]===undefined;${tVar}--){${x}.length=${tVar};}`;
   }
 
   if (ir.rest !== null) {
     const idxVar = g.temp("ti");
-    const restExpr = `${g.input}[${idxVar}]`;
+    const restExpr = `${x}[${idxVar}]`;
     const restPath = extendPath(g.path, idxVar);
     itemsCode += emit`
-      for(var ${idxVar}=${len};${idxVar}<${g.input}.length;${idxVar}++){
+      for(var ${idxVar}=${len};${idxVar}<${x}.length;${idxVar}++){
         ${g.visit(ir.rest, { input: restExpr, output: restExpr, path: restPath })}
       }`;
-  }
-
-  if (ir.rest === null) {
-    const start = ir.optStart;
-    code += emit`
-      if(${g.input}.length>${len}){
-        ${tooBig(g, len, "array", true, { useTypeMsg: true, layout: "tuple", aborts: true })}
-      }else if(${g.input}.length<${start - 1}){
-        ${tooSmall(g, len, "array", "omit", { useTypeMsg: true, aborts: true })}
-      }else{
-        ${itemsCode}
-      }`;
-  } else {
+    const flushVar = g.temp("tqj");
+    itemsCode += `for(var ${flushVar}=0;${flushVar}<${itemIssues}.length;${flushVar}++){${g.issues}.push(${itemIssues}[${flushVar}]);}`;
+    itemsCode += `${g.output}=${x};`;
     code += itemsCode;
+  } else {
+    const body = emit`
+      if(${x}.length>${len}){
+        ${tooBig(g, len, "array", true, { layout: "tuple", aborts: true })}
+      }
+      ${itemsCode}
+      ${g.output}=${x};`;
+    code +=
+      ir.optStart > 0
+        ? emit`
+          if(${x}.length<${ir.optStart}){
+            ${tooSmall(g, ir.optStart, "array", true, { layout: "tuple", aborts: true })}
+          }else{
+            ${body}
+          }`
+        : body;
   }
 
   code += `}\n`;
@@ -98,16 +192,15 @@ export function slowTuple(ir: SchemaIR & { type: "tuple" }, g: SlowGen): string 
 export function fastTuple(ir: TupleIR, g: FastGen): string | null {
   const x = g.input;
   const parts: string[] = [`Array.isArray(${x})`];
+  const kinds = slotKinds(ir);
 
-  const required = ir.optStart;
   if (ir.rest === null) {
-    if (required === ir.items.length) {
+    if (ir.optStart === ir.items.length) {
       parts.push(`${x}.length===${ir.items.length}`);
     } else {
-      parts.push(`${x}.length>=${required}`, `${x}.length<=${ir.items.length}`);
+      if (ir.optStart > 0) parts.push(`${x}.length>=${ir.optStart}`);
+      parts.push(`${x}.length<=${ir.items.length}`);
     }
-  } else if (required > 0) {
-    parts.push(`${x}.length>=${required}`);
   }
 
   // Per-index checks, cheapest-first: positions are independent, so the emitted
@@ -118,14 +211,22 @@ export function fastTuple(ir: TupleIR, g: FastGen): string | null {
   for (const { index, itemIR } of orderByRuntimeCost(indexed, (e) => e.itemIR, g.ctx)) {
     const itemCheck = g.visit(itemIR, { input: `${x}[${index}]` });
     if (itemCheck === null) return null;
-    if (itemCheck === "true") continue;
-    // An item in the omittable tail is not merely allowed to be `undefined` —
-    // zod does not run its schema AT ALL when the input is that short
-    // (`if (i >= input.length) if (i >= optStart) continue`). Reading `x[i]` and
-    // testing it would demand that the item's own check accept `undefined`,
-    // which the fast forms of `z.undefined()` and `.optional()` happen to do but
-    // a pipe or a union arm need not — so gate on presence the way zod does.
-    parts.push(index >= ir.optStart ? `(${x}.length<=${index}||${itemCheck})` : itemCheck);
+    const kind = kinds[index];
+    // The fast check answers true only where the output IS the input (see
+    // fastResultIsInput), so a slot that would be written back when absent —
+    // `pad` and `tail` alike — must be present here; the slow walk builds the
+    // longer output. A `skip` slot is the reverse: absent, it is accepted
+    // whatever its item says, since zod ends the output there without
+    // consulting it.
+    if (kind === "pad" || kind === "tail") {
+      parts.push(
+        itemCheck === "true" ? `${x}.length>${index}` : `${x}.length>${index}&&${itemCheck}`,
+      );
+    } else if (itemCheck === "true") {
+      continue;
+    } else {
+      parts.push(kind === "skip" ? `(${x}.length<=${index}||${itemCheck})` : itemCheck);
+    }
   }
 
   // Rest element validation via preamble helper (avoids .slice().every()
