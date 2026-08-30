@@ -11,10 +11,34 @@ zod-compiler 1.x for Zod 4.0–4.4.
 
 - [What Gets Compiled](#what-gets-compiled)
 - [Schema Hoisting](#schema-hoisting)
+- [z.compile vs zod-compiler](#zcompile-vs-zod-compiler)
 - [Benchmark](#benchmark)
 
 > [!NOTE]
 > zod-compiler has been tested to work in large projects with tens of thousands of Zod schemas.
+
+## z.compile vs zod-compiler
+
+Zod's [`z.compile()`](https://zod.dev/compile) and zod-compiler both generate optimized JavaScript,
+but at different times. Zod calls its feature AOT because it compiles before validation; the code is
+still generated inside the running application with `new Function()`, making it JIT from a deployment
+perspective. zod-compiler's build plugins and CLI emit the validator during the build, so production
+loads already-generated code instead of the compiler.
+
+|                                        | zod-compiler (build plugins / CLI)           | Zod `z.compile()`                             |
+| -------------------------------------- | -------------------------------------------- | --------------------------------------------- |
+| Compilation                            | Build time (true AOT)                        | Runtime (`z.compile()` or the first parse)    |
+| Reported validation speedup            | Up to 46x; up to 41x on rejected input       | ~9x in Zod's headline example                 |
+| Uses `new Function()` at runtime       | No\*                                         | Yes                                           |
+| Cold start                             | Fast; the validator is already generated     | Pays for code generation at startup/first use |
+| Strict CSP without `'unsafe-eval'`     | Supported\*                                  | Compilation is unavailable                    |
+| Compiler shipped in the runtime bundle | No; only validators and runtime helpers ship | Yes; about 7 KB gzipped according to Zod      |
+
+\*This comparison covers zod-compiler's AOT build plugins and CLI. Its optional [`jit()`](#4-runtime-compilation-no-build-step)
+and [Node.js register hook](#5-nodejs-register-hook) also use `new Function()` and have the same runtime
+code-generation and CSP trade-offs. Performance figures come from each project's own benchmarks and
+are not a direct head-to-head comparison. Zod falls back to its regular parser for invalid input, so
+its compiled path does not speed up failures.
 
 ## Usage
 
