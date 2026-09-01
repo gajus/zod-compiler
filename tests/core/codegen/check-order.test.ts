@@ -34,7 +34,7 @@ describe("fast-path check ordering", () => {
       }),
     );
     const kind = posIn(code, '["kind"]==="alpha"');
-    const email = posIn(code, ".test(");
+    const email = posIn(code, "__zcEmail(input");
     expect(kind).toBeGreaterThanOrEqual(0);
     expect(email).toBeGreaterThanOrEqual(0);
     expect(kind).toBeLessThan(email);
@@ -58,7 +58,7 @@ describe("fast-path check ordering", () => {
 
   it("probes the cheaper union option first", () => {
     const code = fastCheckOf(z.union([z.email(), z.literal("none")]));
-    expect(posIn(code, '==="none"')).toBeLessThan(posIn(code, ".test("));
+    expect(posIn(code, '==="none"')).toBeLessThan(posIn(code, "__zcEmail(input"));
   });
 
   it("checks the cheaper intersection side first", () => {
@@ -66,12 +66,12 @@ describe("fast-path check ordering", () => {
     // reproduced by validating one value twice — so an intersection OF OBJECTS
     // delegates to zod entirely. Order is still pinned for sides that compile.
     const code = fastCheckOf(z.intersection(z.email(), z.string().min(1)));
-    expect(posIn(code, ".length>=1")).toBeLessThan(posIn(code, ".test("));
+    expect(posIn(code, ".length>=1")).toBeLessThan(posIn(code, "__zcEmail(input"));
   });
 
   it("checks the cheaper tuple position first", () => {
     const code = fastCheckOf(z.tuple([z.email(), z.boolean()]));
-    expect(posIn(code, "[1]")).toBeLessThan(posIn(code, ".test("));
+    expect(posIn(code, "[1]")).toBeLessThan(posIn(code, "__zcEmail(input"));
   });
 
   it("leaves the slow walk in declaration order (issue order is zod parity)", () => {

@@ -32,8 +32,29 @@ export const EMAIL_REGEX_SOURCE = String.raw`^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.
  *
  * Equivalence is enforced by tests/core/codegen/email-fast-regex.test.ts
  * (exhaustive short-string sweep + structured cases + random fuzz).
+ *
+ * Generated code no longer runs this pattern: the flag-less default is tested
+ * by the `__zcEmail` scanner instead (see {@link isDefaultEmailPattern} and
+ * ZC_EMAIL_DECL in issue-decls.ts). The table entry stays because its `Src`
+ * companion is what issue sites report, and so lean mode keeps that string a
+ * single bundle-wide constant; the RegExp export itself is simply unreferenced.
  */
 export const EMAIL_FAST_REGEX_SOURCE = String.raw`^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$`;
+
+/**
+ * Is this exactly zod's default email pattern, flag-less?
+ *
+ * Generated code tests that one pattern with the `__zcEmail` scanner (see
+ * ZC_EMAIL_DECL) rather than with either RegExp above, whatever format name
+ * the check carries — `z.email()`, `z.string().regex(z.regexes.email)` and a
+ * `z.stringFormat("x", z.regexes.email)` all run the same regex in zod and so
+ * get the same verdict here. Only the TEST changes: the issue still reports the
+ * pattern string, and a flagged copy keeps its RegExp since the flags would be
+ * part of what it reports.
+ */
+export function isDefaultEmailPattern(pattern: string, flags: string | undefined): boolean {
+  return !flags && pattern === EMAIL_REGEX_SOURCE;
+}
 
 /** Fallback UUID regex used when the extractor doesn't provide a pattern (e.g. in unit tests). */
 export const UUID_REGEX_SOURCE =

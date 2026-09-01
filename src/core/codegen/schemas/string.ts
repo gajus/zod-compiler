@@ -6,11 +6,18 @@ import {
   emitEffectFn,
   emitRegex,
   emitRegexSourceString,
+  emitRuntimeHelper,
   escapeString,
 } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidFormat, invalidType, tooBig, tooSmall } from "../emit-issue.js";
-import { EMAIL_REGEX_SOURCE, fastTestSource, UUID_REGEX_SOURCE } from "../well-known-regex.js";
+import { ZC_EMAIL_DECL } from "../issue-decls.js";
+import {
+  EMAIL_REGEX_SOURCE,
+  fastTestSource,
+  isDefaultEmailPattern,
+  UUID_REGEX_SOURCE,
+} from "../well-known-regex.js";
 import { refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
 import { stringLengthTests, whenGatedSizeChecks } from "./sizeable.js";
 
@@ -175,7 +182,7 @@ export function slowString(ir: StringIR, g: SlowGen): string {
           code += emit`${g.output}=${emitEffectFn(g.ctx, check.source)}(${g.input});`;
           break;
         case "string_format": {
-          let regexVar: string;
+          let prefix: string;
           let pattern: string;
           // Only the BUILT-IN z.url() gets the URL-parser check, and extraction
           // never gives that one a pattern. A `pattern` on a "url"-named check
@@ -188,23 +195,30 @@ export function slowString(ir: StringIR, g: SlowGen): string {
           }
           if (check.format === "email") {
             pattern = check.pattern ?? EMAIL_REGEX_SOURCE;
-            regexVar = g.regex("email", pattern, check.patternFlags);
+            prefix = "email";
           } else if (check.format === "regex" && check.pattern) {
             pattern = check.pattern;
-            regexVar = g.regex("str", pattern, check.patternFlags);
+            prefix = "str";
           } else if (check.format === "uuid") {
             pattern = check.pattern ?? UUID_REGEX_SOURCE;
-            regexVar = g.regex("uuid", pattern, check.patternFlags);
+            prefix = "uuid";
           } else {
             if (check.pattern) {
               pattern = check.pattern;
-              regexVar = g.regex("str", pattern, check.patternFlags);
+              prefix = "str";
             } else {
               // Extraction guarantees a pattern for non-special formats;
               // defensive skip kept for hand-built IR.
               continue;
             }
           }
+          // Zod's default email pattern is tested by the `__zcEmail` scanner, so
+          // no RegExp is declared for it at all (see ZC_EMAIL_DECL); the issue
+          // below still names the pattern, through the shared source string.
+          const scanner = isDefaultEmailPattern(pattern, check.patternFlags)
+            ? emitRuntimeHelper(g.ctx, "__zcEmail", ZC_EMAIL_DECL)
+            : null;
+          const regexVar = scanner === null ? g.regex(prefix, pattern, check.patternFlags) : null;
           // Zod's invalid_format shape depends on WHICH check instance ran.
           // `$ZodCheckStringFormat.init` installs the default pattern check with
           // `??=`, and that default pushes `origin:"string"` + `pattern`. A
@@ -215,19 +229,23 @@ export function slowString(ir: StringIR, g: SlowGen): string {
           // either way, so the issue shape is driven off the extracted flag.
           let extra: string | undefined;
           if (!check.bareIssue) {
-            // When emitRegex swapped in a faster equivalent pattern, the runtime
-            // regex's toString() would leak the rewrite into the issue. Reference
-            // the shared original-pattern string instead (pattern came from
-            // RegExp.source, so it matches zod's `.toString()` byte-for-byte).
+            // When emitRegex swapped in a faster equivalent pattern (or the
+            // scanner stands in for the RegExp), the runtime regex's toString()
+            // would leak the rewrite into the issue. Reference the shared
+            // original-pattern string instead (pattern came from RegExp.source,
+            // so it matches zod's `.toString()` byte-for-byte).
             const rewritten = !check.patternFlags && fastTestSource(pattern) !== null;
-            const patternExpr = rewritten
-              ? emitRegexSourceString(g.ctx, pattern)
-              : `${regexVar}.toString()`;
+            const patternExpr =
+              rewritten || regexVar === null
+                ? emitRegexSourceString(g.ctx, pattern)
+                : `${regexVar}.toString()`;
             extra = `pattern:${patternExpr}`;
           }
+          const test =
+            regexVar === null ? `${scanner}(${g.input})` : `${regexVar}.test(${g.input})`;
           code += emit`
-            ${lastIndexReset(regexVar, check.patternFlags)}
-            if(!${regexVar}.test(${g.input})){
+            ${regexVar === null ? "" : lastIndexReset(regexVar, check.patternFlags)}
+            if(!${test}){
               ${invalidFormat(g, { expr: escapeString(check.format) }, { origin: check.bareIssue ? undefined : "string", extra, message: check.message })}
             }`;
           break;
@@ -285,6 +303,11 @@ export function fastStringCheck(check: CheckIR, x: string, ctx: CodeGenContext):
       } else {
         // Unknown format without pattern — can't generate a check
         return null;
+      }
+      // Zod's default email pattern runs as a linear scan instead of a RegExp
+      // (see ZC_EMAIL_DECL) — a plain call, so it needs no parens either.
+      if (isDefaultEmailPattern(pattern, check.patternFlags)) {
+        return `${emitRuntimeHelper(ctx, "__zcEmail", ZC_EMAIL_DECL)}(${x})`;
       }
       const v = emitRegex(ctx, prefix, pattern, check.patternFlags);
       // Stateful (g/y) regexes need lastIndex reset; comma expression keeps

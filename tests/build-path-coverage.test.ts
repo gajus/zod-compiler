@@ -325,5 +325,40 @@ describe("build path — zod parity for the newly covered constructs", () => {
       [["1", "no", "YES"], ["true"], [1]],
       "stringboolCustom",
     );
+    // The exact-spelling shortcut (no toLowerCase() on a verbatim hit) must not
+    // change a verdict in either direction: a lowercase hit, an uppercase hit
+    // the shortcut misses, a near-miss with surrounding whitespace, a value
+    // that only lowercases INTO a spelling, and the empty string.
+    expectParity(
+      z.object({ f: z.stringbool() }),
+      [
+        { f: "enabled" },
+        { f: "ENABLED" },
+        { f: "Enabled" },
+        { f: " yes" },
+        { f: "yes " },
+        { f: "" },
+        { f: "TRUE" },
+        { f: "False" },
+        { f: "0" },
+        { f: "yess" },
+        { f: "MAYBE" },
+        { f: "İ" },
+        { f: "ﬀ" },
+      ],
+      "stringboolExact",
+    );
+    // The same codec on the EAGER walk (a sibling `.catch()` declines the
+    // build pass), where slowStringBool takes the shortcut.
+    expectParity(
+      z.object({ f: z.stringbool(), c: z.string().catch("c") }),
+      [
+        { f: "on", c: "x" },
+        { f: "ON", c: 1 },
+        { f: "Off", c: "y" },
+        { f: "nope", c: "z" },
+      ],
+      "stringboolEager",
+    );
   });
 });

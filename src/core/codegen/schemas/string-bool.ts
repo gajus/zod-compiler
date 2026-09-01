@@ -14,9 +14,6 @@ export function slowStringBool(ir: StringBoolIR, g: SlowGen): string {
     }else{
   `;
 
-  // Normalize input for case-insensitive matching
-  const normalized = ir.caseSensitive ? g.input : g.temp("sbn");
-  if (!ir.caseSensitive) code += `var ${normalized}=${g.input}.toLowerCase();`;
   const allValues = [...ir.truthy, ...ir.falsy];
   const valuesExpr = JSON.stringify(allValues);
   // z.stringbool() is a Codec whose transform pushes
@@ -29,7 +26,15 @@ export function slowStringBool(ir: StringBoolIR, g: SlowGen): string {
   // Compare per-side counts against threshold (not the combined total)
   const useInline = stringBoolUsesInline(ir);
 
+  // Case-insensitive matching tries the input VERBATIM before lowercasing it:
+  // the accepted spellings are all lowercase, so an exact hit and the
+  // lowercased hit are the same string. See buildStringBool for the measured
+  // trade; this is the same shape on the eager walk.
   if (useInline) {
+    const normalized = ir.caseSensitive ? g.input : g.temp("sbn");
+    if (!ir.caseSensitive) {
+      code += `var ${normalized}=${stringBoolInlineHit(ir, g.input)}?${g.input}:${g.input}.toLowerCase();`;
+    }
     const truthyCondition = ir.truthy.map((v) => `${normalized}===${escapeString(v)}`).join("||");
     const falsyCondition = ir.falsy.map((v) => `${normalized}===${escapeString(v)}`).join("||");
     code += emit`
@@ -40,8 +45,13 @@ export function slowStringBool(ir: StringBoolIR, g: SlowGen): string {
   } else {
     const value = g.temp("sbv");
     const lookup = emitStringBoolMap(ir, g.ctx);
+    const lowered = g.temp("sbn");
+    const retry = ir.caseSensitive
+      ? ""
+      : `if(${value}===undefined){var ${lowered}=${g.input}.toLowerCase();` +
+        `if(${lowered}!==${g.input}){${value}=${lookup}.get(${lowered});}}`;
     code += emit`
-      var ${value}=${lookup}.get(${normalized});
+      var ${value}=${lookup}.get(${g.input});${retry}
       if(${value}===undefined){${invalidValue(g, valuesExpr, { extra: expectedExtra })}}
       else{${g.output}=${value};}
     `;
@@ -53,6 +63,20 @@ export function slowStringBool(ir: StringBoolIR, g: SlowGen): string {
 
 export function stringBoolUsesInline(ir: StringBoolIR): boolean {
   return ir.truthy.length <= ENUM_INLINE_THRESHOLD && ir.falsy.length <= ENUM_INLINE_THRESHOLD;
+}
+
+/**
+ * Boolean expression: is `input` verbatim one of an INLINE codec's spellings?
+ *
+ * The accepted lists come from probing the schema with lowercase candidates
+ * (see extractStringBool), so for a case-insensitive codec an exact hit is
+ * exactly what `input.toLowerCase()` would have produced — and a handful of
+ * `===` on internalized strings is cheaper than the `toLowerCase()` call. The
+ * hashed form has no use for this: there the verbatim `Map.get` IS the lookup,
+ * retried on the lowercased string only when it misses.
+ */
+export function stringBoolInlineHit(ir: StringBoolIR, input: string): string {
+  return [...ir.truthy, ...ir.falsy].map((v) => `${input}===${escapeString(v)}`).join("||");
 }
 
 /** One lookup distinguishes true, false and absent; shared by hot and issue walks. */

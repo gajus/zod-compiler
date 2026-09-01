@@ -7,17 +7,20 @@ import { compileIR } from "../helpers.js";
 /**
  * Auto-discrimination: a plain `z.union` of objects that all pin a shared key to
  * pairwise-disjoint required literals is lowered to O(1) switch dispatch on the
- * fast path (fastUnion → detectUnionDiscriminator). This is a fast-path-only
- * rewrite — the slow path keeps `z.union`'s sequential trial and `invalid_union`
- * error shape — and is gated on a minimum option count so small unions, which a
- * fully-inlined `||`-chain validates faster, are never regressed.
+ * fast path (fastUnion → detectUnionDiscriminator). The slow path keeps
+ * `z.union`'s sequential trial and `invalid_union` error shape, and the fast
+ * path is gated on a minimum option count so small unions, which a
+ * fully-inlined `||`-chain validates faster, are never regressed. (The build
+ * path dispatches the same detection from two options up — its options are
+ * hosted calls either way; see tests/core/codegen/build-union-dispatch.test.ts.)
  */
 
 const compile = (schema: z.ZodType) => compileIR(extractSchema(schema));
 
+/** Does the FAST CHECK dispatch? Its switch is always hosted as a `__du_N` helper. */
 const emitsSwitch = (schema: z.ZodType): boolean => {
   const r = generateValidator(extractSchema(schema), "t");
-  return `${r.code}\n${r.functionDef}`.includes("switch(");
+  return /function __du_\d+\(/.test(`${r.code}\n${r.functionDef}`);
 };
 
 /** Every input must produce the same success/failure as zod itself. */

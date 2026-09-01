@@ -36,7 +36,13 @@
  * issue list, which this pass never builds), `z.url()`, and `superRefine`.
  */
 
-import type { ObjectIR, RefineEffectCheckIR, SchemaIR, StringBoolIR } from "../types.js";
+import type {
+  DiscriminatedUnionIR,
+  ObjectIR,
+  RefineEffectCheckIR,
+  SchemaIR,
+  StringBoolIR,
+} from "../types.js";
 import type { CodeGenContext, FastScope } from "./context.js";
 import {
   declareFastTemps,
@@ -60,8 +66,13 @@ import { ZC_HOP_DECL, ZC_PLAIN_DECL, ZC_PROTO_SCRUB_DECL } from "./issue-decls.j
 import { defaultValueExpr, needsPostInnerDefault } from "./schemas/default.js";
 import { parsedProperties } from "./schemas/object.js";
 import { innerAppliesDefaultOnUndefined } from "./schemas/optional.js";
+import { detectUnionDiscriminator } from "./schemas/discriminated-union.js";
 import { fastStringCheck } from "./schemas/string.js";
-import { emitStringBoolMap, stringBoolUsesInline } from "./schemas/string-bool.js";
+import {
+  emitStringBoolMap,
+  stringBoolInlineHit,
+  stringBoolUsesInline,
+} from "./schemas/string-bool.js";
 
 /** Statements that leave the built value in `value`, or `return <FAIL>` on failure. */
 interface Built {
@@ -540,11 +551,28 @@ function buildRecursiveCall(refId: number, input: string, g: BuildGen): Built | 
  * would abandon the whole parse instead of moving on to the next option. Behind
  * a call, the same signal is just a value to test.
  *
- * PLAIN unions only. A discriminated union must not reach here: zod resolves it
- * by dispatch, not by probing, and the two disagree — see
+ * A union of objects that all pin one shared key to disjoint required literals
+ * is dispatched instead of probed, exactly as the fast path does (see
+ * detectUnionDiscriminator). Disjointness is what makes that zod's answer and
+ * not merely a faster one: at most ONE option can accept a given input, so the
+ * first option to succeed is the option the discriminator selects, and an
+ * input whose discriminator matches no case is rejected by every option — the
+ * two outcomes a probe could have produced. Unlike the fast path there is no
+ * minimum option count: the options are hosted calls either way, and a switch
+ * only ever replaces a run of them with one. Measured on the eight-option
+ * tagged union in the benchmarks: 15.5 → 10 ns per parse, the same as the
+ * `z.discriminatedUnion` spelling of it.
+ *
+ * PLAIN unions only. A discriminated union must not reach the probe below: zod
+ * resolves it by dispatch, not by probing, and the two disagree — see
  * {@link buildDiscriminatedUnion}.
  */
 function buildUnion(ir: SchemaIR & { type: "union" }, input: string, g: BuildGen): Built | null {
+  const discriminated = detectUnionDiscriminator(ir.options, 2);
+  if (discriminated !== null) {
+    return buildDispatch(discriminated.discriminator, discriminated.cases, ir.options, input, g);
+  }
+
   const hosted: string[] = [];
   for (const option of ir.options) {
     const fn = g.rebuilds.has(option) ? hostBuild(option, g) : hostPassthrough(option, g);
@@ -596,16 +624,33 @@ function buildDiscriminatedUnion(
   input: string,
   g: BuildGen,
 ): Built | null {
+  return buildDispatch(ir.discriminator, ir.cases, ir.options, input, g);
+}
+
+/**
+ * The switch behind {@link buildDiscriminatedUnion} and a dispatched
+ * {@link buildUnion}: prove object-ness, select the option the discriminator
+ * names, and build that option alone. Switches over the literal labels, as the
+ * fast path does — see `emitFastDiscriminatedSwitch` for the measurement that
+ * retired the ordinal-table form.
+ */
+function buildDispatch(
+  discriminator: string,
+  cases: DiscriminatedUnionIR["cases"],
+  options: readonly SchemaIR[],
+  input: string,
+  g: BuildGen,
+): Built | null {
   const out = local(g, "bd");
   // One hosted build per REACHABLE option, keyed by option index: a multi-value
   // literal (`z.literal(["a","c"])`) contributes several cases selecting the
   // same option, and they share the one function rather than emitting it twice.
   const hostedByOption = new Map<number, string>();
   let arms = "";
-  for (const { value, option: index } of ir.cases) {
+  for (const { value, option: index } of cases) {
     let fn = hostedByOption.get(index);
     if (fn === undefined) {
-      const option = ir.options[index];
+      const option = options[index];
       if (option === undefined) return null;
       const hosted = g.rebuilds.has(option) ? hostBuild(option, g) : hostPassthrough(option, g);
       if (hosted === null) return null;
@@ -619,7 +664,7 @@ function buildDiscriminatedUnion(
   return {
     code:
       `if(typeof ${input}!=="object"||${input}===null||Array.isArray(${input}))return ${g.fail};` +
-      `switch(${input}[${escapeString(ir.discriminator)}]){${arms}default:return ${g.fail};}` +
+      `switch(${input}[${escapeString(discriminator)}]){${arms}default:return ${g.fail};}` +
       `if(${out}===${g.fail})return ${g.fail};`,
     value: out,
   };
@@ -916,17 +961,29 @@ function buildString(ir: SchemaIR & { type: "string" }, input: string, g: BuildG
  * return the boolean directly. The ordinary Fast Path cannot host this codec
  * because its contract returns the original input by reference; the build path
  * is designed for exactly this kind of small output rewrite.
+ *
+ * Case-insensitive codecs look the input up VERBATIM before lowercasing it.
+ * The accepted spellings are all lowercase (see extractStringBool), so an
+ * exact hit is what `toLowerCase()` would have produced anyway, and the common
+ * config flag or query parameter is spelled that way already. For the hashed
+ * form that is one `Map.get` in place of `toLowerCase()` plus one. A miss
+ * lowercases and looks up again — unless lowercasing changed nothing, in which
+ * case the second lookup would only repeat the first, so a lowercase
+ * non-spelling is rejected for the price of the old path plus one string
+ * compare. Measured per value on V8: 10.8 → 7.5 ns over lowercase spellings,
+ * 13.5 → 10.7 ns over a mixed-case rotation. The inline form compares the raw
+ * string against its few spellings first — pointer compares on internalized
+ * strings — for the same trade.
  */
 function buildStringBool(ir: StringBoolIR, input: string, g: BuildGen): Built {
   let code = `if(typeof ${input}!=="string")return ${g.fail};`;
-  let normalized = input;
-  if (!ir.caseSensitive) {
-    normalized = local(g, "bn");
-    code += `${normalized}=${input}.toLowerCase();`;
-  }
-
   const out = local(g, "bb");
   if (stringBoolUsesInline(ir)) {
+    let normalized = input;
+    if (!ir.caseSensitive) {
+      normalized = local(g, "bn");
+      code += `${normalized}=${stringBoolInlineHit(ir, input)}?${input}:${input}.toLowerCase();`;
+    }
     const membership = (values: readonly string[]): string =>
       values.map((value) => `${normalized}===${escapeString(value)}`).join("||");
     code +=
@@ -935,7 +992,14 @@ function buildStringBool(ir: StringBoolIR, input: string, g: BuildGen): Built {
       `else{return ${g.fail};}`;
   } else {
     const lookup = emitStringBoolMap(ir, g.ctx);
-    code += `${out}=${lookup}.get(${normalized});if(${out}===undefined)return ${g.fail};`;
+    code += `${out}=${lookup}.get(${input});`;
+    if (!ir.caseSensitive) {
+      const lowered = local(g, "bn");
+      code +=
+        `if(${out}===undefined){${lowered}=${input}.toLowerCase();` +
+        `if(${lowered}!==${input}){${out}=${lookup}.get(${lowered});}}`;
+    }
+    code += `if(${out}===undefined)return ${g.fail};`;
   }
   return { code, value: out };
 }

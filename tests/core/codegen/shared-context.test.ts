@@ -26,7 +26,7 @@ describe("shared CodeGenContext between fast-path and slow-path", () => {
     const fg = createFastGen("input", ctx);
     const ir: StringIR = {
       type: "string",
-      checks: [{ kind: "string_format", format: "email" }],
+      checks: [{ kind: "string_format", format: "uuid" }],
     };
     const fastExpr = generateFast(ir, fg);
     expect(fastExpr).not.toBeNull();
@@ -39,7 +39,7 @@ describe("shared CodeGenContext between fast-path and slow-path", () => {
     generateSlow(ir, sg);
 
     const counterAfterSlow = ctx.counter;
-    // With regex dedup, slow path reuses the fast path's email regex variable
+    // With regex dedup, slow path reuses the fast path's uuid regex variable
     // so counter may not increase if the only new operation was a deduped regex
     expect(counterAfterSlow).toBeGreaterThanOrEqual(counterAfterFast);
 

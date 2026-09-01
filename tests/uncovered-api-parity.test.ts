@@ -780,8 +780,8 @@ describe("discriminated-union dispatch on the build path", () => {
 // Zod resolves a discriminated union through a `Map` built from each option's
 // `propValues`, read as `map.get(input[disc])` — i.e. SameValueZero. Every
 // compiled dispatch form is `===`-shaped instead: the slow walk's `switch`, the
-// fast check's `switch`, the build pass's `switch`, and the ordinal variant's
-// string-keyed property lookup. The two agree on every value but ONE — `NaN`,
+// fast check's `switch` and the build pass's `switch`. The two agree on every
+// value but ONE — `NaN`,
 // which SameValueZero matches against itself and `===` does not. So
 // `z.literal(NaN)` contributed a `case NaN:` that is dead code, and the input
 // zod happily routes fell through to the "No matching discriminator" arm: zod
@@ -851,11 +851,11 @@ describe("discriminators the compiled dispatch cannot represent", () => {
     );
   });
 
-  it("a NaN discriminator alongside 3+ string cases (ordinal-table dispatch)", () => {
-    // With three or more all-string values the fast path switches to a
-    // string-keyed ordinal TABLE — `tbl[t]`, a property lookup, which coerces
-    // NaN to the key `"NaN"` rather than matching it. One non-string value keeps
-    // the plain switch, but the guard has to hold for both shapes.
+  it("a NaN discriminator alongside 3+ string cases", () => {
+    // Pinned separately because an earlier dispatch form routed three or more
+    // all-string values through a string-keyed lookup table, which coerces NaN
+    // to the key `"NaN"` rather than matching it. The switch has since replaced
+    // the table at every size, but the guard has to hold for this shape too.
     const schema = z.discriminatedUnion("t", [
       z.object({ t: z.literal(NaN), v: z.number() }),
       z.object({ t: z.literal("b"), v: z.string() }),
@@ -1503,8 +1503,7 @@ describe("issue fields beyond code and path", () => {
     // gains the parent segments and nothing else.
     expectIssueFields(z.object({ v: du }), { v: { t: "z" } }, "duNoMatchInObject", keys);
     expectIssueFields(z.array(du), [{ t: "z" }], "duNoMatchInArray", keys);
-    // Enough cases to take the ordinal dispatch table rather than the string
-    // switch; the no-match default is shared, but pin it on both.
+    // A wider union, so the no-match default is pinned past the two-case shape.
     const wide = z.discriminatedUnion("t", [
       z.object({ t: z.literal("a"), a: z.string() }),
       z.object({ t: z.literal("b"), b: z.number() }),
@@ -1956,9 +1955,19 @@ describe("records accept only plain objects, as $ZodRecord does", () => {
   ];
   const PLAIN: [string, () => unknown][] = [
     ["plain literal", () => ({ a: "x" })],
+    ["JSON.parse output", () => JSON.parse('{"a":"x"}') as object],
     ["null prototype", () => Object.create(null) as object],
+    ["Object.prototype, explicitly", () => Object.create(Object.prototype) as object],
     ["inherits from a plain object", () => Object.create({ inherited: 1 }) as object],
     ["own constructor that is NOT a function", () => ({ constructor: 1 })],
+    // The `c===Object` short-cut in __zcPlain: an own `constructor` naming
+    // Object is plain under zod's rules too (Object.prototype has its own
+    // isPrototypeOf), and the inherited case is the one every literal takes.
+    ["own constructor that IS Object", () => ({ constructor: Object })],
+    [
+      "Object.create(Object.prototype) with own constructor: Object",
+      () => Object.assign(Object.create(Object.prototype) as object, { constructor: Object }),
+    ],
   ];
   const inputs = [...NON_PLAIN, ...PLAIN].map(([, make]) => make());
 
