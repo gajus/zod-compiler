@@ -179,3 +179,74 @@ describe("build path: plain tagged unions dispatch on their discriminator", () =
     expect(result.code).not.toContain("No matching discriminator");
   });
 });
+
+describe("build path: dispatched options skip the guard and tag the switch already settled", () => {
+  it("hosts each option without an object guard or a discriminator check", () => {
+    const source = buildSource(z.union([click, scroll, key]));
+    // The dispatcher guards `input`; the hosted options (parameter `__bp_N`)
+    // do not guard again, and no option compares its tag a second time.
+    expect(source).toMatch(
+      /if\(typeof input!=="object"\|\|input===null\|\|Array\.isArray\(input\)\)return __(?:zcBf|bf)_\d+;switch\(input\["type"\]\)/,
+    );
+    expect(source).not.toMatch(/typeof __bp_\d+!=="object"/);
+    expect(source).not.toMatch(/==="click"\)\)return/);
+    expect(source).not.toMatch(/==="scroll"\)\)return/);
+    // The tag is still read into the output literal.
+    expect(source).toMatch(/\{"type":__bv_\d+,"x":__bv_\d+\}/);
+  });
+
+  it("keeps the guard on objects nested INSIDE an option", () => {
+    const nested = z.union([
+      z.object({ type: z.literal("a"), inner: z.object({ n: z.number() }) }),
+      z.object({ type: z.literal("b"), inner: z.object({ s: z.string() }) }),
+    ]);
+    const source = buildSource(nested);
+    expect(source).toMatch(/typeof __bv_\d+!=="object"\|\|__bv_\d+===null/);
+    expectParity(
+      nested,
+      [
+        { type: "a", inner: { n: 1 } },
+        { type: "a", inner: null },
+        { type: "a", inner: [] },
+        { type: "b", inner: { s: "x" } },
+        { type: "b", inner: "x" },
+      ],
+      "nestedGuard",
+    );
+  });
+
+  it("builds a transformed tag rather than copying it", () => {
+    // The tag's CHECK is redundant after the switch; its OUTPUT is not when the
+    // literal is piped through a transform, so that property still builds.
+    const upper = z.discriminatedUnion("type", [
+      z.object({ type: z.literal("a").transform((v) => v.toUpperCase()), n: z.number() }),
+      z.object({ type: z.literal("b"), s: z.string() }),
+    ]);
+    expectParity(
+      upper,
+      [{ type: "a", n: 1 }, { type: "b", s: "x" }, { type: "a", n: "no" }, { type: "c" }],
+      "transformedTag",
+    );
+  });
+
+  it("agrees with zod when an option is a pass-through (non-stripping) object", () => {
+    const mixed = z.union([
+      z.strictObject({ type: z.literal("a"), n: z.number() }),
+      z.looseObject({ type: z.literal("b"), s: z.string() }),
+      z.object({ type: z.literal("c"), b: z.boolean() }),
+    ]);
+    expectParity(
+      mixed,
+      [
+        { type: "a", n: 1 },
+        { type: "a", n: 1, extra: 2 },
+        { type: "b", s: "x", extra: 2 },
+        { type: "b", s: 1 },
+        { type: "c", b: true, extra: 2 },
+        { type: "d" },
+        null,
+      ],
+      "mixedOptions",
+    );
+  });
+});

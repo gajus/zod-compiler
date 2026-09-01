@@ -364,14 +364,17 @@ describe("generateIIFE() — runtime execution", () => {
       expect(validator.is({ name: "Alice" })).toBe(false);
     });
 
-    it("does NOT install a partial fast path as the guard (soundness, source-level)", () => {
-      // A default/catch fast path only shortcuts present-and-valid input: a
-      // `false` result does not imply rejection (the default may rescue a
-      // missing key), so it is unsound as a standalone guard. The IIFE must
-      // pass `null` as the is-arg → `.is()` derives from safeParse().success.
+    it("installs the acceptance predicate as the guard even when a default is substituted", () => {
+      // The by-reference fast form only shortcuts present-and-valid input, so it
+      // would be unsound here: a `false` does not imply rejection when the
+      // default may rescue a missing key. A rebuilding schema's expression is
+      // generated in acceptance mode instead (see FastGen.acceptance): its
+      // `.default()` accepts `undefined` as the schema does, the predicate is
+      // total, and the IIFE passes it as the is-arg. Runtime behaviour is
+      // pinned end to end in tests/build-parse-and-is.test.ts.
       const schema = z.object({ page: z.number().default(1), name: z.string() });
       const iife = generateIIFE("Schema", makeInfoWithFallback("withDefault", schema));
-      expect(iife).toMatch(/__zcMkv\(safeParse_withDefault,__zs,(?:__fc_\d+|null),null\)/);
+      expect(iife).toMatch(/__zcMkv\(safeParse_withDefault,__zs,null,__fc_\d+\)/);
     });
 
     it("works for schemas with no fast path (mutating effect)", () => {

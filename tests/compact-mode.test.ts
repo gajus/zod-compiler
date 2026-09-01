@@ -216,11 +216,16 @@ describe("compact mode — codegen shape", () => {
     },
   );
 
-  it("withholds `.is()` from a build-path schema that substitutes a default", () => {
-    // The fast check demands a present value (its contract is `data === input`,
-    // and a substituted default is not the input), so it is not an exact
-    // acceptance predicate and must not be installed as `.is()`.
-    expect(compactCodegen(z.object({ n: z.number().default(1) })).result.isFnName).toBeNull();
+  it("hands `.is()` an acceptance predicate even when a default is substituted", () => {
+    // A rebuilding schema's fast expression is generated in acceptance mode,
+    // where a `.default()` accepts `undefined` as the schema does — so the
+    // predicate is total and `.is()` stays zero-allocation. (The by-reference
+    // form, which demands a present value, is never published for a schema
+    // whose output is not its input.)
+    const { result, source } = compactCodegen(z.object({ n: z.number().default(1) }));
+    expect(result.isFnName).not.toBeNull();
+    expect(result.fastFnName).toBeNull();
+    expect(source).toMatch(/\(\(__w_\d+=input\["n"\]\)===undefined\|\|/);
     // Stripping alone reshapes the payload, never the verdict — predicate kept.
     expect(compactCodegen(z.object({ n: z.number() })).result.isFnName).not.toBeNull();
   });

@@ -113,6 +113,12 @@ describe("build path — the predicate it hands `.is()`", () => {
     ["array size check", z.array(item).min(1)],
     ["object-level refine", z.object({ a: z.number(), b: z.number() }).refine((v) => v.a < v.b)],
     ["nested array size check", z.object({ items: z.array(item).min(1) })],
+    // A substituted default: the rebuilding schema's expression is generated in
+    // acceptance mode, where `.default()` accepts the absent value it stands
+    // in for, so the predicate is total.
+    ["a default", z.object({ page: z.number().default(1) })],
+    ["a default under optional", z.object({ page: z.number().default(1).optional() })],
+    ["a nested default", z.object({ o: z.object({ a: z.string().default("d") }) })],
   ])("installs a zero-allocation predicate for %s", (_label, schema) => {
     // These reach the build pass, and stripping reshapes the payload without
     // changing the verdict — so the fast expression is an exact acceptance test.
@@ -121,13 +127,11 @@ describe("build path — the predicate it hands `.is()`", () => {
   });
 
   it.each([
-    // Substitutes a value the fast check demands be present.
-    ["a default", z.object({ page: z.number().default(1) })],
     // No fast path exists: an overwrite rewrites the value, and an effect is
     // statically fast-ineligible.
     ["an overwrite", z.object({ q: z.string().trim() })],
     ["a transform", z.object({ a: z.string().transform((s) => s.length) })],
-  ])("falls back to safeParse().success for %s", (_label, schema) => {
+  ])("has no predicate to hand over for %s", (_label, schema) => {
     expect(isGuardOf(schema)).toBe("safeParse");
   });
 });

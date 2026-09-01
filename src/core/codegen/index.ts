@@ -140,7 +140,14 @@ export function generateValidator(
   const fastEffectCache = ctx.effectFnCache && new Map(ctx.effectFnCache);
   const fastValueCache = ctx.valueCache && new Map(ctx.valueCache);
   const fastRecName = ctx.recFastName;
-  const fg = createFastGen("input", ctx);
+  // A schema that rebuilds its output never takes a by-reference shortcut:
+  // `fastResultIsInput` withholds `data: input` and the published `fc` alike,
+  // so its root expression is only ever consumed as a VERDICT — by `.is()`. It
+  // is therefore generated as an acceptance predicate (see FastGen.acceptance),
+  // which differs from the by-reference form only at `.default()` nodes and is
+  // what lets a defaulted schema keep a zero-allocation `.is()`.
+  const acceptance = rebuildsOutput(ir);
+  const fg = createFastGen("input", ctx, false, undefined, undefined, acceptance);
   let fastExpr = generateFast(ir, fg);
   if (fastExpr !== null && hasNonRootTargets) {
     // Host each non-root recursion target as a boolean fast-check helper. A
@@ -150,7 +157,7 @@ export function generateValidator(
     // rollback below then restores clean state for the slow-only path.
     for (const t of ctx.recTargets.values()) {
       if (t.isRoot) continue;
-      const targetGen = createFastGen("input", ctx, false);
+      const targetGen = createFastGen("input", ctx, false, undefined, undefined, acceptance);
       const body = generateFast(t.inner as SchemaIR, targetGen);
       if (body === null) {
         fastExpr = null;
@@ -218,11 +225,11 @@ export function generateValidator(
   }
 
   // `.is()` for a build-path schema is the fast expression — stripping reshapes
-  // the payload, never the verdict. A substituted `.default()` breaks that: the
-  // fast check demands a present value where the schema accepts its absence, so
-  // the predicate is partial and `.is()` falls back to safeParse().success
-  // (which runs the build pass, so it is no slower than the eager walk was).
-  const buildIsFnName = ctx.buildSubstitutesValue === true ? null : fastFnName;
+  // the payload, never the verdict, and a `.default()` is covered too: the build
+  // path is only ever taken by a rebuilding schema, whose expression was
+  // generated in acceptance mode (`acceptance` above) and so accepts the absent
+  // value the substitution stands in for.
+  const buildIsFnName = fastFnName;
 
   const baseRefCount = options?.refCount ?? 0;
 

@@ -240,6 +240,14 @@ export const FINZ_DECL = "function __zcFinZ(z,r,i){return new __ZcFailZ(z,r,i);}
  * Installed with defineProperty rather than assignment: Zod's lazy setter
  * redefines the slot as non-writable, so a second `__zcMkv` on the same schema
  * object — two exports aliasing one schema — would throw under ESM strict mode.
+ *
+ * A rebuilding schema (no `fc`) reaches `parse()` through `fn`, i.e. through a
+ * SafeParseResult unwrapped a line later. Handing the build function over so
+ * `parse()` could call it directly was measured and declined: the wrapper is a
+ * young-generation bump allocation that V8 elides outright where `fn` inlines,
+ * and even across eight schemas sharing this closure — where it cannot — the
+ * direct call came out level (41.5 vs 41.8 ns), for a wider signature on every
+ * bundle.
  */
 export const MK_VALIDATOR_DECL =
   "function __zcMkv(fn,schema,fc,is){var w=schema||{};var zpa=w.parseAsync,zspa=w.safeParseAsync;w.parse=fc?function(input){if(fc(input))return input;var r=fn(input);if(r.success)return r.data;throw r.error;}:function(input){var r=fn(input);if(r.success)return r.data;throw r.error;};w.safeParse=fn;w.safeParseAsync=function(input){try{return Promise.resolve(fn(input));}catch(e){if(zspa)return zspa(input);throw e;}};w.parseAsync=fc?function(input){try{if(fc(input))return Promise.resolve(input);var r=fn(input);if(r.success)return Promise.resolve(r.data);return Promise.reject(r.error);}catch(e){if(zpa)return zpa(input);throw e;}}:function(input){try{var r=fn(input);if(r.success)return Promise.resolve(r.data);return Promise.reject(r.error);}catch(e){if(zpa)return zpa(input);throw e;}};w.is=is||function(input){return fn(input).success;};" +

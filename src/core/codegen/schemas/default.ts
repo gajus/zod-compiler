@@ -42,6 +42,17 @@ export function slowDefault(ir: DefaultIR, g: SlowGen): string {
   `;
 }
 
+/**
+ * By-reference form: a present value that the inner accepts. `undefined` is
+ * refused even though the schema takes it, because the fast path's caller hands
+ * back the INPUT on success and the schema's answer there is the default.
+ *
+ * Acceptance form (see FastGen.acceptance): `undefined` accepted, as zod does —
+ * the default fires, and the schema succeeds. Only a verdict is read from this
+ * form, so no payload can go wrong; it is what makes `.is()` on a defaulted
+ * schema a total, zero-allocation predicate.
+ */
 export function fastDefault(ir: DefaultIR, g: FastGen): string | null {
+  if (g.acceptance === true) return fastSentinelWrapper(g, ir.inner, "===undefined", "||");
   return fastSentinelWrapper(g, ir.inner, "!==undefined", "&&");
 }

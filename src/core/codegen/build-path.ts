@@ -61,7 +61,13 @@ import {
   tupleRewritesShortInput,
 } from "./context.js";
 import { createFastGen, generateFast } from "./fast-path.js";
-import { EXTRACT_CAP, estimateFastCost, MIN_EXTRACT, predictedInlineSize } from "./fast-size.js";
+import {
+  EXTRACT_CAP,
+  estimateFastCost,
+  MIN_EXTRACT,
+  orderByRuntimeCost,
+  predictedInlineSize,
+} from "./fast-size.js";
 import { ZC_HOP_DECL, ZC_PLAIN_DECL, ZC_PROTO_SCRUB_DECL } from "./issue-decls.js";
 import { defaultValueExpr, needsPostInnerDefault } from "./schemas/default.js";
 import { parsedProperties } from "./schemas/object.js";
@@ -95,6 +101,14 @@ interface BuildGen {
   extractable: boolean;
   /** Nodes of the root schema that rebuild (see rebuildSet). */
   rebuilds: ReadonlySet<SchemaIR>;
+  /**
+   * Set on the gen for a dispatched union option (see buildDispatch): the
+   * discriminator key. The switch that selected the option has already proved
+   * the input is an object and matched this key's value, so `buildObject`
+   * emits neither check again. Consumed by the first object reached — directly
+   * or through a transparent wrapper — and never inherited past it.
+   */
+  discSkipKey?: string | undefined;
 }
 
 /**
@@ -400,7 +414,17 @@ function emitFailSentinel(ctx: CodeGenContext): string {
  * and 354 KB on the deep fixtures — far past the bytecode size where V8 stops
  * running TurboFan on it, which would forfeit the speed this path exists for.
  */
-function build(ir: SchemaIR, input: string, g: BuildGen): Built | null {
+function build(ir: SchemaIR, input: string, caller: BuildGen): Built | null {
+  // The dispatch skip belongs to the option's object, reached directly or
+  // through a wrapper that changes nothing about object-ness or the tag;
+  // any other node must not inherit it.
+  const g: BuildGen =
+    caller.discSkipKey !== undefined &&
+    ir.type !== "object" &&
+    ir.type !== "readonly" &&
+    ir.type !== "zodDelegate"
+      ? { ...caller, discSkipKey: undefined }
+      : caller;
   // Resolved before the passthrough shortcut below. A back-edge carries no
   // children, so `rebuildsOutput` reads false for it — and passing it through by
   // reference would leave every nested recursive value unstripped while the
@@ -441,11 +465,71 @@ function build(ir: SchemaIR, input: string, g: BuildGen): Built | null {
   return out;
 }
 
+/**
+ * The order an object's properties are validated in: cheapest first, as the
+ * fast path orders its conjuncts (see estimateRuntimeCost), so rejected input
+ * is decided by a type guard rather than by the most expensive check that
+ * happens to be declared first — `safeParse` on a payload with a wrong boolean
+ * used to cost the email scan before it looked at the boolean. Accepted input
+ * runs every property whatever the order, and the output literal is assembled
+ * in shape order regardless, so a passing parse is unchanged.
+ *
+ * Properties whose parse can be OBSERVED to run are pinned: they keep their
+ * declaration order among themselves and run after every free property, so
+ * two transforms sharing state still fire in zod's order on a successful
+ * parse, and a rejected one fires neither (a failing parse never guaranteed
+ * that its effects ran — this pass bails at the first bad check). What counts
+ * as observable is user code and value construction: a transform or
+ * preprocess, a `.default()` (a function default is invoked on read), a
+ * `.catch()`, a coercion (`Number(x)` reaches a `valueOf`), an overwrite, a
+ * delegate, and a recursion edge, whose target is not inspected. A `.refine()`
+ * is not pinned — it is a predicate, and the fast path already reorders it.
+ */
+function orderedForBuild(
+  properties: readonly [string, SchemaIR][],
+  ctx: CodeGenContext,
+): readonly [string, SchemaIR][] {
+  const pinned = properties.filter(([, propIR]) => orderSensitive(propIR));
+  if (pinned.length === properties.length) return properties;
+  const free = orderByRuntimeCost(
+    properties.filter(([, propIR]) => !orderSensitive(propIR)),
+    ([, propIR]) => propIR,
+    ctx,
+  );
+  return [...free, ...pinned];
+}
+
+/** Does running this subtree do anything a caller could observe besides the verdict? */
+function orderSensitive(ir: SchemaIR): boolean {
+  switch (ir.type) {
+    case "effect":
+    case "default":
+    case "catch":
+    case "fallback":
+    case "zodDelegate":
+    case "recursiveRef":
+    case "recursionTarget":
+      return true;
+    case "string":
+      if (ir.coerce === true || ir.checks.some((c) => c.kind === "overwrite_effect")) return true;
+      break;
+    case "number":
+    case "boolean":
+    case "bigint":
+    case "date":
+      if (ir.coerce === true) return true;
+      break;
+    default:
+      break;
+  }
+  return children(ir).some(orderSensitive);
+}
+
 /** Host `ir`'s build in its own function over a fresh parameter; returns its name. */
-function hostBuild(ir: SchemaIR, g: BuildGen): string | null {
+function hostBuild(ir: SchemaIR, g: BuildGen, discSkipKey?: string): string | null {
   const param = emitTemp(g.ctx, "bp");
   const scope: FastScope = { temps: [], used: 0 };
-  const inner = build(ir, param, { ...g, extractable: false, scope });
+  const inner = build(ir, param, { ...g, extractable: false, scope, discSkipKey });
   if (inner === null) return null;
   const name = emitTemp(g.ctx, "vb");
   g.ctx.preamble.push(
@@ -645,6 +729,11 @@ function buildDispatch(
   // One hosted build per REACHABLE option, keyed by option index: a multi-value
   // literal (`z.literal(["a","c"])`) contributes several cases selecting the
   // same option, and they share the one function rather than emitting it twice.
+  //
+  // Each option is hosted with the discriminator as its skip key: the guard
+  // below and the matched `case` have settled object-ness and the tag, so the
+  // option's own object omits both (see BuildGen.discSkipKey, and the fast
+  // path's FastGen.discSkipKey for the pass-through options).
   const hostedByOption = new Map<number, string>();
   let arms = "";
   for (const { value, option: index } of cases) {
@@ -652,7 +741,9 @@ function buildDispatch(
     if (fn === undefined) {
       const option = options[index];
       if (option === undefined) return null;
-      const hosted = g.rebuilds.has(option) ? hostBuild(option, g) : hostPassthrough(option, g);
+      const hosted = g.rebuilds.has(option)
+        ? hostBuild(option, g, discriminator)
+        : hostPassthrough(option, g, discriminator);
       if (hosted === null) return null;
       fn = hosted;
       hostedByOption.set(index, fn);
@@ -674,10 +765,10 @@ function buildDispatch(
  * Host a non-rebuilding option as `value-or-FAIL`, so a union can probe it with
  * the same protocol as a rebuilding one.
  */
-function hostPassthrough(ir: SchemaIR, g: BuildGen): string | null {
+function hostPassthrough(ir: SchemaIR, g: BuildGen, discSkipKey?: string): string | null {
   const param = emitTemp(g.ctx, "bp");
   const scope: FastScope = { temps: [], used: 0 };
-  const expr = generateFast(ir, createFastGen(param, g.ctx, true, scope));
+  const expr = generateFast(ir, createFastGen(param, g.ctx, true, scope, discSkipKey));
   if (expr === null) return null;
   const name = emitTemp(g.ctx, "vp");
   g.ctx.preamble.push(
@@ -693,7 +784,7 @@ function hostPassthrough(ir: SchemaIR, g: BuildGen): string | null {
  * key is present, so the ordinary value is still returned by reference.
  */
 function passthrough(ir: SchemaIR, input: string, g: BuildGen): Built | null {
-  const scoped = createFastGen(input, g.ctx, true, g.scope);
+  const scoped = createFastGen(input, g.ctx, true, g.scope, g.discSkipKey);
   const expr = generateFast(ir, scoped);
   if (expr === null) return null;
   const guard = expr === "true" ? "" : `if(!(${expr}))return ${g.fail};`;
@@ -743,25 +834,53 @@ function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {
   const refines = ir.checks ?? [];
   if (refines.some((check) => check.kind !== "refine_effect")) return null;
 
-  let code = `if(typeof ${input}!=="object"||${input}===null||Array.isArray(${input}))return ${g.fail};`;
+  // A dispatched union option (see buildDispatch): the switch has proved
+  // object-ness and matched this key's value, so neither is checked again.
+  // Consumed here; the properties' own builds never see it.
+  const skipKey = g.discSkipKey;
+  const childGen: BuildGen = skipKey === undefined ? g : { ...g, discSkipKey: undefined };
+
+  let code =
+    skipKey === undefined
+      ? `if(typeof ${input}!=="object"||${input}===null||Array.isArray(${input}))return ${g.fail};`
+      : "";
 
   if (ir.strict === true) {
     const keyVar = local(g, "bk");
     code += `for(${keyVar} in ${input}){if(!(${keyMembershipTest(g.ctx, Object.keys(ir.properties), keyVar)}))return ${g.fail};}`;
   }
 
-  const slots: { always: boolean; keyStr: string; value: string }[] = [];
-  for (const [key, propIR] of parsedProperties(ir)) {
+  // Properties are VALIDATED cheapest-first and ASSEMBLED in shape order (see
+  // orderedForBuild): every value lands in its own local, so the order the
+  // checks run in is free to differ from the order the keys are written in.
+  const properties = parsedProperties(ir);
+  const built = new Map<string, Built>();
+  for (const [key, propIR] of orderedForBuild(properties, g.ctx)) {
     const keyStr = escapeString(key);
     const slot = local(g, "bv");
+    if (key === skipKey && !g.rebuilds.has(propIR)) {
+      // The matched tag. A pass-through property's output is its input, and
+      // the switch compared exactly this value, so read it for the output
+      // literal and skip its check (the fast path's discSkipKey does the same).
+      // A REBUILDING tag — a transformed literal — is built as usual: only its
+      // check is redundant, not its output.
+      code += `${slot}=${input}[${keyStr}];`;
+      built.set(key, { code: "", value: slot });
+      continue;
+    }
     // A required key has to be present whatever its schema makes of `undefined`.
     if (nonoptional.has(key)) code += `if(!(${keyStr} in ${input}))return ${g.fail};`;
     code += `${slot}=${input}[${keyStr}];`;
-    const propBuilt = build(propIR, slot, g);
+    const propBuilt = build(propIR, slot, childGen);
     if (propBuilt === null) return null;
     code += propBuilt.code;
-    slots.push({ always: outputAlwaysDefined(propIR), keyStr, value: propBuilt.value });
+    built.set(key, propBuilt);
   }
+  const slots = properties.map(([key, propIR]) => ({
+    always: outputAlwaysDefined(propIR),
+    keyStr: escapeString(key),
+    value: (built.get(key) as Built).value,
+  }));
 
   // Same assembly the eager strip walk uses: the longest LEADING run of
   // always-present keys goes into one object literal (V8 stamps it from a
@@ -1059,10 +1178,10 @@ function buildCoercedPrimitive(ir: CoercedPrimitiveIR, input: string, g: BuildGe
  * `slowDefault` emits, reading the value off the retained schema so a
  * reference-typed default keeps zod's identity (one shared object, not a copy).
  *
- * The substituted value is not validated, so it makes the fast path a PARTIAL
- * predicate (`fc(undefined)` is false where the schema accepts) — which is why
- * this records {@link CodeGenContext.buildSubstitutesValue}, on which
- * `generateValidator` withholds `.is()`.
+ * The substituted value is not validated. The by-reference fast form refuses
+ * `undefined` for that reason (it would hand the input back, not the default);
+ * the acceptance form `.is()` runs accepts it, as the schema does — see
+ * fastDefault.
  */
 function buildDefault(
   ir: SchemaIR & { type: "default" },
@@ -1071,10 +1190,6 @@ function buildDefault(
 ): Built | null {
   const inner = build(ir.inner, input, g);
   if (inner === null) return null;
-  // Every `default` node is in the rebuild set, so it is always BUILT and never
-  // passed through — which makes this flag an exact record of whether the
-  // finished pass substitutes a value.
-  g.ctx.buildSubstitutesValue = true;
   const out = local(g, "bq");
   const value = defaultValueExpr(ir);
   // Zod re-applies the default when the inner returns undefined for a defined

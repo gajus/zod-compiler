@@ -146,16 +146,6 @@ export interface CodeGenContext {
   buildFailName?: string;
   /** Hosted build-function name per recursion target refId, so back-edges resolve. */
   buildRecNames?: Map<number, string>;
-  /**
-   * Set by the build path when it emitted a `.default()` substitution. Such a
-   * schema ACCEPTS an input its fast expression rejects — `fastDefault` demands a
-   * present value, since the fast path's contract is `data === input` and a
-   * substituted default is not the input — so the expression is no longer an
-   * exact acceptance predicate and must not be installed as `.is()`. Stripping,
-   * by contrast, reshapes only the payload, which is why a build-path schema
-   * otherwise still hands its predicate over.
-   */
-  buildSubstitutesValue?: boolean;
   /** Memo for estimateFastCost (size-gated fast-check extraction). Lazily created. */
   fastSizeCache?: WeakMap<SchemaIR, number>;
   /** Memo for estimateRuntimeCost (cheapest-first check ordering). Lazily created. */
@@ -326,6 +316,18 @@ export interface FastGen {
    * nodes — nested objects keep their own guard.
    */
   readonly discSkipKey?: string | undefined;
+
+  /**
+   * Generate an ACCEPTANCE predicate rather than a by-reference one. The two
+   * differ at exactly one node: `.default()`. The by-reference form demands a
+   * present value, because its contract is `data === input` and a substituted
+   * default is not the input; the acceptance form accepts `undefined`, because
+   * the schema does. Set by generateValidator for a schema that rebuilds its
+   * output — there the expression can never stand in for the payload and is
+   * only ever read as a verdict, by `.is()` — and inherited by every child and
+   * hosted helper, so a default anywhere in the tree is treated the same way.
+   */
+  readonly acceptance?: boolean | undefined;
 
   /**
    * Recursively generate fast-check expression for a child IR node.
