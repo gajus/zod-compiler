@@ -7,7 +7,9 @@ input. No code changes required.
 
 Requires **Zod ≥ 4.5**. Compiled output reproduces 4.5's semantics exactly, down to code-point string
 lengths, symbol-keyed shapes and tuple issue order, so it does not match earlier 4.x releases. Stay on
-zod-compiler 1.x for Zod 4.0–4.4.
+zod-compiler 1.x for Zod 4.0–4.4. An older Zod is refused with an explicit error (the build plugin
+and `jit()` warn once and leave the schemas as plain Zod) rather than compiled into validators that
+disagree with it.
 
 - [What Gets Compiled](#what-gets-compiled)
 - [Schema Hoisting](#schema-hoisting)

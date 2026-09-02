@@ -1,6 +1,7 @@
 import type { SchemaIR } from "../types.js";
 import { dispatch } from "./registry.js";
 import type { RecursionState, RefEntry } from "./types.js";
+import { assertSupportedZod } from "./zod-version.js";
 
 export type { RefEntry } from "./types.js";
 
@@ -11,6 +12,11 @@ export type { RefEntry } from "./types.js";
  * access paths for partial fallback (Zod delegation at runtime).
  */
 export function extractSchema(zodSchema: unknown, refs?: RefEntry[]): SchemaIR {
+  // Refuse a zod whose semantics the emitted code does not reproduce (see
+  // zod-version.ts). Once, at the root: every entry point reaches extraction
+  // through here, and a schema's subtree comes from the same zod copy as its
+  // root does.
+  assertSupportedZod(zodSchema);
   // Path, cycle-detection set, and recursion bookkeeping are internal to one
   // extraction — recursion re-enters through dispatch()/ctx.visit(), never back
   // through extractSchema — so they're always seeded fresh here.

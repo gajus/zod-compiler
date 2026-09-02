@@ -33,6 +33,10 @@
 import type { CodegenMode } from "../core/codegen/context.js";
 import { generateValidator } from "../core/codegen/index.js";
 import { extractSchema, type RefEntry } from "../core/extract/index.js";
+import {
+  isUnsupportedZodVersionError,
+  warnUnsupportedZodOnce,
+} from "../core/extract/zod-version.js";
 import type { CompiledSchemaInfo } from "../core/pipeline.js";
 import { isZodSchema } from "../is-zod-schema.js";
 import { loadModule } from "../loader.js";
@@ -120,7 +124,11 @@ async function compileOne(
       text: schema.text,
       info: { exportName: schema.name, codegenResult, refEntries },
     };
-  } catch {
+  } catch (error) {
+    // Anything the hoisted expression cannot do at build time is a skip, not a
+    // failure — except the zod version guard, a dependency-range problem the
+    // build has to report (once: every schema trips it the same way).
+    if (isUnsupportedZodVersionError(error)) warnUnsupportedZodOnce(error.message);
     return null;
   }
 }

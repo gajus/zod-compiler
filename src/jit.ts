@@ -47,6 +47,13 @@ import {
   MK_VALIDATOR_DECL,
   ZOD_MSG_DECLARATION,
 } from "./core/iife.js";
+import {
+  isSupportedZodVersion,
+  isUnsupportedZodVersionError,
+  unsupportedZodVersionMessage,
+  warnUnsupportedZodOnce,
+  zodVersionOf,
+} from "./core/extract/zod-version.js";
 import { compileSchemas } from "./core/pipeline.js";
 import type { CompiledSchema } from "./core/types.js";
 import { isZodSchema } from "./is-zod-schema.js";
@@ -121,6 +128,19 @@ export function jit<T extends ZodType>(
 ): T & CompiledSchema<output<T>> {
   const target = schema as unknown as Record<string, unknown>;
   if (seen.has(target)) return schema as T & CompiledSchema<output<T>>;
+
+  // A schema built by a zod this release does not reproduce is left as plain
+  // Zod — correct, just not faster — and said so once (see zod-version.ts).
+  // Not thrown: `jit()` runs at module scope, where a throw takes the importing
+  // app down at boot over what is a dependency-range problem. Checked before
+  // anything is installed, so neither the eager path nor a later
+  // compile-on-read accessor can reach the pipeline for it. A value that is not
+  // a zod schema at all is not a version problem and takes the usual route.
+  const version = zodVersionOf(schema);
+  if (isZodSchema(schema) && !isSupportedZodVersion(version)) {
+    warnUnsupportedZodOnce(unsupportedZodVersionMessage(version));
+    return schema as T & CompiledSchema<output<T>>;
+  }
   seen.add(target);
 
   if (options?.eager === true) {
@@ -380,10 +400,14 @@ function materialize(schema: unknown, options?: JitOptions): void {
   if (!codegenAllowed()) return;
   try {
     buildValidator(schema, options);
-  } catch {
+  } catch (error) {
     // Left as plain Zod. Deliberately silent: `jit()` is an optimization, and a
     // schema using a construct the compiler declines is a supported outcome,
-    // not an error.
+    // not an error. The one exception is the zod version guard — a mismatched
+    // zod is a configuration problem the user has to hear about. `jit()` itself
+    // refuses such a schema before installing anything; this covers a caller
+    // that reached the pipeline another way.
+    if (isUnsupportedZodVersionError(error)) warnUnsupportedZodOnce(error.message);
   }
 }
 

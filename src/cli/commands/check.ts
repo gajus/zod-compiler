@@ -5,6 +5,7 @@ import type { DiagnosticNode, DiagnosticResult } from "../../core/diagnostic.js"
 import { diagnoseSchema } from "../../core/diagnostic.js";
 import type { RefEntry } from "../../core/extract/index.js";
 import { extractSchema } from "../../core/extract/index.js";
+import { isUnsupportedZodVersionError } from "../../core/extract/zod-version.js";
 import type { DiscoveredSchema, SchemaIR } from "../../core/types.js";
 import { discoverSchemas } from "../../discovery.js";
 import { getErrorMessage } from "../errors.js";
@@ -151,6 +152,13 @@ export async function runCheck(options: CheckOptions): Promise<void> {
         const refEntries: RefEntry[] = [];
         ir = extractSchema(s.schema, refEntries);
       } catch (e) {
+        // An unsupported zod fails every schema identically, and nothing after
+        // it can compile: report it once and stop, rather than once per export
+        // followed by a coverage table that says 0% everywhere.
+        if (isUnsupportedZodVersionError(e)) {
+          logger.error(getErrorMessage(e));
+          process.exit(1);
+        }
         err(
           `${c.red}error${c.reset} Failed to extract "${s.exportName}" in ${relPath}: ${getErrorMessage(e)}`,
         );

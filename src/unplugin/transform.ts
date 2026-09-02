@@ -5,6 +5,10 @@ import picomatch from "picomatch";
 import type { CodegenMode } from "../core/codegen/context.js";
 import { SHARED_BLOCK_MARKER } from "../core/codegen/dedupe.js";
 import {
+  isUnsupportedZodVersionError,
+  warnUnsupportedZodOnce,
+} from "../core/extract/zod-version.js";
+import {
   FAIL_CLASS_DECL,
   FAILZ_CLASS_DECL,
   FIN_DECL,
@@ -482,6 +486,12 @@ export async function transformCodeWithMap(
       compact: options.compact,
       onError(exportName, error) {
         failedCount++;
+        // An unsupported zod fails every export of every file the same way:
+        // one explanation per process says more than a line per export.
+        if (isUnsupportedZodVersionError(error)) {
+          warnUnsupportedZodOnce(error.message);
+          return;
+        }
         warn(
           `Failed to compile "${exportName}" in ${id}: ${error.message}. Keeping original${autoDiscover ? "" : " compile()"} call.`,
         );
