@@ -6,6 +6,19 @@ import { invalidType, tooBig, tooSmall } from "../emit-issue.js";
 import { ZC_FSR_DECL } from "../issue-decls.js";
 import { refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
 
+/**
+ * The integer number formats, each with the range zod's `NUMBER_FORMAT_RANGES`
+ * gives it. `null` for safeint, whose own range IS the safe-integer range that
+ * every integer format reports first (see the number_format case below), so it
+ * has no range branch of its own. float32/float64 are absent on purpose: they
+ * are pure range checks and never report `invalid_type`.
+ */
+const INT_FORMAT_RANGES: { readonly [format: string]: readonly [number, number] | null } = {
+  int32: [-2147483648, 2147483647],
+  safeint: null,
+  uint32: [0, 4294967295],
+};
+
 export function slowNumber(ir: NumberIR, g: SlowGen): string {
   let code = "";
   if (ir.coerce) {
@@ -33,8 +46,7 @@ export function slowNumber(ir: NumberIR, g: SlowGen): string {
     // runtime abort bookkeeping. Non-integer formats (float32/float64) never
     // report invalid_type and so never open it.
     const opensIntGuard = (check: (typeof ir.checks)[number]): boolean =>
-      check.kind === "number_format" &&
-      (check.format === "safeint" || check.format === "int32" || check.format === "uint32");
+      check.kind === "number_format" && INT_FORMAT_RANGES[check.format] !== undefined;
     let seenIntFormat = false;
     let intGuardOpen = false;
     // Insertion order mirrors zod's issue order for multi-failure inputs.
@@ -77,38 +89,46 @@ export function slowNumber(ir: NumberIR, g: SlowGen): string {
           break;
         case "number_format": {
           const message = check.message ?? g.typeMsg;
-          if (check.format === "safeint") {
-            // Mirrors $ZodCheckNumberFormat: non-integers → invalid_type;
-            // integers outside the safe range → too_small/too_big with
-            // origin "int" and zod's explanatory note.
+          const intRange = INT_FORMAT_RANGES[check.format];
+          if (intRange !== undefined) {
+            // Mirrors $ZodCheckNumberFormat's integer branch, in ITS order: a
+            // non-integer is an aborting `invalid_type`; an integer outside the
+            // SAFE range is reported against the safe bounds — origin "int",
+            // zod's explanatory note — and the check returns there, whatever the
+            // format's own range says; only a safe integer reaches the format
+            // range, reported with origin "number". So `z.int32()` on 1e21 is a
+            // too_big with `maximum: 2^53-1` and origin "int", not one with
+            // 2147483647 and origin "number" (the format range never runs for it),
+            // and the same input against `z.int32().max(10)` reports BOTH the
+            // safe-range issue and the max — the safe-range issue is continuable,
+            // so later checks still run (see the isInteger guard above). safeint's
+            // own range IS the safe range, so its third branch is dead and omitted.
+            //
+            // Key order is zod's push order minus the fields its finalizer
+            // strips: `{code, maximum, note, origin, inclusive}` for the safe
+            // range, where a format-range issue leads with `origin` like any
+            // check-created size issue.
             const note = `note:"Integers must be within the safe integer range."`;
             const msgProp = message !== undefined ? `,message:${JSON.stringify(message)}` : "";
             code += emit`
               if(!Number.isInteger(${g.input})){
-                ${invalidType(g, "int", { extra: 'format:"safeint"', extraBeforeCode: true, message })}
-              }else if(${g.input}<-9007199254740991){
-                ${g.issues}.push({code:"too_small",minimum:-9007199254740991,${note},origin:"int",inclusive:true,input:${g.input},path:${g.path}${msgProp}});
-              }else if(${g.input}>9007199254740991){
-                ${g.issues}.push({code:"too_big",maximum:9007199254740991,${note},origin:"int",inclusive:true,input:${g.input},path:${g.path}${msgProp}});
+                ${invalidType(g, "int", { extra: `format:"${check.format}"`, extraBeforeCode: true, message })}
+              }else if(!Number.isSafeInteger(${g.input})){
+                if(${g.input}>0){
+                  ${g.issues}.push({code:"too_big",maximum:9007199254740991,${note},origin:"int",inclusive:true,input:${g.input},path:${g.path}${msgProp}});
+                }else{
+                  ${g.issues}.push({code:"too_small",minimum:-9007199254740991,${note},origin:"int",inclusive:true,input:${g.input},path:${g.path}${msgProp}});
+                }
               }`;
-          } else if (check.format === "int32") {
-            code += emit`
-              if(!Number.isInteger(${g.input})){
-                ${invalidType(g, "int", { extra: 'format:"int32"', extraBeforeCode: true, message })}
-              }else if(${g.input}<-2147483648){
-                ${tooSmall(g, -2147483648, "number", true, { message })}
-              }else if(${g.input}>2147483647){
-                ${tooBig(g, 2147483647, "number", true, { message })}
-              }`;
-          } else if (check.format === "uint32") {
-            code += emit`
-              if(!Number.isInteger(${g.input})){
-                ${invalidType(g, "int", { extra: 'format:"uint32"', extraBeforeCode: true, message })}
-              }else if(${g.input}<0){
-                ${tooSmall(g, 0, "number", true, { message })}
-              }else if(${g.input}>4294967295){
-                ${tooBig(g, 4294967295, "number", true, { message })}
-              }`;
+            if (intRange !== null) {
+              const [minimum, maximum] = intRange;
+              code += emit`
+                else if(${g.input}<${minimum}){
+                  ${tooSmall(g, minimum, "number", true, { message })}
+                }else if(${g.input}>${maximum}){
+                  ${tooBig(g, maximum, "number", true, { message })}
+                }`;
+            }
           } else if (check.format === "float32") {
             code += emit`
               if(${g.input}<-3.4028234663852886e+38){
