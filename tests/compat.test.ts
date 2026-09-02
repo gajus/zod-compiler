@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ZodError, ZodRealError, z } from "zod";
+import { core as zodCore, ZodError, ZodRealError, z } from "zod";
 import { generateValidator } from "#src/core/codegen/index.js";
 import type { RefEntry } from "#src/core/extract/index.js";
 import { extractSchema } from "#src/core/extract/index.js";
@@ -21,11 +21,14 @@ function compileForErrorTest(schema: z.ZodType, name = "test") {
     `${FAIL_CLASS_DECL}${FIN_DECL}; return __zcFin;`,
   )(zcMsg, ZodRealError);
   const refSchemas = refEntries.map((e) => e.schema);
+  // `__zcCore` is the zod core namespace production imports beside the error
+  // class (delegates finalize through `core.util.finalizeIssue`).
   const fn =
     refSchemas.length > 0
       ? new Function(
           "__zcMsg",
           "__zcZodError",
+          "__zcCore",
           "__zcFin",
           "__rf",
           `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\n${result.code}\nreturn ${result.functionDef};`,
@@ -33,13 +36,14 @@ function compileForErrorTest(schema: z.ZodType, name = "test") {
       : new Function(
           "__zcMsg",
           "__zcZodError",
+          "__zcCore",
           "__zcFin",
           `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\n${result.code}\nreturn ${result.functionDef};`,
         );
   return (
     refSchemas.length > 0
-      ? fn(zcMsg, ZodRealError, __zcFin, refSchemas)
-      : fn(zcMsg, ZodRealError, __zcFin)
+      ? fn(zcMsg, ZodRealError, zodCore, __zcFin, refSchemas)
+      : fn(zcMsg, ZodRealError, zodCore, __zcFin)
   ) as (input: unknown) => {
     success: boolean;
     data?: unknown;

@@ -68,7 +68,7 @@ import {
   orderByRuntimeCost,
   predictedInlineSize,
 } from "./fast-size.js";
-import { ZC_HOP_DECL, ZC_PLAIN_DECL, ZC_PROTO_SCRUB_DECL } from "./issue-decls.js";
+import { ZC_ASYNC_DECL, ZC_HOP_DECL, ZC_PLAIN_DECL, ZC_PROTO_SCRUB_DECL } from "./issue-decls.js";
 import { defaultValueExpr, needsPostInnerDefault } from "./schemas/default.js";
 import { parsedProperties } from "./schemas/object.js";
 import { innerAppliesDefaultOnUndefined } from "./schemas/optional.js";
@@ -907,9 +907,21 @@ function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {
   // when that produced issues, so a bad property suppresses the refine — which
   // this pass gets for free, having already returned FAIL at that property.
   for (const check of refines) {
-    code += `if(!${emitEffectCallable(g.ctx, check as RefineEffectCheckIR)}(${out}))return ${g.fail};`;
+    code += buildRefine(check as RefineEffectCheckIR, out, g);
   }
   return { code, value: out };
+}
+
+/**
+ * A `.refine()` predicate on the build path: FAIL on a falsy verdict, and
+ * zod's synchronous-parse error on a Promise — which is truthy, so an
+ * unguarded test would accept the input (see ZC_ASYNC_DECL). The verdict is
+ * bound to a local so the Promise test reads it once.
+ */
+function buildRefine(check: RefineEffectCheckIR, value: string, g: BuildGen): string {
+  const asy = emitRuntimeHelper(g.ctx, "__zcAsy", ZC_ASYNC_DECL);
+  const verdict = local(g, "br");
+  return `${verdict}=${emitEffectCallable(g.ctx, check)}(${value});if(${verdict} instanceof Promise)${asy}();if(!${verdict})return ${g.fail};`;
 }
 
 function buildArray(ir: SchemaIR & { type: "array" }, input: string, g: BuildGen): Built | null {
@@ -954,7 +966,7 @@ function buildArray(ir: SchemaIR & { type: "array" }, input: string, g: BuildGen
   // `.refine()` sees the parsed payload, which for a rebuilding element is the
   // freshly assembled array — the same value zod hands its checks.
   for (const check of refines) {
-    code += `if(!${emitEffectCallable(g.ctx, check)}(${out}))return ${g.fail};`;
+    code += buildRefine(check, out, g);
   }
   return { code, value: out };
 }
@@ -1017,12 +1029,15 @@ function buildRecord(ir: SchemaIR & { type: "record" }, input: string, g: BuildG
  * (see extractPipe), so there is no parse context to reproduce.
  */
 function buildEffect(ir: SchemaIR & { type: "effect" }, input: string, g: BuildGen): Built | null {
+  // A callback that returns a Promise is zod's synchronous-parse error, not a
+  // value (see ZC_ASYNC_DECL); tested right after the call, as zod does.
+  const asy = emitRuntimeHelper(g.ctx, "__zcAsy", ZC_ASYNC_DECL);
   if (ir.effectKind === "preprocess") {
     const value = local(g, "bpv");
     const inner = build(ir.inner, value, g);
     if (inner === null) return null;
     return {
-      code: `${value}=${emitEffectCallable(g.ctx, ir)}(${input});${inner.code}`,
+      code: `${value}=${emitEffectCallable(g.ctx, ir)}(${input});if(${value} instanceof Promise)${asy}();${inner.code}`,
       value: inner.value,
     };
   }
@@ -1031,7 +1046,7 @@ function buildEffect(ir: SchemaIR & { type: "effect" }, input: string, g: BuildG
   if (inner === null) return null;
   const out = local(g, "bx");
   return {
-    code: `${inner.code}${out}=${emitEffectCallable(g.ctx, ir)}(${inner.value});`,
+    code: `${inner.code}${out}=${emitEffectCallable(g.ctx, ir)}(${inner.value});if(${out} instanceof Promise)${asy}();`,
     value: out,
   };
 }
@@ -1060,7 +1075,7 @@ function buildString(ir: SchemaIR & { type: "string" }, input: string, g: BuildG
         code += `${value}=${emitEffectFn(g.ctx, check.source)}(${value});`;
         break;
       case "refine_effect":
-        code += `if(!${emitEffectCallable(g.ctx, check)}(${value}))return ${g.fail};`;
+        code += buildRefine(check, value, g);
         break;
       case "super_refine_effect":
         // Rewrites through zod's payload; mutatesBeyondStrip already rejects it.

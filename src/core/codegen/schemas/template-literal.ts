@@ -22,11 +22,18 @@ export function slowTemplateLiteral(ir: TemplateLiteralIR, g: SlowGen): string {
     fastTestSource(ir.pattern) === null
       ? `${regexVar}.source`
       : emitConstant(g.ctx, "tls", escapeString(ir.pattern));
+  // The issue is pushed by the NODE (`$ZodTemplateLiteral._zod.parse`), not by
+  // a `$ZodCheck`, so zod's carries no `continue: true` and `util.aborted`
+  // counts it as aborting: a union option that fails only here goes inside
+  // `invalid_union` rather than being surfaced as the sole non-aborted option,
+  // and a container's `.refine()` does not run after it. Every other
+  // `invalid_format` is check-raised and continuable, so the marker is set here
+  // rather than in the shared factory; the finalizer deletes it, as zod's does.
   return `${emit`
     if(typeof ${g.input}!=="string"){
       ${invalidType(g, "string")}
     }else if(!${regexVar}.test(${g.input})){
-      ${invalidFormat(g, "template_literal", { extra: `pattern:${patternExpr}` })}
+      ${invalidFormat(g, "template_literal", { extra: `pattern:${patternExpr},continue:false` })}
     }`}\n`;
 }
 

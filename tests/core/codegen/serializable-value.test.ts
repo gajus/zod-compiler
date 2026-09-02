@@ -9,7 +9,7 @@
  * than the inner custom refine message).
  */
 import { describe, expect, it } from "vite-plus/test";
-import { ZodRealError, z } from "zod";
+import { core as zodCore, ZodRealError, z } from "zod";
 import { generateValidator } from "#src/core/codegen/index.js";
 import type { RefEntry } from "#src/core/extract/index.js";
 import { extractSchema } from "#src/core/extract/index.js";
@@ -32,6 +32,7 @@ function compileLikeProduction(schema: unknown): {
   const factory = new Function(
     "__zcMsg",
     "__zcZodError",
+    "__zcCore",
     "__zcFin",
     "__rf",
     `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\n${generated.code}\nreturn ${generated.functionDef};`,
@@ -39,6 +40,7 @@ function compileLikeProduction(schema: unknown): {
   const fn = factory(
     zcMsg,
     ZodRealError,
+    zodCore,
     localizedFin,
     refEntries.map((e) => e.schema),
   );

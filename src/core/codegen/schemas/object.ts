@@ -2,7 +2,6 @@ import type { ObjectIR, SchemaIR } from "../../types.js";
 import type { FastGen, SlowGen } from "../context.js";
 import {
   declareFastTemps,
-  emitEffectCallable,
   emitRuntimeHelper,
   escapeString,
   extendPath,
@@ -15,7 +14,7 @@ import { emit } from "../emit.js";
 import { invalidType, unrecognizedKeys } from "../emit-issue.js";
 import { ZC_AB_DECL, ZC_PROTO_SCRUB_DECL } from "../issue-decls.js";
 import { orderByRuntimeCost } from "../fast-size.js";
-import { refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
+import { fastRefineTest, refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
 
 /**
  * The shape entries whose schemas actually RUN. `$ZodObject` skips a declared
@@ -389,7 +388,7 @@ function fastObjectBody(ir: ObjectIR, g: FastGen, skipKey?: string): string[] | 
   if (ir.checks) {
     for (const check of ir.checks) {
       if (check.kind === "refine_effect") {
-        parts.push(`${emitEffectCallable(g.ctx, check)}(${x})`);
+        parts.push(fastRefineTest(check, x, g));
       } else if (check.kind === "super_refine_effect") {
         parts.push(superRefineFastTest(check, x, g));
       }

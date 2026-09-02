@@ -13,17 +13,22 @@ import {
   extendStaticPathIndex,
 } from "../context.js";
 import { emit } from "../emit.js";
-import { ZC_SR_DECL, ZC_SR_OK_DECL, ZC_SR_RUN_DECL } from "../issue-decls.js";
+import { ZC_ASYNC_DECL, ZC_SR_DECL, ZC_SR_OK_DECL, ZC_SR_RUN_DECL } from "../issue-decls.js";
 
 /**
  * Generate code for a TransformEffectIR node.
  * Validates the inner schema, then applies the transform function and writes back the result.
  */
 export function slowEffect(ir: TransformEffectIR | PreprocessEffectIR, g: SlowGen): string {
+  // A callback that returns a Promise is zod's synchronous-parse error, not a
+  // value (see ZC_ASYNC_DECL); zod tests `_out instanceof Promise` right after
+  // the call, so the guard sits at the same point.
+  const asy = emitRuntimeHelper(g.ctx, "__zcAsy", ZC_ASYNC_DECL);
   if (ir.effectKind === "preprocess") {
     const valueVar = g.temp("pv");
     return `${emit`
       var ${valueVar}=${emitEffectCallable(g.ctx, ir)}(${g.input});
+      if(${valueVar} instanceof Promise)${asy}();
       ${g.output}=${valueVar};
       ${g.visit(ir.inner, { input: valueVar, output: g.output, aborted: g.aborted })}
     `}\n`;
@@ -42,6 +47,7 @@ export function slowEffect(ir: TransformEffectIR | PreprocessEffectIR, g: SlowGe
     ${innerCode}
     if(${g.issues}.length===${beforeVar}){
       ${g.output}=${emitEffectCallable(g.ctx, ir)}(${g.output});
+      if(${g.output} instanceof Promise)${asy}();
     }${abortBranch}
   `}\n`;
 }
@@ -80,10 +86,34 @@ export function refineCheck(check: RefineEffectCheckIR, expr: string, g: SlowGen
     check.paramsRefIndex === undefined
       ? ""
       : `,params:${emitConstant(g.ctx, "rpa", `__rf[${check.paramsRefIndex}]`)}`;
+  // The predicate's return value is tested for a Promise before its truthiness
+  // (see ZC_ASYNC_DECL): a Promise is truthy, so without the guard a plain
+  // function returning one would ACCEPT every input where zod throws.
+  const asy = emitRuntimeHelper(g.ctx, "__zcAsy", ZC_ASYNC_DECL);
+  const result = g.temp("rr");
   return emit`
-    if(!${emitEffectCallable(g.ctx, check)}(${expr})){
+    var ${result}=${emitEffectCallable(g.ctx, check)}(${expr});
+    if(${result} instanceof Promise)${asy}();
+    if(!${result}){
       ${g.issues}.push({code:"custom",path:${path}${paramsProp},input:${expr}${messageProp}});
     }`;
+}
+
+/**
+ * Fast-path test for a RefineEffectCheckIR: the predicate's verdict, bound to a
+ * local so a Promise can be told apart from a truthy value. A Promise throws
+ * zod's `$ZodAsyncError` right here, EAGERLY: zod's `runChecks` throws the
+ * moment a check returns a Promise under a synchronous parse — before any later
+ * check, and even inside a union whose next option would have matched — so
+ * deferring the throw to the slow walk (which a fast-eligible schema only runs
+ * when `.error` is read) would turn zod's throw into a failure result. The
+ * throw itself lives in a hosted helper, so the hot expression only pays the
+ * `instanceof` test.
+ */
+export function fastRefineTest(check: RefineEffectCheckIR, expr: string, g: FastGen): string {
+  const asy = emitRuntimeHelper(g.ctx, "__zcAsy", ZC_ASYNC_DECL);
+  const verdict = g.local("fr");
+  return `((${verdict}=${emitEffectCallable(g.ctx, check)}(${expr})) instanceof Promise?${asy}():${verdict})`;
 }
 
 /**

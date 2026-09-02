@@ -7,7 +7,7 @@ import type { FallbackIR } from "#src/core/types.js";
 import { compileIR } from "../helpers.js";
 
 describe("slow-path — fallback", () => {
-  it("generates a pre-captured delegate call when refIndex is present", () => {
+  it("runs the retained schema through _zod.run when refIndex is present", () => {
     const ir: FallbackIR = { type: "fallback", reason: "transform", refIndex: 0 };
     const ctx: CodeGenContext = {
       preamble: [],
@@ -19,11 +19,13 @@ describe("slow-path — fallback", () => {
     };
     const g = createSlowGen("input", "input", "[]", "__issues", ctx);
     const code = slowFallback(ir, g);
-    // The delegate is captured in the preamble (pre-__zcMkv) — parse-time code
-    // must never read __rf[0].safeParse, which an own-property install can shadow.
-    expect(ctx.preamble).toContain("var __rfp_0=__rf[0].safeParse.bind(__rf[0]);");
-    expect(code).toContain("__rfp_0(input)");
-    expect(code).not.toContain("__rf[0].safeParse");
+    // The retained schema's `_zod` is aliased in the preamble and run through
+    // `_zod.run` (never `safeParse`, which an own-property install can shadow):
+    // the raw payload is where zod's per-issue abort flags still exist.
+    expect(ctx.preamble).toContain("var __rfz_0=__rf[0]._zod;");
+    expect(code).toContain("__zcRd(__rfz_0,input,__rf_c0)");
+    expect(code).toContain("__zcRf(__rf_r0.issues,__rf_c0,__issues,[])");
+    expect(code).not.toContain("safeParse");
     expect(code).toContain("__rf_r0");
   });
 
@@ -55,11 +57,10 @@ describe("slow-path — fallback", () => {
     };
     const g = createSlowGen("v", "v", "p", "iss", ctx);
     const code = slowFallback(ir, g);
-    expect(ctx.preamble).toContain("var __rfp_3=__rf[3].safeParse.bind(__rf[3]);");
-    expect(code).toContain("__rfp_3(v)");
+    expect(ctx.preamble).toContain("var __rfz_3=__rf[3]._zod;");
+    expect(code).toContain("__zcRd(__rfz_3,v,__rf_c3)");
+    expect(code).toContain("__zcRf(__rf_r3.issues,__rf_c3,iss,p)");
     expect(code).toContain("__rf_r3");
-    expect(code).toContain("__rf_i3");
-    expect(code).toContain("__rf_j3");
   });
 
   it("delegates to Zod and validates correctly at runtime", () => {

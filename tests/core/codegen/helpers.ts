@@ -1,4 +1,4 @@
-import { ZodRealError } from "zod";
+import { core as zodCore, ZodRealError } from "zod";
 import type { CodeGenContext } from "#src/core/codegen/context.js";
 import { declareFastTemps } from "#src/core/codegen/context.js";
 import { createFastGen, generateFast } from "#src/core/codegen/fast-path.js";
@@ -38,10 +38,15 @@ export function compileIR(
   const result = generateValidator(ir, name, {
     refCount: refSchemas?.length ?? 0,
   });
+  // `__zcCore` is the zod core namespace production imports beside the error
+  // class: a delegate runs the retained schema through `_zod.run` and finalizes
+  // its issues with `core.util.finalizeIssue`, and a callback returning a
+  // Promise throws `core.$ZodAsyncError`.
   const fn =
     refSchemas && refSchemas.length > 0
       ? new Function(
           "__zcZodError",
+          "__zcCore",
           "__zcFin",
           "__zcFinD",
           "__rf",
@@ -49,14 +54,15 @@ export function compileIR(
         )
       : new Function(
           "__zcZodError",
+          "__zcCore",
           "__zcFin",
           "__zcFinD",
           `${STRICT}${result.code}\nreturn ${result.functionDef};`,
         );
   return (
     refSchemas && refSchemas.length > 0
-      ? fn(ZodRealError, __zcFin, __zcFinD, refSchemas)
-      : fn(ZodRealError, __zcFin, __zcFinD)
+      ? fn(ZodRealError, zodCore, __zcFin, __zcFinD, refSchemas)
+      : fn(ZodRealError, zodCore, __zcFin, __zcFinD)
   ) as (input: unknown) => {
     success: boolean;
     data?: unknown;

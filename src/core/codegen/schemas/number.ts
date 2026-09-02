@@ -1,10 +1,10 @@
 import type { CheckIR, NumberIR } from "../../types.js";
 import type { FastGen, SlowGen } from "../context.js";
-import { checkPriority, emitEffectCallable, emitRuntimeHelper } from "../context.js";
+import { checkPriority, emitRuntimeHelper } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType, tooBig, tooSmall } from "../emit-issue.js";
 import { ZC_FSR_DECL } from "../issue-decls.js";
-import { refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
+import { fastRefineTest, refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
 
 /**
  * The integer number formats, each with the range zod's `NUMBER_FORMAT_RANGES`
@@ -241,7 +241,7 @@ export function fastNumber(ir: NumberIR, g: FastGen): string | null {
   // Refine effect checks (appended last — run after cheap checks short-circuit)
   for (const check of ir.checks) {
     if (check.kind === "refine_effect") {
-      parts.push(`${emitEffectCallable(g.ctx, check)}(${x})`);
+      parts.push(fastRefineTest(check, x, g));
     } else if (check.kind === "super_refine_effect") {
       parts.push(superRefineFastTest(check, x, g));
     }

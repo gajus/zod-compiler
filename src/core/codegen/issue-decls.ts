@@ -413,6 +413,72 @@ export const ZC_CUSTOM_OK_DECL =
   'if(r&&typeof r.then==="function"){throw new __zcCore.$ZodAsyncError();}return !!r;}';
 
 /**
+ * Raise zod's synchronous-parse error. A user callback that hands back a
+ * Promise — a `.refine()` predicate, a `.transform()`, a `z.preprocess()` —
+ * makes zod's sync `safeParse` throw `$ZodAsyncError` rather than treat the
+ * Promise as a value (a truthy one, for a predicate, which would ACCEPT the
+ * input). The callback's source cannot tell: only an `async` function is
+ * detectable at extraction time (those are delegated), and a plain function
+ * that returns a Promise looks like any other. So the test is on the returned
+ * value, at every call site that consumes one, with zod's own
+ * `instanceof Promise` — a non-Promise thenable is a plain value to zod too.
+ *
+ * Hosted rather than inlined so the throw stays out of the hot path's inlining
+ * budget: call sites test `x instanceof Promise` themselves and branch here
+ * only in the exotic case. The compiled `parseAsync`/`safeParseAsync` wrappers
+ * catch this and re-run through zod's async pipeline (see MK_VALIDATOR_DECL),
+ * so an async-capable caller still gets zod's answer.
+ *
+ * `.catch()`, `.default()` and `.overwrite()` callbacks are deliberately NOT
+ * guarded: zod substitutes whatever they return, Promise included.
+ */
+export const ZC_ASYNC_DECL = "function __zcAsy(){throw new __zcCore.$ZodAsyncError();}";
+
+/**
+ * Run a retained zod schema for a delegated sub-schema and return its RAW
+ * payload — `_zod.run` on a fresh `{value, issues: []}`, the exact call zod's
+ * own `safeParse` makes — rather than the finalized `SafeParseResult`.
+ *
+ * The raw payload is the only place zod's abort state survives.
+ * `finalizeIssue` deletes `continue` from every issue and `safeParse` builds
+ * its ZodError from the finalized copies, so a delegate that went through
+ * `safeParse` could not tell a `z.custom()` failure (`continue: false` — zod
+ * defaults `z.custom()` to `abort: true`) from a `.refine()` one
+ * (`continue: true`). A plain union prunes its options on that flag
+ * (`util.aborted`): with it lost, an option failing through a delegated
+ * aborting check was surfaced as the sole non-aborted option instead of inside
+ * `invalid_union`. Reading the payload keeps the flag until __zcRf copies it
+ * onto the finalized issue, where the union's pruning loop reads it and the
+ * top-level finalizer then deletes it, as zod's does.
+ *
+ * `_zod.run` is also immune to the aliasing hazard `__rfp_N` guards against:
+ * `__zcMkv` installs the compiled methods as own `parse`/`safeParse` slots and
+ * never touches `_zod`, so a retained entry that IS the compiled schema still
+ * runs zod's implementation here. A Promise result is zod's `$ZodAsyncError`,
+ * as in `_safeParse`.
+ */
+export const ZC_RUN_DELEGATE_DECL =
+  "function __zcRd(z,v,c){var r=z.run({value:v,issues:[]},c);" +
+  "if(r instanceof Promise)throw new __zcCore.$ZodAsyncError();return r;}";
+
+/**
+ * Finalize a delegate's raw issues onto the validator's list. Each goes
+ * through zod's own `util.finalizeIssue` — the check's and schema's error
+ * maps, the per-call ctx, `customError`, the locale, then "Invalid input", with
+ * `inst` and `input` stripped — which is the very function `safeParse` maps
+ * every issue through, so the messages are zod's byte for byte. The node's
+ * path is prefixed onto the issue's relative one as zod's `prefixIssues`
+ * would, and the abort marker is re-applied: an issue whose raw `continue` was
+ * not `true` aborted in zod's sense (`util.aborted`), which the union pruning
+ * loop reads as `continue:false` before the top-level finalizer deletes the
+ * key again (see ZC_RUN_DELEGATE_DECL).
+ */
+export const ZC_DELEGATE_ISSUES_DECL =
+  "function __zcRf(s,c,e,p){var g=__zcCore.config();for(var i=0;i<s.length;i++){" +
+  "var q=s[i],f=__zcCore.util.finalizeIssue(q,c,g);f.path=p.concat(f.path);" +
+  "if(q.continue!==true)f.continue=false;e.push(f);}}";
+
+/**
  * superRefine slow-path merge: run the callback, then move its issues onto the
  * validator's list the way zod's finalizeIssue does — the node's path prefixed
  * onto any path the user supplied, the internal `inst`/`continue` fields
@@ -424,16 +490,20 @@ export const ZC_CUSTOM_OK_DECL =
  * have rewritten it) and read `.aborted`. Aborted is set when any issue aborts
  * in zod's sense (`continue !== true`, which covers `fatal: true` and the string
  * shorthand, whose issue carries no `continue` at all) — or when the callback
- * set it directly, also public payload API. A union option uses it to mark
- * itself aborted, matching how zod prunes option errors; without it an option
- * failing only through superRefine would be surfaced directly instead of inside
- * `invalid_union`.
+ * set it directly, also public payload API. A union option at whose root the
+ * superRefine sits reads the flag to mark itself aborted, matching how zod
+ * prunes option errors. The aborting issue ALSO keeps a `continue:false`
+ * marker of its own, because zod's `util.aborted` reads the flag off the
+ * issues and those travel up through containers where the payload flag does
+ * not: a fatal superRefine on an object's property aborts the union option
+ * holding the object. The top-level finalizer deletes the marker, as zod's
+ * `finalizeIssue` does, so no user-visible issue carries it.
  */
 export const ZC_SR_DECL =
   "function __zcSr(f,v,p,e,m){var q={value:v,issues:[]};__zcSrRun(f,q);" +
   "for(var i=0;i<q.issues.length;i++){var s=q.issues[i],t={};" +
   'for(var k in s){if(k!=="inst"&&k!=="continue")t[k]=s[k];}' +
-  "if(s.continue!==true)q.aborted=true;" +
+  "if(s.continue!==true){q.aborted=true;t.continue=false;}" +
   "t.path=s.path&&s.path.length?p.concat(s.path):p;" +
   "if(t.message===undefined&&m!==undefined)t.message=m;e.push(t);}return q;}";
 
@@ -453,4 +523,7 @@ export const RUNTIME_HELPER_DECLS: Readonly<Record<string, string>> = {
   __zcCu: ZC_CUSTOM_OK_DECL,
   __zcSr: ZC_SR_DECL,
   __zcSrOk: ZC_SR_OK_DECL,
+  __zcAsy: ZC_ASYNC_DECL,
+  __zcRd: ZC_RUN_DELEGATE_DECL,
+  __zcRf: ZC_DELEGATE_ISSUES_DECL,
 };

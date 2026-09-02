@@ -203,7 +203,7 @@ describe("codegen — readonly", () => {
 // ─── Partial Fallback CodeGen ────────────────────────────────────────────────
 
 describe("codegen — partial fallback", () => {
-  it("generates pre-captured __rf delegate for fallback with index", () => {
+  it("runs a fallback with index through the retained schema's _zod.run", () => {
     const ir: ObjectIR = {
       type: "object",
       properties: {
@@ -212,10 +212,11 @@ describe("codegen — partial fallback", () => {
       },
     };
     const result = generateValidator(ir, "test", { refCount: 1 });
-    // The capture lives in the preamble; parse-time code calls the delegate
-    // var (never `__rf[0].safeParse`, which __zcMkv mutation can shadow).
-    expect(result.code).toContain("var __rfp_0=__rf[0].safeParse.bind(__rf[0]);");
-    expect(result.functionDef).toContain("__rfp_0(");
+    // The `_zod` alias lives in the preamble; parse-time code runs the
+    // retained schema through it (never `__rf[0].safeParse`, which __zcMkv
+    // mutation can shadow) so the raw payload's abort flags are observable.
+    expect(result.code).toContain("var __rfz_0=__rf[0]._zod;");
+    expect(result.functionDef).toContain("__zcRd(__rfz_0,");
     expect(result.functionDef).not.toContain("__rf[0].safeParse");
     expect(result.refCount).toBe(1);
   });

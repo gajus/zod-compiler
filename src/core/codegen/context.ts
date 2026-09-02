@@ -439,6 +439,23 @@ export function emitRfDelegate(ctx: CodeGenContext, refIndex: number): string {
 }
 
 /**
+ * A retained schema's `_zod` internals, aliased into the preamble for the
+ * sub-schema delegate that runs it through `_zod.run` (see
+ * ZC_RUN_DELEGATE_DECL). Bound once per IIFE like `__rfp_N`, so the per-parse
+ * call is a property load on a constant rather than an `__rf[N]` element read.
+ * Unlike `safeParse`, `_zod` is never replaced by `__zcMkv`, so here the alias
+ * is a cost saving, not a cycle guard.
+ */
+export function emitRfZod(ctx: CodeGenContext, refIndex: number): string {
+  const name = `__rfz_${refIndex}`;
+  const decl = `var ${name}=__rf[${refIndex}]._zod;`;
+  if (!ctx.preamble.includes(decl)) {
+    ctx.preamble.push(decl);
+  }
+  return name;
+}
+
+/**
  * Identifier `generateIIFE` binds the retained Zod schema to, once per export.
  *
  * Compact delegation reaches the schema through this binding rather than

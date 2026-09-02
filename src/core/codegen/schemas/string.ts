@@ -2,7 +2,6 @@ import type { CheckIR, CheckStringFormat, StringIR } from "../../types.js";
 import type { CodeGenContext, FastGen, SlowGen } from "../context.js";
 import {
   checkPriority,
-  emitEffectCallable,
   emitEffectFn,
   emitRegex,
   emitRegexSourceString,
@@ -18,7 +17,7 @@ import {
   isDefaultEmailPattern,
   UUID_REGEX_SOURCE,
 } from "../well-known-regex.js";
-import { refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
+import { fastRefineTest, refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
 import { stringLengthTests, whenGatedSizeChecks } from "./sizeable.js";
 
 /** `re.lastIndex=0;` reset statement for stateful (g/y-flagged) regexes. */
@@ -344,7 +343,7 @@ export function fastString(ir: StringIR, g: FastGen): string | null {
   // Refine effect checks (appended last — run after cheap checks short-circuit)
   for (const check of ir.checks) {
     if (check.kind === "refine_effect") {
-      parts.push(`${emitEffectCallable(g.ctx, check)}(${x})`);
+      parts.push(fastRefineTest(check, x, g));
     } else if (check.kind === "super_refine_effect") {
       parts.push(superRefineFastTest(check, x, g));
     }

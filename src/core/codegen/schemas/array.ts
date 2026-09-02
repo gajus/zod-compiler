@@ -3,7 +3,6 @@ import type { FastGen, SlowGen } from "../context.js";
 import {
   checkPriority,
   declareFastTemps,
-  emitEffectCallable,
   emitRuntimeHelper,
   extendPath,
   hasMutation,
@@ -11,7 +10,7 @@ import {
 import { emit } from "../emit.js";
 import { invalidType, tooBig, tooSmall } from "../emit-issue.js";
 import { ZC_AB_DECL } from "../issue-decls.js";
-import { refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
+import { fastRefineTest, refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
 import { whenGatedSizeChecks } from "./sizeable.js";
 
 export function slowArray(ir: SchemaIR & { type: "array" }, g: SlowGen): string {
@@ -130,7 +129,7 @@ export function fastArray(ir: ArrayIR, g: FastGen): string | null {
   // Refine effect checks (appended last — run after cheap checks short-circuit)
   for (const check of ir.checks) {
     if (check.kind === "refine_effect") {
-      parts.push(`${emitEffectCallable(g.ctx, check)}(${x})`);
+      parts.push(fastRefineTest(check, x, g));
     } else if (check.kind === "super_refine_effect") {
       parts.push(superRefineFastTest(check, x, g));
     }
