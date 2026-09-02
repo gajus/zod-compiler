@@ -36,26 +36,50 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
       ${invalidType(g, "object")}
     }else{`;
 
-  // Strip mode (zod's default z.object() output) rebuilds a FRESH object from
-  // the declared keys, so it always writes back. Otherwise clone only when a
-  // property mutates the value.
+  // zod parses every object into a FRESH `{}`: the shape keys land first, in
+  // shape order (handlePropertyResult), and a loose or catchall object then
+  // appends the unknown keys in the input's for-in order (handleCatchall).
+  //
+  // Two modes reproduce that. REBUILD assembles exactly that object: always
+  // for strip mode (zod's default z.object() output is only the declared keys),
+  // and for a loose, strict or catchall object whenever a property or the
+  // catchall rewrites its value — a rewritten value has to land somewhere, and
+  // a spread clone of the input (what this once did) put it at the wrong
+  // position: the input's key order, with a substituted key appended last.
+  // PASS-THROUGH hands the input back by reference when nothing rewrites
+  // anything; identity, key order and inherited keys then ride along with it,
+  // which is the documented container-identity divergence (see
+  // known-divergences.test.ts).
   const strip = ir.stripUnknownKeys === true;
-  const needsClone =
+  const rebuild =
     strip ||
     (ir.catchall !== undefined && hasMutation(ir.catchall)) ||
     Object.values(ir.properties).some(hasMutation);
   const objVar = g.temp("o");
-  if (!strip) {
-    // Spread, not Object.assign: V8's CloneObjectIC makes `{...x}` ~25% faster
-    // on the whole safeParse call for mutation-bearing schemas.
-    code += needsClone ? `var ${objVar}={...${g.input}};` : `var ${objVar}=${g.input};`;
-    // A loose or catchall output is the INPUT, or a spread of it — and spread
-    // copies an own `__proto__` as a plain data property — where zod's fresh
-    // `{}` never receives the key at all. Scrub it (see ZC_PROTO_SCRUB_DECL); a
-    // strip object rebuilds and needs nothing here.
+  if (!rebuild) {
+    code += `var ${objVar}=${g.input};`;
+    // The pass-through output is the input, and an own `__proto__` must not
+    // ride along on it where zod's fresh `{}` never receives the key. Scrub it
+    // (see ZC_PROTO_SCRUB_DECL); a rebuilt object never copies the key in the
+    // first place.
     const scrub = emitRuntimeHelper(g.ctx, "__zcPs", ZC_PROTO_SCRUB_DECL);
     code += `${objVar}=${scrub}(${objVar});`;
   }
+  /**
+   * Pass-through only: land a nested node's REPLACEMENT value on the output.
+   * A pass-through property never rewrites its value (that is what
+   * pass-through means), but a nested object or record can still hand back a
+   * proto-scrubbed COPY of its input, and that copy has to reach the output
+   * object — not the caller's object. Writing it straight into `objVar` did
+   * exactly that when `objVar` was the input: the caller's own object was
+   * edited in place (its nested value swapped for the copy), and a frozen
+   * input threw "Cannot assign to read only property" out of `safeParse`. So
+   * the output becomes a copy of its own the first time a replacement lands,
+   * and only then. Spread is safe here: `objVar` is still the input only when
+   * the scrub above found no own `__proto__` on it.
+   */
+  const handoff = (outVar: string, inVar: string, keyExpr: string): string =>
+    `if(${outVar}!==${inVar}){if(${objVar}===${g.input}){${objVar}={...${g.input}};}${objVar}[${keyExpr}]=${outVar};}`;
 
   // Object-level refines are gated on zod's ABORT rule, not on "did anything
   // fail": zod parses the properties (plus the strict/catchall passes) into the
@@ -73,36 +97,47 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
   const skipAbsent = new Set(ir.skipAbsentKeys ?? []);
   const suppressAbsent = new Set(ir.suppressAbsentKeys ?? []);
   const nonoptional = new Set(ir.nonoptionalKeys ?? []);
-  /** Strip only: per-property output slot + whether it is always in the result. */
+  /** Rebuild only: per-property output slot + whether it is always in the result. */
   const slots: { always: boolean; keyStr: string; value: string }[] = [];
 
   for (const [key, propIR] of parsedProperties(ir)) {
     const keyStr = escapeString(key);
     const propPath = extendStaticPath(g.path, key);
-    // Strip validates the value read from the INPUT, held in a local, and
-    // assembles the result afterwards. Reading through the half-built copy (the
-    // previous shape) both cost a megamorphic access per key — the copy's map
-    // changes with every key added — and diverged from zod, which parses
-    // `input[key]` and so accepts a value found on the prototype.
-    const propExpr = strip ? g.temp("sv") : `${objVar}[${keyStr}]`;
-    if (strip) {
-      code += `var ${propExpr}=${g.input}[${keyStr}];`;
+    // Every mode validates the value read from the ORIGINAL input, held in a
+    // local. zod parses `input[key]` — a prototype-inclusive read — so a value
+    // found on the prototype is accepted and, on a rebuild, copied out as an
+    // own key. Reading through a spread clone, as the loose/strict/catchall
+    // branch once did, turned such a value into `undefined` (spread copies own
+    // keys only): the fast and build paths, which read `input[key]`, rejected
+    // the input, this walk then found nothing wrong with it, and a strict
+    // object came back as a failure with an EMPTY issue list. The local also
+    // spares every check the megamorphic re-load of `o[key]` — the clone's map
+    // changed with every key added.
+    const propExpr = g.temp("sv");
+    code += `var ${propExpr}=${g.input}[${keyStr}];`;
+    // A rebuild assembles the output from the local afterwards (in shape order,
+    // below). A pass-through property is handed a slot of its own to write a
+    // replacement into, which `handoff` then lands on the output.
+    let outExpr = propExpr;
+    if (rebuild) {
       slots.push({ always: outputAlwaysDefined(propIR), keyStr, value: propExpr });
+    } else {
+      outExpr = g.temp("ov");
+      code += `var ${outExpr}=${propExpr};`;
     }
-    const propCode = g.visit(propIR, { input: propExpr, output: propExpr, path: propPath });
+    const propCode = g.visit(propIR, { input: propExpr, output: outExpr, path: propPath });
     // The three absent-key rules of zod's handlePropertyResult (see ObjectIR).
     // Presence is tested on the ORIGINAL input, as zod's `key in input` is —
     // a clone would hide an inherited key.
     //
     // The two rules that test presence AFTER running the property snapshot it
-    // FIRST. Running the property can create the very key the test asks about:
-    // where nothing mutates, `objVar` IS `g.input`, so the write-back of a
-    // property that accepted `undefined` (`o[key]=result`) adds an own `key`
-    // and the guard then reads it as present. `z.looseObject({a: z.custom()})`
-    // on `{}` lost its `nonoptional` issue entirely that way — the fast path
-    // still rejected on `"a" in x`, so `safeParse` failed with an EMPTY issue
-    // array — and left the caller's object carrying an `a` zod never writes.
-    const dropValue = strip ? `${propExpr}=undefined;` : `delete ${objVar}[${keyStr}];`;
+    // FIRST, exactly as zod reads `isPresent` before it looks at the result. A
+    // property writes nowhere but its own local, so nothing it makes of
+    // `undefined` can create the very key it is asked about (writing straight
+    // into the output object once did that: `z.looseObject({a: z.custom()})` on
+    // `{}` lost its `nonoptional` issue and left the caller's object carrying
+    // an `a` zod never writes); dropping its value is resetting that local.
+    const dropValue = rebuild ? `${propExpr}=undefined;` : `${outExpr}=${propExpr};`;
     if (skipAbsent.has(key)) {
       code += emit`if(${keyStr} in ${g.input}){${propCode}}`;
     } else if (suppressAbsent.has(key)) {
@@ -137,9 +172,10 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
     } else {
       code += propCode;
     }
+    if (!rebuild) code += handoff(outExpr, propExpr, keyStr);
   }
 
-  if (strip) {
+  if (rebuild) {
     // Assemble the result in shape order (zod's key order), taking as long a
     // LEADING run of always-present keys as possible into one object literal:
     // V8 stamps a literal out of a cached boilerplate map in a single
@@ -165,6 +201,20 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
         : `if(${slot.value}!==undefined||(${slot.keyStr} in ${g.input})){${objVar}[${slot.keyStr}]=${slot.value};}`;
     }
     code += `var ${objVar}={${literal.join(",")}};${appends}`;
+
+    // A rebuilt loose object then takes every unknown key, in the input's
+    // for-in order — zod's handleCatchall running its `unknown` catchall, which
+    // hands each value back as it is and assigns it as an own key, inherited
+    // ones included. (A catchall with a schema does the same in its own pass
+    // below; a strict object reports the keys instead.)
+    if (!strip && !ir.strict && ir.catchall === undefined) {
+      const kVar = g.temp("lk");
+      const test = keyMembershipTest(g.ctx, Object.keys(ir.properties), kVar);
+      code += emit`
+        for(var ${kVar} in ${g.input}){
+          if(!(${test})&&${kVar}!=="__proto__"){${objVar}[${kVar}]=${g.input}[${kVar}];}
+        }`;
+    }
   }
 
   // Strict unknown-key pass — zod's handleCatchall, byte-exact: for-in over
@@ -191,44 +241,47 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
   // pass (inherited enumerable keys count, no hasOwnProperty guard), each
   // issue reported at the key. Runs after the properties, as zod does. An
   // undeclared `__proto__` is skipped like zod skips it: never validated, and
-  // never assigned, since `o["__proto__"]=v` on the clone would replace its
-  // prototype instead of adding a key. (The strict pass above still REPORTS
-  // it — there it is an unknown key like any other.)
+  // never assigned, since `o["__proto__"]=v` on a plain object would replace
+  // its prototype instead of adding a key. (The strict pass above still
+  // REPORTS it — there it is an unknown key like any other.)
   //
-  // The key's slot is BOTH the input and the output, exactly as a shape
-  // property's is: a value-rewriting catchall (coerce, .trim(), a default)
-  // writes through the same expression it later re-reads, so splitting them
-  // makes the rewrite invisible to its own checks.
-  //
-  // When the catchall mutates, objVar is a clone, and each unknown key is
-  // copied into it before validation — which also reproduces zod, whose fresh
-  // output object gains an OWN key for every for-in key it saw, inherited ones
-  // included. A non-mutating catchall writes nothing, so objVar is the input
-  // and the object stays pass-through by reference.
+  // On a rebuild each unknown key is copied onto the fresh output before it is
+  // validated — which reproduces zod, whose fresh output object gains an OWN
+  // key for every for-in key it saw, inherited ones included, whether or not
+  // the catchall accepted its value. The key's slot is then BOTH the input and
+  // the output, exactly as a shape property's local is: a value-rewriting
+  // catchall (coerce, .trim(), a default) writes through the same expression
+  // it later re-reads, so splitting them makes the rewrite invisible to its own
+  // checks. A pass-through catchall writes nothing, so the object stays by
+  // reference; it gets the same replacement slot a pass-through property does,
+  // for the same reason.
   if (ir.catchall) {
     const keys = Object.keys(ir.properties);
     const kVar = g.temp("ck");
     const test = keyMembershipTest(g.ctx, keys, kVar);
-    const slot = `${objVar}[${kVar}]`;
-    const seed = needsClone ? `${slot}=${g.input}[${kVar}];` : "";
+    const catchallPath = extendPath(g.path, kVar);
+    let body: string;
+    if (rebuild) {
+      const slot = `${objVar}[${kVar}]`;
+      body = `${slot}=${g.input}[${kVar}];${g.visit(ir.catchall, { input: slot, output: slot, path: catchallPath })}`;
+    } else {
+      const inVar = g.temp("cv");
+      const outVar = g.temp("co");
+      body =
+        `var ${inVar}=${g.input}[${kVar}];var ${outVar}=${inVar};` +
+        g.visit(ir.catchall, { input: inVar, output: outVar, path: catchallPath }) +
+        handoff(outVar, inVar, kVar);
+    }
     code += emit`
       for(var ${kVar} in ${g.input}){
-        if(!(${test})&&${kVar}!=="__proto__"){
-          ${seed}
-          ${g.visit(ir.catchall, {
-            input: slot,
-            output: slot,
-            path: extendPath(g.path, kVar),
-          })}
-        }
+        if(!(${test})&&${kVar}!=="__proto__"){${body}}
       }`;
   }
 
-  // `!strip` also writes back: the scrub above may have re-pointed `objVar` at
-  // a copy even where nothing else mutates.
-  if (needsClone || !strip) {
-    code += `${g.output}=${objVar};`;
-  }
+  // Always written back: a rebuild is a fresh object, and a pass-through may
+  // have become a copy (the scrub above, or a handoff) even where nothing
+  // rewrote a value.
+  code += `${g.output}=${objVar};`;
 
   // Object-level refine effects: z.object({...}).refine(fn), suppressed when the
   // parse phase aborted (see refineMark). One gate covers every effect: each of

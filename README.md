@@ -579,11 +579,11 @@ not the whole object. Run `zod-compiler check` to see what compiled.
 Compiled validators match Zod on verdicts, output data and error messages, including issue ordering.
 Three things differ by design:
 
-| Behavior                  | Zod                                             | zod-compiler                                            |
-| ------------------------- | ----------------------------------------------- | ------------------------------------------------------- |
-| Record key iteration      | Own enumerable keys, symbols included           | Own enumerable **string** keys only                     |
-| Container output identity | A fresh array / set / map / object              | The input container, by reference (array holes survive) |
-| Per-call parse params     | `safeParse(x, { error, reportInput })` honoured | Ignored; global `z.config()` maps still apply           |
+| Behavior                  | Zod                                             | zod-compiler                                                                                                                        |
+| ------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Record key iteration      | Own enumerable keys, symbols included           | Own enumerable **string** keys only                                                                                                 |
+| Container output identity | A fresh array / set / map / object              | The input container, by reference (array holes and the input's key order survive); a rebuilt object is fresh and in zod's key order |
+| Per-call parse params     | `safeParse(x, { error, reportInput })` honoured | Ignored; global `z.config()` maps still apply                                                                                       |
 
 Schema-level `error` and `z.config()` maps are unaffected; for a per-call map use
 `z.safeParse(Schema, x, params)`.
