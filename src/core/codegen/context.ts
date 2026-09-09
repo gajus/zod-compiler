@@ -125,6 +125,8 @@ export interface CodeGenContext {
    * fast path.
    */
   recFastName?: string;
+  /** The root fast pass aborted, so its recursive helper names have no declarations. */
+  fastRecursionDisabled?: boolean;
   /**
    * Hosted-validator name table for recursion targets, keyed by refId. Entry 0
    * is the root (the schema's own `safeParse_<name>` / `recFastName`); entries

@@ -42,8 +42,9 @@ function slowRecursionCall(refId: number | undefined, g: SlowGen): string {
  * the root's lazily (mirrors the historical single-target behavior). Returns a
  * call expression on the target's hosted fast-check.
  */
-function fastRecursionCall(refId: number | undefined, g: FastGen): string {
+function fastRecursionCall(refId: number | undefined, g: FastGen): string | null {
   const ctx = g.ctx;
+  if (ctx.fastRecursionDisabled) return null;
   const t = ctx.recTargets?.get(refId ?? 0);
   if (!t || t.isRoot) {
     // Root recursion (refId 0, or a standalone generator call with no table):

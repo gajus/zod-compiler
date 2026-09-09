@@ -169,6 +169,10 @@ export function generateValidator(
     }
   }
   if (fastExpr === null) {
+    // The build pass also invokes generateFast for passthrough subtrees. Its
+    // recursive calls must decline once this rollback removes their hosts;
+    // the pre-allocated names in recTargets alone do not prove they exist.
+    ctx.fastRecursionDisabled = true;
     ctx.preamble.length = fastPreambleLen;
     ctx.regexCache = fastRegexCache;
     if (fastEffectCache === undefined) delete ctx.effectFnCache;
