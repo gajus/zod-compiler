@@ -1,5 +1,6 @@
 /**
- * A value a member hands back in place of its input reaches the output.
+ * A value a member hands back in place of its input reaches the output — and a
+ * value zod discards does not.
  *
  * A schema that rewrites nothing can still hand back a REPLACEMENT: a loose
  * object or a record drops an own `__proto__` key onto a copy, and a recursive
@@ -7,7 +8,9 @@
  * replacement. A Set, a Map and a discriminated union handed back their input
  * whenever no member schema mutated, so the replacement was dropped: an own
  * `__proto__` rode along into the output, where `Object.assign` turns it into a
- * prototype swap, and a recursive member kept keys zod strips.
+ * prototype swap, and a recursive member kept keys zod strips. A plain union had
+ * the opposite problem: a FAILED option's replacement stayed in the output when
+ * the option that succeeded wrote nothing of its own.
  */
 import { describe, expect, it } from "vite-plus/test";
 import { z } from "zod";
@@ -210,5 +213,48 @@ describe("discriminated union", () => {
     const data = dataOf<{ u: object }>(compiled(input));
     expect(data).toBe(input);
     expect(data.u).toBe(input.u);
+  });
+});
+
+describe("union", () => {
+  // zod's result is the output of the option that succeeded. A loose object
+  // writes an output even when it fails, and a FAILED option's scrubbed copy
+  // used to stand in for the value of a later option that accepts the input
+  // as it is.
+  const failsFirstOption = () =>
+    JSON.parse('{"id":1,"__proto__":{"polluted":true}}') as Record<string, unknown>;
+
+  for (const [name, label, accepting] of [
+    ["unionAny", "z.any()", z.any()],
+    ["unionUnknown", "z.unknown()", z.unknown()],
+  ] as const) {
+    it(`a failed option's copy never replaces what ${label} accepted`, () => {
+      const schema = z.looseObject({ u: z.union([member(), accepting]) });
+      const compiled = compileLikeProduction(schema, name);
+      const input = { u: failsFirstOption() };
+      const data = dataOf<{ u: object }>(compiled(input));
+      const zodData = dataOf<{ u: object }>(schema.safeParse({ u: failsFirstOption() }));
+      expect(hasOwnProto(zodData.u)).toBe(true);
+      expect(data.u).toBe(input.u);
+      expect(hasOwnProto(data.u)).toBe(true);
+    });
+  }
+
+  it("the option that succeeds still hands back its replacement", () => {
+    const schema = z.looseObject({ u: z.union([z.looseObject({ id: z.number() }), member()]) });
+    const compiled = compileLikeProduction(schema, "unionReplacement");
+    const input = { u: withProto("a") };
+    const data = dataOf<{ u: object }>(compiled(input));
+    expect(hasOwnProto(data.u)).toBe(false);
+    expect(data).toStrictEqual(dataOf(schema.safeParse({ u: withProto("a") })));
+    expect(hasOwnProto(input.u)).toBe(true);
+  });
+
+  it("keeps zod's verdicts, outputs and issues", () => {
+    expectParity(
+      z.looseObject({ u: z.union([member(), z.string(), z.any()]) }),
+      [{ u: failsFirstOption() }, { u: withProto("a") }, { u: "s" }, { u: 1 }],
+      "unionParity",
+    );
   });
 });

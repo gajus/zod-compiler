@@ -53,9 +53,9 @@ export function slowUnion(ir: SchemaIR & { type: "union" }, g: SlowGen): string 
     // This option's abort flag, forwarded into the option so a pipe `in` failure
     // can raise it (zod's handlePipeResult). Stays false for every other shape.
     const optAborted = g.temp("uoa");
+    const tmpOutput = g.temp("uo");
 
     if (needsOutputIsolation) {
-      const tmpOutput = g.temp("uo");
       code += emit`
         if(!${resultVar}){
           var ${tmpIssues}=[];
@@ -71,13 +71,31 @@ export function slowUnion(ir: SchemaIR & { type: "union" }, g: SlowGen): string 
           }
         }`;
     } else {
+      // An option that rewrites nothing still writes its output — a loose object
+      // hands back its input, or a copy an own `__proto__` was scrubbed from —
+      // and zod's result is the output of the option that SUCCEEDED. Written
+      // straight to the union's output, a failed option's copy stayed there
+      // whenever the option that did succeed wrote nothing (`z.any()`), so an
+      // option that names its output gets a local of its own, taken only on
+      // success. Its input stays the union's: an option that rewrites nothing
+      // does not need its input and output to be one expression (see
+      // visitMember).
+      const optionCode = g.visit(option, {
+        issues: tmpIssues,
+        output: tmpOutput,
+        path: "[]",
+        aborted: optAborted,
+      });
+      const writes = optionCode.includes(tmpOutput);
       code += emit`
         if(!${resultVar}){
           var ${tmpIssues}=[];
           var ${optAborted}=false;
-          ${g.visit(option, { issues: tmpIssues, path: "[]", aborted: optAborted })}
+          ${writes ? `var ${tmpOutput}=${g.input};` : ""}
+          ${optionCode}
           if(${tmpIssues}.length===0){
             ${resultVar}=true;
+            ${writes ? `${g.output}=${tmpOutput};` : ""}
           }else{
             ${errorsVar}.push(${tmpIssues});
             ${abortedVar}.push(${optAborted});
