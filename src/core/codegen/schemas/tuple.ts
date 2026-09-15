@@ -66,12 +66,13 @@ export function slowTuple(ir: SchemaIR & { type: "tuple" }, g: SlowGen): string 
 
   // Every read and write goes through ONE binding, seeded from the input and
   // re-pointed by each copy, with the result written to `g.output` at the end.
-  // Reading `g.input` and writing `g.output` directly only worked while the two
-  // were the same identifier — true at every `createSlowGen` root, but NOT under
-  // `z.preprocess()`, which visits with `{ input: valueVar, output: g.output }`
-  // (see slowEffect). There a copy landed in `g.output` while the item writes
-  // went on hitting the original, so the output kept the pristine short array
-  // and the caller's array collected the padding instead.
+  // Reading `g.input` and writing `g.output` directly only works while the two
+  // are the same identifier — true at every `createSlowGen` root, but not where
+  // a parent hands over a separate local for each (an object's pass-through
+  // property, a container member that rewrites nothing: see visitMember). There
+  // a copy lands in `g.output` while the writes go on hitting the original, so
+  // the output keeps the pristine array and the caller's array collects the
+  // changes instead.
   const x = g.temp("ta");
 
   // With a rest element the fixed items' issues are BUFFERED and flushed after

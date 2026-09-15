@@ -22,8 +22,8 @@ export function slowArray(ir: SchemaIR & { type: "array" }, g: SlowGen): string 
     }else{`;
 
   // Every element is read and written through ONE binding, handed back as the
-  // output after the loop — slowTuple's discipline, for slowTuple's reason:
-  // `z.preprocess()` visits with `g.input` and `g.output` as two different
+  // output after the loop — slowTuple's discipline, for slowTuple's reason: a
+  // parent can hand this node `g.input` and `g.output` as two different
   // bindings, and copying into `g.output` while the elements went on being
   // written through `g.input` returned the ORIGINAL elements and rewrote the
   // caller's array. A mutating element schema rewrites values as a matter of

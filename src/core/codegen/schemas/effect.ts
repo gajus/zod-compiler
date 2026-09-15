@@ -26,11 +26,18 @@ export function slowEffect(ir: TransformEffectIR | PreprocessEffectIR, g: SlowGe
   const asy = emitRuntimeHelper(g.ctx, "__zcAsy", ZC_ASYNC_DECL);
   if (ir.effectKind === "preprocess") {
     const valueVar = g.temp("pv");
+    // The callback's result is written to the output first, and the inner
+    // schema then reads and writes it through that ONE expression, as a root
+    // does. A rewriting inner reads back what it wrote — `.trim().min(1)`
+    // measures the trimmed string, a coercion checks the converted value — so
+    // handing it the result as its input and the output as its output made those
+    // checks see the value from before the rewrite: nested in a walk that runs
+    // eagerly, `z.preprocess(fn, z.string().trim().min(1))` accepted `"  "`.
     return `${emit`
       var ${valueVar}=${emitEffectCallable(g.ctx, ir)}(${g.input});
       if(${valueVar} instanceof Promise)${asy}();
       ${g.output}=${valueVar};
-      ${g.visit(ir.inner, { input: valueVar, output: g.output, aborted: g.aborted })}
+      ${g.visit(ir.inner, { input: g.output, output: g.output, aborted: g.aborted })}
     `}\n`;
   }
 

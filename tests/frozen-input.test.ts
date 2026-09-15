@@ -14,9 +14,8 @@
  *   - an ordinary input had a replacement swapped into it: a
  *     `__proto__`-scrubbed copy, or a recursive member rebuilt by its own
  *     validator;
- *   - under `z.preprocess()`, which hands its inner schema the callback's result
- *     as the input and its own slot as the output, a rewriting array wrote the
- *     rewritten elements into the caller's array and returned the original ones.
+ *   - under `z.preprocess()`, a rewriting array wrote the rewritten elements
+ *     into the caller's array and returned the original ones.
  *
  * The harness compiles strict, like the modules generated code ships inside.
  * `jit()` evaluates through sloppy `new Function`, which drops the failed write
@@ -247,11 +246,10 @@ describe("a member's replacement lands on a copy, never on the caller's containe
   });
 });
 
-describe("a container handed its input and its output as two bindings", () => {
-  // An identity preprocess hands the inner schema the caller's own container
-  // as its INPUT, while the output is the preprocess node's slot. A rewriting
-  // container copies before its first write, and has to write the copy — not
-  // the input it was handed.
+describe("a preprocessed rewriting container", () => {
+  // An identity preprocess hands the inner schema the caller's own container.
+  // A rewriting container copies it before its first write, and the copy is
+  // what comes back: zod's output, with the caller's container left as it was.
   const cases: [name: string, schema: z.ZodType, make: () => unknown][] = [
     [
       "preprocessArray",

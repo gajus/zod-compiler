@@ -121,6 +121,33 @@ describe("preprocess parity", () => {
     ]);
   });
 
+  it("checks a rewriting inner schema against the value it rewrote", () => {
+    // The inner reads back what it wrote — `.min(1)` after `.trim()`, `.min(5)`
+    // after a coercion — so it has to read and write the preprocessed value
+    // through one expression. Handed two, the checks saw the value from before
+    // the rewrite: beside a field that keeps the walk eager, `"  "` passed.
+    const schema = z.object({
+      name: z.preprocess((value) => value, z.string().trim().min(1)),
+      size: z.preprocess((value) => value, z.coerce.number().min(5)),
+      recovered: z.number().catch(0),
+    });
+    expectParity(schema, [
+      { name: "  ", size: "7", recovered: 1 },
+      { name: " a ", size: "3", recovered: 1 },
+      { name: " a ", size: "7", recovered: "bad" },
+    ]);
+    // At the root the build pass settles valid input, and an invalid one reaches
+    // the walk behind `.error` — which reported no issue at all.
+    expectParity(
+      z.preprocess((value) => value, z.string().trim().min(1)),
+      ["  ", " a ", 1],
+    );
+    expectParity(
+      z.preprocess((value) => value, z.coerce.number().min(5)),
+      ["3", "7", "x"],
+    );
+  });
+
   it("retains Zod for context-aware callbacks", () => {
     const schema = z.preprocess((value, ctx) => {
       if (value === "blocked") ctx.addIssue({ code: "custom", message: "blocked" });

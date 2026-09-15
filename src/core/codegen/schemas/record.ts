@@ -37,7 +37,7 @@ export function slowRecord(ir: SchemaIR & { type: "record" }, g: SlowGen): strin
     }else{`;
 
   // One binding for every read and write, handed back as the output after the
-  // walk: `z.preprocess()` visits with `g.input` and `g.output` as two different
+  // walk: a parent can hand this node `g.input` and `g.output` as two different
   // bindings (see slowTuple).
   //
   // PROTO_SKIP keeps `__proto__` out of the WALK; the scrub keeps it out of the
