@@ -1,6 +1,12 @@
 import type { RecordIR, SchemaIR } from "../../types.js";
 import type { FastGen, SlowGen } from "../context.js";
-import { declareFastTemps, emitRuntimeHelper, extendPath, hasMutation } from "../context.js";
+import {
+  declareFastTemps,
+  emitRuntimeHelper,
+  extendPath,
+  hasMutation,
+  visitMember,
+} from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType, unrecognizedKeys } from "../emit-issue.js";
 import { ZC_FZ_DECL, ZC_HOP_DECL, ZC_PLAIN_DECL, ZC_PROTO_SCRUB_DECL } from "../issue-decls.js";
@@ -30,26 +36,33 @@ export function slowRecord(ir: SchemaIR & { type: "record" }, g: SlowGen): strin
       ${invalidType(g, "record")}
     }else{`;
 
-  if (hasMutation(ir.valueType)) {
-    code += `${g.output}={...${g.input}};`;
-  }
-  // PROTO_SKIP keeps `__proto__` out of the WALK; this keeps it out of the
+  // One binding for every read and write, handed back as the output after the
+  // walk: `z.preprocess()` visits with `g.input` and `g.output` as two different
+  // bindings (see slowTuple).
+  //
+  // PROTO_SKIP keeps `__proto__` out of the WALK; the scrub keeps it out of the
   // OUTPUT, which zod also does — it copies into a fresh `{}` and skips the key
   // (see ZC_PROTO_SCRUB_DECL). Runs before the walk so the loop iterates the
-  // same container the caller gets back.
-  code += `${g.output}=${emitRuntimeHelper(g.ctx, "__zcPs", ZC_PROTO_SCRUB_DECL)}(${g.input});`;
+  // same container the caller gets back. A mutating value schema rewrites values
+  // as a matter of course, so it takes a copy up front unless the scrub already
+  // made one; anything else copies only once a value hands back a replacement
+  // (see visitMember).
+  const rec = g.temp("rc");
+  code += `var ${rec}=${emitRuntimeHelper(g.ctx, "__zcPs", ZC_PROTO_SCRUB_DECL)}(${g.input});`;
+  if (hasMutation(ir.valueType)) {
+    code += `if(${rec}===${g.input}){${rec}={...${g.input}};}`;
+  }
 
   const keyVar = g.temp("rkey");
   const keyIssuesVar = g.temp("rki");
   const keyPath = extendPath(g.path, keyVar);
-  const valExpr = `${g.input}[${keyVar}]`;
   // for-in + hasOwnProperty guard instead of Object.keys(): identical
   // own-enumerable string-key set and iteration order, no keys-array
-  // allocation. When the value type mutates (coerce/default/.trim()) the clone
-  // above has already replaced g.input, so this iterates the clone exactly as
-  // the Object.keys form did — the key set is stable (values change, keys
-  // don't). Records whose values mutate run this path eagerly, so they get the
-  // same speedup the fast path does.
+  // allocation. The loop iterates the binding as the walk found it — the clone,
+  // when one was taken above — and a copy taken mid-walk for a replacement has
+  // the same keys, so the key set is stable (values change, keys don't).
+  // Records whose values mutate run this path eagerly, so they get the same
+  // speedup the fast path does.
   const hop = emitRuntimeHelper(g.ctx, "__zcHop", ZC_HOP_DECL);
 
   // The key is validated at a RELATIVE path and its issues are finalized before
@@ -68,20 +81,35 @@ export function slowRecord(ir: SchemaIR & { type: "record" }, g: SlowGen): strin
       ? `${g.issues}.push({code:"invalid_key",origin:"record",issues:${fz}(${keyIssuesVar}),input:${keyVar},path:${keyPath}${g.typeMsg === undefined ? "" : `,message:${JSON.stringify(g.typeMsg)}`}});`
       : `(${unrecognizedVar}=${unrecognizedVar}||[]).push(${keyVar});`;
 
+  const keyCode = g.visit(ir.keyType, {
+    input: keyVar,
+    output: keyVar,
+    path: "[]",
+    issues: keyIssuesVar,
+  });
+  const valueCode = visitMember(g, ir.valueType, {
+    container: rec,
+    original: g.input,
+    copy: `{...${g.input}}`,
+    key: keyVar,
+    path: keyPath,
+    issues: g.issues,
+  });
   code += emit`
     ${unrecognizedVar === null ? "" : `var ${unrecognizedVar}=null;`}
-    for(var ${keyVar} in ${g.input}){
-      if(!${hop}.call(${g.input},${keyVar}))continue;
+    for(var ${keyVar} in ${rec}){
+      if(!${hop}.call(${rec},${keyVar}))continue;
       ${PROTO_SKIP(keyVar)}
       var ${keyIssuesVar}=[];
-      ${g.visit(ir.keyType, { input: keyVar, output: keyVar, path: "[]", issues: keyIssuesVar })}
+      ${keyCode}
       if(${keyIssuesVar}.length>0){
         ${onKeyFailure}
       }else{
-        ${g.visit(ir.valueType, { input: valExpr, output: valExpr, path: keyPath })}
+        ${valueCode}
       }
     }
     ${unrecognizedVar === null ? "" : `if(${unrecognizedVar}!==null){${unrecognizedKeys(g, unrecognizedVar)}}`}
+    ${g.output}=${rec};
   }`;
   return `${code}\n`;
 }

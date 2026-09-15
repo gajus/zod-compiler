@@ -810,6 +810,61 @@ export function extendStaticPathIndex(parentPath: string, index: number): string
 }
 
 /**
+ * Slow-walk one member of a container — an array element, a tuple slot, a
+ * record value — without writing to the container while it is still the
+ * caller's.
+ *
+ * Visiting the container's own slot (`input[i]`) as both input and output let
+ * every node that writes its output back write into the CALLER's container: a
+ * pass-through loose object, a record or a tuple assigns its result
+ * unconditionally, so a frozen input (`Object.freeze`, Immer or Redux state)
+ * made `safeParse` throw "Cannot assign to read only property" on valid and
+ * invalid input alike, and an ordinary input had a replacement — a
+ * `__proto__`-scrubbed copy, a recursive member rebuilt by its own validator —
+ * swapped into it in place.
+ *
+ * So a member that rewrites nothing is read into a local and handed a local of
+ * its own to write to. A replacement lands on `container`, the binding the walk
+ * hands back as its output: it starts as the caller's `original` and becomes
+ * `copy` the first time a member's output is not the value read, so a container
+ * nothing replaces still comes back by reference (slowObject's pass-through
+ * `handoff` does the same for properties). A member whose code never names its
+ * output wrote nothing back, and gets no handoff at all.
+ *
+ * A REWRITING member keeps the slot for both, as before: its later checks read
+ * the rewritten value back through the expression it wrote — `.trim().min(1)`
+ * measures the trimmed string, a coercion checks the converted value — which
+ * two locals would split, checking the original instead. Writing the slot is
+ * safe only because every caller copies its container up front for a member
+ * {@link hasMutation} reports, so by then the container is the walk's own.
+ */
+export function visitMember(
+  g: SlowGen,
+  ir: SchemaIR,
+  member: {
+    readonly container: string;
+    readonly original: string;
+    readonly copy: string;
+    readonly key: string;
+    readonly path: string;
+    readonly issues: string;
+  },
+): string {
+  const { container, path, issues } = member;
+  const slot = `${container}[${member.key}]`;
+  if (hasMutation(ir)) return g.visit(ir, { input: slot, output: slot, path, issues });
+  const value = g.temp("mv");
+  const out = g.temp("mo");
+  const code = g.visit(ir, { input: value, output: out, path, issues });
+  const read = `var ${value}=${slot};`;
+  if (!code.includes(out)) return read + code;
+  return (
+    `${read}var ${out}=${value};${code}` +
+    `if(${out}!==${value}){if(${container}===${member.original}){${container}=${member.copy};}${slot}=${out};}`
+  );
+}
+
+/**
  * A superRefine callback receives zod's payload, whose `value` is public,
  * typed, writable API ($RefinementCtx extends ParsePayload) — so any node
  * carrying one MAY rewrite its value and must be treated as mutating. Which

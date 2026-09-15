@@ -7,6 +7,7 @@ import {
   hasMutation,
   outputAlwaysDefined,
   tupleRewritesShortInput,
+  visitMember,
 } from "../context.js";
 import { orderByRuntimeCost } from "../fast-size.js";
 import { emit } from "../emit.js";
@@ -110,11 +111,14 @@ export function slowTuple(ir: SchemaIR & { type: "tuple" }, g: SlowGen): string 
   for (let i = 0; i < len; i++) {
     const itemIR = ir.items[i] as SchemaIR;
     const elemExpr = `${x}[${i}]`;
-    const elemPath = extendStaticPathIndex(g.path, i);
-    const itemCode = g.visit(itemIR, {
-      input: elemExpr,
-      output: elemExpr,
-      path: elemPath,
+    // Read into a local and handed back through visitMember, which lands a
+    // replacement on a copy while `x` is still the caller's array.
+    const itemCode = visitMember(g, itemIR, {
+      container: x,
+      original: g.input,
+      copy: `${x}.slice()`,
+      key: String(i),
+      path: extendStaticPathIndex(g.path, i),
       issues: itemIssues,
     });
     // One copy of the item code per slot: an absent slot is materialized as an
@@ -157,11 +161,17 @@ export function slowTuple(ir: SchemaIR & { type: "tuple" }, g: SlowGen): string 
 
   if (ir.rest !== null) {
     const idxVar = g.temp("ti");
-    const restExpr = `${x}[${idxVar}]`;
-    const restPath = extendPath(g.path, idxVar);
+    const restCode = visitMember(g, ir.rest, {
+      container: x,
+      original: g.input,
+      copy: `${x}.slice()`,
+      key: idxVar,
+      path: extendPath(g.path, idxVar),
+      issues: g.issues,
+    });
     itemsCode += emit`
       for(var ${idxVar}=${len};${idxVar}<${x}.length;${idxVar}++){
-        ${g.visit(ir.rest, { input: restExpr, output: restExpr, path: restPath })}
+        ${restCode}
       }`;
     const flushVar = g.temp("tqj");
     itemsCode += `for(var ${flushVar}=0;${flushVar}<${itemIssues}.length;${flushVar}++){${g.issues}.push(${itemIssues}[${flushVar}]);}`;

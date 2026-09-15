@@ -6,6 +6,7 @@ import {
   emitRuntimeHelper,
   extendPath,
   hasMutation,
+  visitMember,
 } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType, tooBig, tooSmall } from "../emit-issue.js";
@@ -20,8 +21,18 @@ export function slowArray(ir: SchemaIR & { type: "array" }, g: SlowGen): string 
       ${whenGatedSizeChecks(ir.checks, g, "length", true)}
     }else{`;
 
+  // Every element is read and written through ONE binding, handed back as the
+  // output after the loop — slowTuple's discipline, for slowTuple's reason:
+  // `z.preprocess()` visits with `g.input` and `g.output` as two different
+  // bindings, and copying into `g.output` while the elements went on being
+  // written through `g.input` returned the ORIGINAL elements and rewrote the
+  // caller's array. A mutating element schema rewrites values as a matter of
+  // course, so its copy is taken up front; anything else copies only once an
+  // element hands back a replacement (see visitMember).
+  const arr = g.temp("ar");
+  code += `var ${arr}=${g.input};`;
   if (hasMutation(ir.element)) {
-    code += `${g.output}=${g.input}.slice();`;
+    code += `${arr}=${arr}.slice();`;
   }
 
   // Element validation precedes the size/refine checks: Zod parses elements
@@ -44,12 +55,19 @@ export function slowArray(ir: SchemaIR & { type: "array" }, g: SlowGen): string 
   if (refineMark) code += `var ${refineMark}=${g.issues}.length;`;
 
   const idxVar = g.temp("i");
-  const elemExpr = `${g.input}[${idxVar}]`;
-  const elemPath = extendPath(g.path, idxVar);
+  const element = visitMember(g, ir.element, {
+    container: arr,
+    original: g.input,
+    copy: `${arr}.slice()`,
+    key: idxVar,
+    path: extendPath(g.path, idxVar),
+    issues: g.issues,
+  });
   code += emit`
-    for(var ${idxVar}=0;${idxVar}<${g.input}.length;${idxVar}++){
-      ${g.visit(ir.element, { input: elemExpr, output: elemExpr, path: elemPath })}
-    }`;
+    for(var ${idxVar}=0;${idxVar}<${arr}.length;${idxVar}++){
+      ${element}
+    }
+    ${g.output}=${arr};`;
 
   /** Wrap one refine effect in zod's abort gate, preserving declaration order. */
   const gated = (body: string): string => {
@@ -57,33 +75,37 @@ export function slowArray(ir: SchemaIR & { type: "array" }, g: SlowGen): string 
     return `if(!${aborted}(${g.issues},${refineMark})){${body}}`;
   };
 
+  // The checks run on the parsed array, as zod's run on `payload.value`: the
+  // output, which carries any replacement an element handed back, and is what
+  // a superRefine rewrites for the checks after it.
+  const parsed = g.output;
   for (const check of ir.checks) {
     switch (check.kind) {
       case "min_length":
         code += emit`
-          if(${g.input}.length<${check.minimum}){
+          if(${parsed}.length<${check.minimum}){
             ${tooSmall(g, check.minimum, "array", true, { message: check.message })}
           }`;
         break;
       case "max_length":
         code += emit`
-          if(${g.input}.length>${check.maximum}){
+          if(${parsed}.length>${check.maximum}){
             ${tooBig(g, check.maximum, "array", true, { message: check.message })}
           }`;
         break;
       case "length_equals":
         code += emit`
-          if(${g.input}.length<${check.length}){
+          if(${parsed}.length<${check.length}){
             ${tooSmall(g, check.length, "array", true, { exact: true, message: check.message })}
-          }else if(${g.input}.length>${check.length}){
+          }else if(${parsed}.length>${check.length}){
             ${tooBig(g, check.length, "array", true, { exact: true, message: check.message })}
           }`;
         break;
       case "refine_effect":
-        code += gated(refineCheck(check, g.input, g));
+        code += gated(refineCheck(check, parsed, g));
         break;
       case "super_refine_effect":
-        code += gated(superRefineCheck(check, g.input, g));
+        code += gated(superRefineCheck(check, parsed, g));
         break;
     }
   }
