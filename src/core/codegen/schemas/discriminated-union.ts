@@ -1,12 +1,6 @@
 import type { DiscriminatedUnionIR, LiteralValue, ObjectIR, SchemaIR } from "../../types.js";
 import type { FastGen, SlowGen } from "../context.js";
-import {
-  declareFastTemps,
-  escapeString,
-  extendPath,
-  hasMutation,
-  literalToJs,
-} from "../context.js";
+import { declareFastTemps, escapeString, extendPath, literalToJs } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType } from "../emit-issue.js";
 
@@ -51,17 +45,16 @@ export function slowDiscriminatedUnion(
     default:
       ${g.issues}.push({code:"invalid_union",errors:[],note:"No matching discriminator",discriminator:${discKey},options:[${optionsList}],input:${g.input},path:${extendPath(g.path, discKey)}${msgProp}});
     }`;
-  // Propagate option-applied mutations (defaults, coercions, transforms,
-  // overwrite checks, stringbool) back to the output location. Each option is
-  // visited with output:objVar — a fresh local — so a mutating option's clone is
-  // reassigned into objVar and stranded there; without this write-back the caller
-  // returns the ORIGINAL input by reference and the mutation is silently lost.
-  // Gated on mutation so a pure-validation union stays a zero-write pass-through
-  // (objVar still aliases the input). On the no-match/failure paths objVar equals
-  // the input, so the write is a harmless self-assignment.
-  if (ir.options.some(hasMutation)) {
-    code += `${g.output}=${objVar};`;
-  }
+  // Propagate what the matched option produced back to the output location.
+  // Each option is visited with output:objVar — a fresh local — so its result is
+  // reassigned into objVar and stranded there; without this write-back the
+  // caller gets the ORIGINAL input by reference and the result is silently lost.
+  // That is as true of an option that rewrites nothing as of a mutating one
+  // (defaults, coercions, transforms, overwrite checks, stringbool): it can
+  // still hand back a replacement — a `__proto__`-scrubbed copy, or a copy a
+  // nested replacement landed on — so the write is not gated on mutation. Where
+  // nothing was replaced, and on the no-match path, objVar is still the input.
+  code += `${g.output}=${objVar};`;
   code += `}`;
   return `${code}\n`;
 }

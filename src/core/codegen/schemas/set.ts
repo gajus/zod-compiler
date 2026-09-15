@@ -17,24 +17,64 @@ export function slowSet(ir: SchemaIR & { type: "set" }, g: SlowGen): string {
   // of too_small/too_big when both fail. Mutating element schemas (coerce,
   // .trim(), url) rewrite the loop variable, which a Set cannot reflect —
   // rebuild into a fresh Set so the mutated values land in the output.
-  const mutates = hasMutation(ir.valueType);
   const iterVar = g.temp("set_v");
-  const rebuiltVar = mutates ? g.temp("set_n") : "";
-  if (mutates) {
-    code += `var ${rebuiltVar}=new Set();`;
-  }
   // The element's path is the SET's own path, with no index segment: a Set has
   // no stable positional addressing, so zod's handleSetResult pushes each
   // element's issues into the set's payload UNPREFIXED (unlike an array, whose
   // handleArrayResult prefixes the index). Two bad elements therefore report at
   // the same path — that is zod's output, and an index we invented instead made
   // every set-element issue point somewhere zod never points.
-  code += emit`
-    for(var ${iterVar} of ${g.input}){
-      ${g.visit(ir.valueType, { input: iterVar, output: iterVar, path: g.path })}
-      ${mutates ? `${rebuiltVar}.add(${iterVar});` : ""}
+  if (hasMutation(ir.valueType)) {
+    const rebuiltVar = g.temp("set_n");
+    code += emit`
+      var ${rebuiltVar}=new Set();
+      for(var ${iterVar} of ${g.input}){
+        ${g.visit(ir.valueType, { input: iterVar, output: iterVar, path: g.path })}
+        ${rebuiltVar}.add(${iterVar});
+      }
+      ${g.output}=${rebuiltVar};`;
+  } else {
+    // An element that rewrites nothing can still hand back a REPLACEMENT — a
+    // `__proto__`-scrubbed copy, a recursive element rebuilt by its own
+    // validator — which zod's output Set holds in that element's place. Visited
+    // with an output local of its own (see visitMember), the first replacement
+    // starts the rebuilt Set: the elements before it, in order, then every
+    // element's output from there on. A Set nothing replaces still comes back
+    // by reference, and an element that never names its output costs nothing.
+    const outVar = g.temp("set_o");
+    const element = g.visit(ir.valueType, { input: iterVar, output: outVar, path: g.path });
+    if (!element.includes(outVar)) {
+      code += emit`
+        for(var ${iterVar} of ${g.input}){
+          ${element}
+        }`;
+    } else {
+      const rebuiltVar = g.temp("set_n");
+      const countVar = g.temp("set_c");
+      const skipVar = g.temp("set_j");
+      const earlierVar = g.temp("set_p");
+      code += emit`
+        var ${rebuiltVar}=null;
+        var ${countVar}=0;
+        for(var ${iterVar} of ${g.input}){
+          var ${outVar}=${iterVar};
+          ${element}
+          if(${rebuiltVar}!==null){
+            ${rebuiltVar}.add(${outVar});
+          }else if(${outVar}!==${iterVar}){
+            ${rebuiltVar}=new Set();
+            var ${skipVar}=0;
+            for(var ${earlierVar} of ${g.input}){
+              if(${skipVar}++===${countVar})break;
+              ${rebuiltVar}.add(${earlierVar});
+            }
+            ${rebuiltVar}.add(${outVar});
+          }
+          ${countVar}++;
+        }
+        if(${rebuiltVar}!==null){${g.output}=${rebuiltVar};}`;
     }
-    ${mutates ? `${g.output}=${rebuiltVar};` : ""}`;
+  }
 
   // Size checks (run after element validation, mirroring Zod's check order).
   if (ir.checks) {
