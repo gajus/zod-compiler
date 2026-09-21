@@ -29,14 +29,10 @@ loads pre-generated validators.
 | -------------------------------------- | -------------------------------------------- | --------------------------------------------- |
 | Compilation                            | Build time (true AOT)                        | Runtime (`z.compile()` or the first parse)    |
 | Reported validation speedup            | Up to 44x; up to 46x on rejected input       | ~9x in Zod's headline example                 |
-| Uses `new Function()` at runtime\*     | No                                           | Yes                                           |
+| Uses `new Function()` at runtime       | No                                           | Yes                                           |
 | Cold start                             | Fast; the validator is already generated     | Pays for code generation at startup/first use |
 | Strict CSP without `'unsafe-eval'`     | Supported                                    | Compilation is unavailable                    |
 | Compiler shipped in the runtime bundle | No; only validators and runtime helpers ship | Yes; about 7 KB gzipped according to Zod      |
-
-\*zod-compiler's optional [`jit()`](#4-runtime-compilation-no-build-step) and
-[Node.js register hook](#5-nodejs-register-hook) use `new Function()` and have the same runtime
-code-generation and CSP trade-offs as Zod's `z.compile()`.
 
 ## Usage
 
