@@ -5,11 +5,9 @@
 Keep your existing Zod schemas. Get **up to 44x faster** validation, and up to **46x** on rejected
 input. No code changes required.
 
-Requires **Zod ≥ 4.5**. Compiled output reproduces 4.5's semantics exactly, down to code-point string
-lengths, symbol-keyed shapes and tuple issue order, so it does not match earlier 4.x releases. Stay on
-zod-compiler 1.x for Zod 4.0–4.4. An older Zod is refused with an explicit error (the build plugin
-and `jit()` warn once and leave the schemas as plain Zod) rather than compiled into validators that
-disagree with it.
+Requires **Zod ≥ 4.5**; compiled output reproduces 4.5's semantics exactly, so it does not match
+earlier 4.x releases. Use zod-compiler 1.x for Zod 4.0–4.4. An older Zod is refused with an explicit
+error; the build plugin and `jit()` warn once and leave schemas as plain Zod.
 
 - [What Gets Compiled](#what-gets-compiled)
 - [Schema Hoisting](#schema-hoisting)
@@ -131,8 +129,7 @@ Compilation is lazy, costing 0.1-0.3 ms on a schema's first parse. `{ eager: tru
 and `jitAll(namespace)` takes a whole module.
 
 The cost is the import: ~570 KB of codegen and `acorn`, **~10 ms of module load**. That suits a
-long-lived process, not a CLI, a cold serverless handler or a browser. Use the build plugin there, and
-have libraries ship plain Zod so the app can decide.
+long-lived process, not a CLI, a cold serverless handler or a browser.
 
 Needs `new Function`, as Zod's own object fast-path does. `z.config({ jitless: true })` and a CSP
 that blocks eval both leave a working plain-Zod schema.
@@ -153,11 +150,9 @@ also chains with TypeScript runners:
 node --import zod-compiler/register --import tsx src/server.ts
 ```
 
-This is runtime JIT instrumentation, not the AOT source rewriting the build plugins perform. The hook
-registers the live Zod objects behind exported schema bindings and generates validators in-process on
-first use. It does not execute modules twice, and adds no cache beyond Node's own module cache. Use a
-build plugin or the CLI when validator code must exist before Node starts, or when `new Function` is
-unavailable at runtime.
+This is runtime JIT instrumentation, not AOT source rewriting: the hook generates validators
+in-process on first use. Use a build plugin or the CLI when validator code must exist before Node
+starts, or when `new Function` is unavailable.
 
 Optional settings come from `zod-compiler.json` in the working directory:
 
@@ -278,10 +273,9 @@ bundle. Schemas in a file that share a structurally identical sub-shape emit its
 **19-28% raw / 10-18% gzipped** and scaling with how much the file repeats.
 
 Build plugins serve that module from a resolve hook (`virtual:zod-compiler/runtime`, or
-`__zod-compiler-runtime__` on webpack and rspack, which reject the `virtual:` scheme). A loader host
-has no hook, so [Turbopack](#nextjs-turbopack) imports the same code from the real subpath
-`zod-compiler/runtime` instead. It is opt-in there, since it only pays off where the host bundles that
-import rather than leaving it external.
+`__zod-compiler-runtime__` on webpack and rspack). [Turbopack](#nextjs-turbopack) has no such hook, so
+it imports the real subpath `zod-compiler/runtime` instead, opt-in because it only pays off where the
+host bundles that import.
 
 **Transpile-only esbuild builds** (no `--bundle`) never fire the bundler's resolve hooks, so the
 `virtual:` specifier would survive into `dist/` and fail at runtime. Set `codegenMode: "inline"` to emit
@@ -372,8 +366,7 @@ The step pays for itself: **Hermes ships no JIT and no `new Function`**, so Zod'
 is unavailable on device and [`jit()`](#4-runtime-compilation-no-build-step) cannot run there at all.
 
 Keep schema modules free of `react-native` and `expo-*` imports, transitively. Discovery executes each
-file and its import graph in Node (in both modes), and one that throws falls back to runtime Zod
-silently.
+file and its import graph in Node, and one that throws falls back to runtime Zod silently.
 
 ### Compact Output (`output: "compact"`)
 
@@ -387,14 +380,13 @@ zodCompiler({ output: "compact" });
 
 ### Workers and Serverless Startup
 
-Workers construct every imported schema at module init, even when an isolate validates only a few.
-Compiling all of them buys validation speed at the cost of bundle size and startup work. Compact output
-trims the generated error path but still retains the Zod schema, and does not make eager construction
-lazy.
+Workers construct every imported schema at module init, even when an isolate validates only a few, so
+compiling all of them trades bundle size and startup work for validation speed. Compact output trims
+the generated error path but does not make construction lazy.
 
-If your app has a clear schema boundary, narrow `include` or use `schemas: "explicit"` to skip
-intermediate exports. Use `output: "bag"` only where consumers need no Zod APIs (`.shape`, `.extend()`,
-`.meta()`, `z.toJSONSchema()`); it can drop the retained schema entirely.
+Narrow `include` or use `schemas: "explicit"` to skip intermediate exports. Use `output: "bag"` where
+consumers need no Zod APIs (`.shape`, `.extend()`, `.meta()`, `z.toJSONSchema()`); it drops the
+retained schema entirely.
 
 Measure startup separately from validation throughput, on the target deployment and bundle.
 
@@ -435,10 +427,9 @@ never mention `zod` cost nothing.
 
 ### Parallel Transforms
 
-Discovery runs one file at a time on the bundler's own thread, serializing executions so concurrent
-transforms cannot double-execute a shared dependency. `parallel` moves whole transforms onto worker
-threads instead, each with its own loader and module cache, which is what makes running them at the
-same time sound.
+Discovery runs one file at a time on the bundler's thread so concurrent transforms cannot
+double-execute a shared dependency. `parallel` moves whole transforms onto worker threads, each with
+its own loader and module cache.
 
 ```typescript
 zodCompiler({ parallel: true }); // one worker per core, less one, capped at 4
@@ -455,18 +446,15 @@ win; files chained through each other can lose. Both rows below are 120 files of
 | independent graphs    |   3,633 ms | 2,263 ms | 1,508 ms | 1,786 ms | 2,119 ms |
 | 120-deep import chain |     945 ms |   977 ms | 1,045 ms | 1,796 ms | 3,332 ms |
 
-So measure before adopting it. `ZOD_COMPILER_TIMING=1` prints the per-phase breakdown, and `discover`
-is the line workers move. Throughput peaks around four workers and declines past it: every extra worker
-re-executes more graph, holds another copy in memory, and adds to the generated source that the single
-receiving thread has to deserialize.
+Measure before adopting it: `ZOD_COMPILER_TIMING=1` prints the per-phase breakdown, and `discover` is
+the line workers move. Throughput peaks around four workers and declines past it, as every extra
+worker re-executes more graph and holds another copy in memory.
 
-Emitted code, sourcemaps and cache entries are identical either way. `parallel` is not part of the
-cache key, so parallel and serial builds share one cache. Disk caching and dependency crawling stay on
-the bundler thread, and a worker that cannot start or dies mid-build has its file retried in-process
-rather than failing the build.
+Emitted code, sourcemaps and cache entries are identical either way, and `parallel` is not part of the
+cache key, so parallel and serial builds share one cache. A worker that cannot start or dies mid-build
+has its file retried in-process.
 
-A **warm cache still beats parallelism** and costs no memory. Reach for `parallel` on the cold runs the
-cache cannot help with.
+A **warm cache still beats parallelism** and costs no memory. Reach for `parallel` on cold runs.
 
 ## Framework Examples
 
@@ -644,9 +632,8 @@ best of three runs. The harness costs ~60 ns per iteration, so the fastest rows 
 between the AOT columns there are noise, not real._
 
 Nested objects, arrays and recursive types gain the most. Rejection is fast because a failed
-`safeParse` defers building the error until `.error` is read. Zod 4.5 stopped capturing a stack trace on
-that path too, so its own rejected-input rows are several times faster than 4.3's and the gap there is
-narrower than it was.
+`safeParse` defers building the error until `.error` is read. Zod 4.5 stopped capturing a stack trace
+there too, narrowing the gap on rejected input.
 
 ```bash
 vp run benchmark # run locally
@@ -660,18 +647,14 @@ failure, and is deferred until `.error` is read. A `z.object()` strips, so it in
 single pass that validates and rebuilds together and bails on the first failure, covering the reshaping
 idioms too (array size checks, `.refine()`, `.default()`, `.trim()`, `.transform()`).
 
-Regexes are pre-compiled with bounded repeats unrolled, checks run cheapest-first on both passes (so a
-payload with a wrong boolean is rejected before its email is scanned, whichever was declared first),
-discriminated unions dispatch through a `switch` on the tag (plain tagged unions are auto-discriminated
-into it, on the stripping pass as well as the fast check, and the selected option re-checks neither
-object-ness nor the tag), and oversized check functions are split to stay within V8's optimizer budget.
-`.is()` stays a zero-allocation predicate on schemas with `.default()` fields. `z.email()` runs as a single linear scan instead of a backtracking regex, a record's
-plain-object guard exits on one comparison for an ordinary object, and a case-insensitive `stringbool`
-looks its input up verbatim before paying for `toLowerCase()`. Stripping objects, native coercions,
-`stringbool`, defaults, string rewrites, context-free preprocessors and synchronous transforms validate
-and build their output in one pass. An intersection of two objects with disjoint keys compiles to that
-same single pass over the merged shape, and `z.custom()` / `z.instanceof()` compile to a direct predicate
-call.
+Regexes are pre-compiled with bounded repeats unrolled, checks run cheapest-first (a wrong boolean is
+rejected before an email is scanned, whichever was declared first), discriminated unions dispatch
+through a `switch` on the tag (plain tagged unions are auto-discriminated into it), and oversized check
+functions are split to stay within V8's optimizer budget. `z.email()` runs as a single linear scan
+instead of a backtracking regex, and `z.custom()` / `z.instanceof()` compile to a direct predicate
+call. Stripping objects, native coercions, `stringbool`, defaults, string rewrites, context-free
+preprocessors, synchronous transforms and disjoint-key object intersections validate and build their
+output in one pass.
 
 Where success is cheaper to compile than failure, only the verdict and output are compiled.
 Intersections and `custom` keep the original Zod schema to construct issues, so a rejection still
