@@ -641,25 +641,22 @@ vp run benchmark # run locally
 
 ### Performance Architecture
 
-An eligible schema compiles to a **fast path**, one `&&` chain validating the whole input with zero
-allocations and reused by `.is()` and `parse()`, plus a **slow path** that collects errors, runs only on
-failure, and is deferred until `.error` is read. A `z.object()` strips, so it instead compiles to a
-single pass that validates and rebuilds together and bails on the first failure, covering the reshaping
-idioms too (array size checks, `.refine()`, `.default()`, `.trim()`, `.transform()`).
+A schema compiles to a **fast path** — one zero-allocation `&&` chain, shared by `.is()` and
+`parse()` — plus a **slow path** that collects errors only on failure, deferred until `.error` is read.
+Schemas that reshape their input (stripping objects, coercions, `stringbool`, defaults, transforms,
+context-free preprocessors, disjoint-key intersections) instead validate and rebuild in a single pass
+that bails on the first failure.
 
-Regexes are pre-compiled with bounded repeats unrolled, checks run cheapest-first (a wrong boolean is
-rejected before an email is scanned, whichever was declared first), discriminated unions dispatch
-through a `switch` on the tag (plain tagged unions are auto-discriminated into it), and oversized check
-functions are split to stay within V8's optimizer budget. `z.email()` runs as a single linear scan
-instead of a backtracking regex, and `z.custom()` / `z.instanceof()` compile to a direct predicate
-call. Stripping objects, native coercions, `stringbool`, defaults, string rewrites, context-free
-preprocessors, synchronous transforms and disjoint-key object intersections validate and build their
-output in one pass.
+Other optimizations:
 
-Where success is cheaper to compile than failure, only the verdict and output are compiled.
-Intersections and `custom` keep the original Zod schema to construct issues, so a rejection still
-reports exactly what Zod would, an intersection's one-issue-per-side shape included, without slowing the
-hot path.
+- Regexes pre-compiled, bounded repeats unrolled; `z.email()` is a linear scan, not a backtracking regex.
+- Checks run cheapest-first, regardless of declaration order.
+- Discriminated unions dispatch through a `switch`; plain tagged unions are auto-discriminated into one.
+- `z.custom()` / `z.instanceof()` compile to a direct predicate call.
+- Oversized check functions are split to stay within V8's optimizer budget.
+
+Intersections and `custom` keep the original Zod schema to construct issues, so rejections match Zod
+exactly without slowing the hot path.
 
 ## Development
 
