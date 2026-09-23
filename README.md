@@ -548,7 +548,7 @@ A schema delegates to Zod when it reaches JavaScript the generated code cannot r
 | ---------------------------------------------------- | -------------------------------------------------------------------------- |
 | `.check(fn)`, `superRefine` + later checks           | The callback holds Zod's payload unmediated, or `fatal` aborts Zod's chain |
 | `ctx`-taking or `async` callbacks                    | Needs Zod's parse context / the async pipeline                             |
-| `z.url()`, `z.jwt()`                                 | Algorithmic formats (`new URL()`, signature parsing)                       |
+| `z.jwt()`                                            | Algorithmic format (signature parsing)                                     |
 | Overlapping or policy-sensitive object intersections | Zod's independent parse-and-merge semantics cannot be safely collapsed     |
 | `.readonly()` over a pass-through container          | Zod freezes the output it rebuilt; these are the caller's own input        |
 | Dynamic error maps, unresolvable `z.lazy()`          | Not knowable at build time                                                 |
@@ -646,9 +646,9 @@ vp run benchmark # run locally
 
 A schema compiles to a **fast path** — one zero-allocation `&&` chain, shared by `.is()` and
 `parse()` — plus a **slow path** that collects errors only on failure, deferred until `.error` is read.
-Schemas that reshape their input (stripping objects, coercions, `stringbool`, defaults, transforms,
-context-free preprocessors, disjoint-key intersections) instead validate and rebuild in a single pass
-that bails on the first failure.
+Schemas that reshape their input (stripping objects, coercions, `stringbool`, `z.url()`, defaults,
+transforms, context-free preprocessors, disjoint-key intersections) instead validate and rebuild in a
+single pass that bails on the first failure.
 
 Other optimizations:
 

@@ -108,6 +108,10 @@ const CASES: [label: string, schema: z.ZodType, inputs: unknown[]][] = [
   ["invalid_format includes", z.string().includes("ab"), ["xy"]],
   ["invalid_format lowercase", z.string().lowercase(), ["AB"]],
   ["invalid_format with message", z.email("bad address"), ["nope"]],
+  // __zcUrl: a url check that reads nothing off the parsed URL only asks whether
+  // it parses. httpUrl reads hostname and protocol, so it builds the URL object.
+  ["invalid_format url", z.url(), ["nope", " https://example.com/a\tb "]],
+  ["invalid_format httpUrl", z.httpUrl(), ["http:example.com", "https://localhost", "ftp://a.co"]],
 
   // ── invalid_value, with and without the extra field ──────────────────────
   ["invalid_value enum", z.enum(["a", "b"]), ["c"]],

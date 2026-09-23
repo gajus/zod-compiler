@@ -10,7 +10,7 @@ import {
 } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidFormat, invalidType, tooBig, tooSmall } from "../emit-issue.js";
-import { ZC_EMAIL_DECL } from "../issue-decls.js";
+import { ZC_EMAIL_DECL, ZC_URL_DECL } from "../issue-decls.js";
 import {
   EMAIL_REGEX_SOURCE,
   fastTestSource,
@@ -33,10 +33,40 @@ function lastIndexReset(regexVar: string, flags: string | undefined): string {
 const HTTP_PROTOCOL_SOURCE = "^https?$";
 
 /**
+ * Is this a `z.url()` check — one that trims the value and writes back a
+ * rewrite of it? A patterned "url" is a custom format that borrowed the name
+ * (see buildString), validating through its own regex like any other format.
+ */
+export function isUrlRewrite(check: StringIR["checks"][number]): boolean {
+  return check.kind === "string_format" && check.format === "url" && !check.pattern;
+}
+
+/**
+ * Does the url check read the PARSED url — a hostname or protocol test, or
+ * `normalize`'s href? Only then is the URL object needed; a check that only asks
+ * whether the input parses goes through `__zcUrl` (see ZC_URL_DECL) instead.
+ */
+function urlReadsParsed(check: CheckStringFormat): boolean {
+  return Boolean(check.hostname) || Boolean(check.protocol) || check.normalize === true;
+}
+
+/** $ZodURL's write-back without `normalize`: the trimmed input, tabs and newlines deleted. */
+function urlStripped(trimmedVar: string, ctx: CodeGenContext): string {
+  return `${trimmedVar}.replace(${emitRegex(ctx, "tnl", "[\\t\\n\\r]", "g")},"")`;
+}
+
+/** `url.protocol` without its trailing colon, the form $ZodURL tests. */
+function urlProtocol(urlVar: string): string {
+  return `(${urlVar}.protocol.endsWith(":")?${urlVar}.protocol.slice(0,-1):${urlVar}.protocol)`;
+}
+
+/**
  * Generate the url check, mirroring $ZodURL semantics:
  * trim → (for an http(s)-protocol check without normalize) require `://` →
  * new URL(trimmed) → optional hostname/protocol regex tests → write back
  * url.href (normalize) or the trimmed input with its tabs and newlines deleted.
+ * A check that reads nothing off the parsed URL only asks `__zcUrl` whether the
+ * input parses, which skips constructing it.
  *
  * The `://` guard is `parseURLObject`'s: without it the URL parser accepts
  * `http:example.com`, and its rejection is a distinct issue (`note: "Invalid
@@ -52,44 +82,50 @@ const HTTP_PROTOCOL_SOURCE = "^https?$";
  */
 function slowUrlCheck(check: CheckStringFormat, g: SlowGen): string {
   const trimmedVar = g.temp("ut");
-  const urlVar = g.temp("u");
-  let inner = "";
-  if (check.hostname) {
-    const re = g.regex("host", check.hostname, check.hostnameFlags);
-    inner += emit`
-      ${lastIndexReset(re, check.hostnameFlags)}
-      if(!${re}.test(${urlVar}.hostname)){
-        ${invalidFormat(g, "url", {
-          extra: `note:"Invalid hostname",pattern:${escapeString(check.hostname)}`,
-          message: check.message,
-        })}
+  let parse: string;
+  if (!urlReadsParsed(check)) {
+    parse = emit`
+      if(!${emitRuntimeHelper(g.ctx, "__zcUrl", ZC_URL_DECL)}(${trimmedVar})){
+        ${invalidFormat(g, "url", { message: check.message })}
+      }else{
+        ${g.output}=${urlStripped(trimmedVar, g.ctx)};
+      }`;
+  } else {
+    const urlVar = g.temp("u");
+    let inner = "";
+    if (check.hostname) {
+      const re = g.regex("host", check.hostname, check.hostnameFlags);
+      inner += emit`
+        ${lastIndexReset(re, check.hostnameFlags)}
+        if(!${re}.test(${urlVar}.hostname)){
+          ${invalidFormat(g, "url", {
+            extra: `note:"Invalid hostname",pattern:${escapeString(check.hostname)}`,
+            message: check.message,
+          })}
+        }`;
+    }
+    if (check.protocol) {
+      const re = g.regex("proto", check.protocol, check.protocolFlags);
+      inner += emit`
+        ${lastIndexReset(re, check.protocolFlags)}
+        if(!${re}.test(${urlProtocol(urlVar)})){
+          ${invalidFormat(g, "url", {
+            extra: `note:"Invalid protocol",pattern:${escapeString(check.protocol)}`,
+            message: check.message,
+          })}
+        }`;
+    }
+    // Zod writes the value back even when hostname/protocol issues were pushed.
+    inner += `${g.output}=${check.normalize ? `${urlVar}.href` : urlStripped(trimmedVar, g.ctx)};`;
+    parse = emit`
+      var ${urlVar}=null;
+      try{${urlVar}=new URL(${trimmedVar});}catch(_){}
+      if(${urlVar}===null){
+        ${invalidFormat(g, "url", { message: check.message })}
+      }else{
+        ${inner}
       }`;
   }
-  if (check.protocol) {
-    const re = g.regex("proto", check.protocol, check.protocolFlags);
-    const protoExpr = `(${urlVar}.protocol.endsWith(":")?${urlVar}.protocol.slice(0,-1):${urlVar}.protocol)`;
-    inner += emit`
-      ${lastIndexReset(re, check.protocolFlags)}
-      if(!${re}.test(${protoExpr})){
-        ${invalidFormat(g, "url", {
-          extra: `note:"Invalid protocol",pattern:${escapeString(check.protocol)}`,
-          message: check.message,
-        })}
-      }`;
-  }
-  // Zod writes the value back even when hostname/protocol issues were pushed.
-  const stripped = check.normalize
-    ? `${urlVar}.href`
-    : `${trimmedVar}.replace(${g.regex("tnl", "[\\t\\n\\r]", "g")},"")`;
-  inner += `${g.output}=${stripped};`;
-  let parse = emit`
-    var ${urlVar}=null;
-    try{${urlVar}=new URL(${trimmedVar});}catch(_){}
-    if(${urlVar}===null){
-      ${invalidFormat(g, "url", { message: check.message })}
-    }else{
-      ${inner}
-    }`;
   if (!check.normalize && check.protocol === HTTP_PROTOCOL_SOURCE) {
     const re = g.regex("httpUrl", "^https?:\\/\\/", "i");
     parse = emit`
@@ -102,6 +138,42 @@ function slowUrlCheck(check: CheckStringFormat, g: SlowGen): string {
   return emit`
     var ${trimmedVar}=${g.input}.trim();
     ${parse}`;
+}
+
+/**
+ * The url check on the build path: {@link slowUrlCheck}'s verdict and
+ * write-back as statements over `value`, which leave the rewritten value in it
+ * and `return fail` at the first failure rather than push an issue — the
+ * deferred walk reports those.
+ */
+export function buildUrlCheck(
+  check: CheckStringFormat,
+  value: string,
+  fail: string,
+  temp: (prefix: string) => string,
+  ctx: CodeGenContext,
+): string {
+  const trimmedVar = temp("but");
+  let code = `${trimmedVar}=${value}.trim();`;
+  if (!check.normalize && check.protocol === HTTP_PROTOCOL_SOURCE) {
+    const re = emitRegex(ctx, "httpUrl", "^https?:\\/\\/", "i");
+    code += `if(!${re}.test(${trimmedVar}))return ${fail};`;
+  }
+  if (!urlReadsParsed(check)) {
+    const parses = `${emitRuntimeHelper(ctx, "__zcUrl", ZC_URL_DECL)}(${trimmedVar})`;
+    return `${code}if(!${parses})return ${fail};${value}=${urlStripped(trimmedVar, ctx)};`;
+  }
+  const urlVar = temp("bur");
+  code += `try{${urlVar}=new URL(${trimmedVar});}catch(_){return ${fail};}`;
+  if (check.hostname) {
+    const re = emitRegex(ctx, "host", check.hostname, check.hostnameFlags);
+    code += `${lastIndexReset(re, check.hostnameFlags)}if(!${re}.test(${urlVar}.hostname))return ${fail};`;
+  }
+  if (check.protocol) {
+    const re = emitRegex(ctx, "proto", check.protocol, check.protocolFlags);
+    code += `${lastIndexReset(re, check.protocolFlags)}if(!${re}.test(${urlProtocol(urlVar)}))return ${fail};`;
+  }
+  return `${code}${value}=${check.normalize ? `${urlVar}.href` : urlStripped(trimmedVar, ctx)};`;
 }
 
 export function slowString(ir: StringIR, g: SlowGen): string {
@@ -284,10 +356,10 @@ export function fastStringCheck(check: CheckIR, x: string, ctx: CodeGenContext):
     case "ends_with":
       return `${x}.endsWith(${escapeString(check.suffix)})`;
     case "string_format": {
-      // URL validation mutates (trims) and uses try/catch — not a predicate.
-      // A patterned "url" check is a custom format that borrowed the name (see
-      // buildString), and its regex IS a predicate.
-      if (check.format === "url" && !check.pattern) return null;
+      // URL validation rewrites the value (see isUrlRewrite) — not a predicate.
+      // A patterned "url" check is a custom format that borrowed the name, and
+      // its regex IS a predicate.
+      if (isUrlRewrite(check)) return null;
       let pattern: string;
       let prefix: string;
       if (check.format === "email") {

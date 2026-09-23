@@ -30,10 +30,10 @@
  * whole schema its single-pass parse. Modelled, beyond the stripping containers
  * this started with: array size checks and `.refine()`, object-level `.refine()`,
  * `.default()` substitution, ordered string rewrites (`.trim()`,
- * `.toLowerCase()`), sync `.transform()`, `z.stringbool()`, and the five native
- * coercions (`string`, `number`, `boolean`, `bigint`, `date`). Still declined, via
- * {@link mutatesBeyondStrip} — `.catch()` (its callback wants the inner schema's
- * issue list, which this pass never builds), `z.url()`, and `superRefine`.
+ * `.toLowerCase()`, `z.url()`), sync `.transform()`, `z.stringbool()`, and the
+ * five native coercions (`string`, `number`, `boolean`, `bigint`, `date`). Still
+ * declined, via {@link mutatesBeyondStrip} — `.catch()` (its callback wants the
+ * inner schema's issue list, which this pass never builds) and `superRefine`.
  */
 
 import type {
@@ -73,7 +73,7 @@ import { defaultValueExpr, needsPostInnerDefault } from "./schemas/default.js";
 import { parsedProperties } from "./schemas/object.js";
 import { innerAppliesDefaultOnUndefined } from "./schemas/optional.js";
 import { detectUnionDiscriminator } from "./schemas/discriminated-union.js";
-import { fastStringCheck } from "./schemas/string.js";
+import { buildUrlCheck, fastStringCheck, isUrlRewrite } from "./schemas/string.js";
 import {
   emitStringBoolMap,
   stringBoolInlineHit,
@@ -173,11 +173,12 @@ function rebuildSet(root: SchemaIR, includeProtoScrub = true): ReadonlySet<Schem
         (includeProtoScrub && needsProtoScrub(node)) ||
         // `z.stringbool()` replaces its accepted string with a boolean.
         node.type === "stringBool" ||
-        // An overwrite effect (`.trim()`, `.toLowerCase()`) rewrites the string,
-        // so the node's output is a new value: it has to be BUILT rather than
-        // validated in place (see buildString).
+        // An overwrite effect (`.trim()`, `.toLowerCase()`) or a `z.url()` check
+        // rewrites the string, so the node's output is a new value: it has to be
+        // BUILT rather than validated in place (see buildString).
         (node.type === "string" &&
-          (node.coerce === true || node.checks.some((c) => c.kind === "overwrite_effect"))) ||
+          (node.coerce === true ||
+            node.checks.some((c) => c.kind === "overwrite_effect" || isUrlRewrite(c)))) ||
         ((node.type === "number" ||
           node.type === "boolean" ||
           node.type === "bigint" ||
@@ -251,7 +252,7 @@ export function fastResultIsInput(ir: SchemaIR): boolean {
 
 /**
  * True when the subtree mutates for any reason the build pass cannot reproduce —
- * `.catch()`, `z.url()`, `superRefine`. Those rewrite values in ways this pass
+ * `.catch()`, `superRefine`. Those rewrite values in ways this pass
  * (which validates, coerces, decodes string booleans, substitutes declared
  * defaults, applies ordered string rewrites and copies) does not model, so the
  * schema keeps the eager walk.
@@ -268,13 +269,9 @@ function mutatesBeyondStrip(ir: SchemaIR): boolean {
 function mutatesHere(ir: SchemaIR): boolean {
   switch (ir.type) {
     case "string":
-      // Coercion and overwrite effects are absent: `buildString` applies them
-      // in order. A `z.url()` check still is not — it trims, normalizes and
-      // needs its own normalization/error semantics.
-      return (
-        superRefines(ir.checks) ||
-        ir.checks.some((c) => c.kind === "string_format" && c.format === "url")
-      );
+      // Coercion, overwrite effects and `z.url()` are absent: `buildString`
+      // applies them in order.
+      return superRefines(ir.checks);
     case "number":
       return superRefines(ir.checks);
     case "boolean":
@@ -1090,8 +1087,14 @@ function buildString(ir: SchemaIR & { type: "string" }, input: string, g: BuildG
         // Rewrites through zod's payload; mutatesBeyondStrip already rejects it.
         return null;
       default: {
+        // `z.url()` trims the value and writes back a rewrite of it, which the
+        // checks after it see — the same ordering an overwrite gets.
+        if (check.kind === "string_format" && isUrlRewrite(check)) {
+          code += buildUrlCheck(check, value, g.fail, (prefix) => local(g, prefix), g.ctx);
+          break;
+        }
         const expr = fastStringCheck(check, value, g.ctx);
-        if (expr === null) return null; // z.url(), unknown format
+        if (expr === null) return null; // an unknown format
         code += `if(!(${expr}))return ${g.fail};`;
       }
     }

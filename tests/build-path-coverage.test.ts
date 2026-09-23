@@ -74,6 +74,10 @@ describe("build path — everyday constructs stay on the single-pass generator",
       "transform over a rebuilding object",
       z.array(z.object({ a: z.string() }).transform((o) => o.a)),
     ],
+    ["url", z.object({ u: z.url() })],
+    ["url with hostname and protocol tests", z.object({ u: z.httpUrl() })],
+    ["normalized url", z.object({ u: z.url({ normalize: true }) })],
+    ["url inside an array", z.object({ links: z.array(z.url()) })],
     [
       "several at once",
       z.object({
@@ -90,8 +94,6 @@ describe("build path — everyday constructs stay on the single-pass generator",
     // catchValue receives a ctx holding the inner schema's collected issues, and
     // this pass produces a sentinel rather than an issue list.
     ["catch", z.object({ n: z.number().catch(0) })],
-    // z.url() trims, normalizes and needs try/catch.
-    ["url", z.object({ u: z.url() })],
     // superRefine may rewrite through zod's payload.
     ["superRefine", z.object({ a: z.number() }).superRefine(() => {})],
   ])("declines %s and keeps the eager walk", (_label, schema) => {
@@ -237,6 +239,43 @@ describe("build path — zod parity for the newly covered constructs", () => {
       "oarr",
     );
     expectParity(z.object({ q: z.string().trim().default(" d ") }), [{}, { q: " a " }], "odef");
+  });
+
+  it("url checks write back the trimmed, tab- and newline-free value", () => {
+    const urls = [
+      "https://example.com",
+      " https://example.com/a\tb\n ",
+      "HTTPS://EXAMPLE.COM:443/x?y#z",
+      "http:example.com",
+      "https:/x",
+      "mailto:a@b.co",
+      "not a url",
+      "",
+      "https://" + "a".repeat(40) + ".com",
+      42,
+      null,
+    ];
+    for (const [name, url] of [
+      ["url", z.url()],
+      // Checks after the url see its rewrite; checks before it see the input.
+      ["urlThenMax", z.url().max(30)],
+      ["maxThenUrl", z.string().max(30).url()],
+      ["httpUrl", z.httpUrl()],
+      ["normalized", z.url({ normalize: true })],
+      ["hostname", z.url({ hostname: /^example\.com$/ })],
+      ["protocol", z.url({ protocol: /^https$/ })],
+    ] as const) {
+      expectParity(
+        z.object({ u: url }),
+        urls.map((u) => ({ u, extra: 1 })),
+        `url_${name}`,
+      );
+    }
+    expectParity(
+      z.object({ links: z.array(z.url()).max(2) }),
+      [{ links: [" https://a.co", "https://b.co\t"] }, { links: ["https://a.co", "nope"] }],
+      "urlArray",
+    );
   });
 
   it("sync transforms", () => {
