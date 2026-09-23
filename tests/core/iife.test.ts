@@ -393,6 +393,29 @@ describe("generateIIFE() — runtime execution", () => {
   });
 });
 
+describe("FAIL_CLASS_DECL — .error finalization", () => {
+  it("copies each issue's own keys, in order, without input or continue", () => {
+    const __zcFin = makeFinFn(zcMsg, ZodRealError);
+    // An enumerable key on the issue's prototype stays out, as it does from the
+    // spread zod finalizes its own issues with.
+    const collected = Object.assign(Object.create({ inherited: true }) as object, {
+      expected: "string",
+      code: "invalid_type",
+      input: 1,
+      continue: false,
+      path: ["a"],
+    });
+    const result = __zcFin([collected], undefined) as {
+      error: { issues: Record<string, unknown>[] };
+    };
+    const [issue] = result.error.issues;
+    expect(Object.keys(issue ?? {})).toEqual(["expected", "code", "path", "message"]);
+    expect(issue).not.toHaveProperty("input");
+    expect(issue).not.toHaveProperty("inherited");
+    expect(result.error).toBe(result.error);
+  });
+});
+
 describe("generateIIFE() — shared schema instance (CSE/dedup + identifier schemaExpr)", () => {
   // __rf entries and the __zcMkv schema arg are both spliced from schemaExpr.
   // In compile mode schemaExpr is the compile() argument (an identifier) and
