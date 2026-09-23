@@ -364,6 +364,33 @@ describe("generateIIFE() — runtime execution", () => {
       expect(validator.is({ name: "Alice" })).toBe(false);
     });
 
+    it("is the compiled fast-check for records and loose/catchall objects too", () => {
+      // These hand their input back with any own `__proto__` scrubbed, so `fc`
+      // is withheld from parse() (3rd arg null) — but the verdict is exact, so
+      // `.is` is still the predicate rather than a closure over safeParse.
+      const cases: [string, z.ZodType][] = [
+        ["record", z.record(z.string(), z.number())],
+        ["loose", z.looseObject({ a: z.string() })],
+        ["catchall", z.object({ a: z.string() }).catchall(z.number())],
+      ];
+      for (const [name, schema] of cases) {
+        const info = makeInfo(name, schema);
+        expect(generateIIFE("Schema", info), name).toMatch(/,null,__fc_\d+\)/);
+        const validator = executeIIFE(info);
+        for (const input of [
+          { a: "x", n: 1 },
+          { a: 1 },
+          JSON.parse('{"__proto__": 1, "a": "x"}'),
+          [],
+          null,
+        ]) {
+          expect(validator.is(input), `${name} ${JSON.stringify(input)}`).toBe(
+            schema.safeParse(input).success,
+          );
+        }
+      }
+    });
+
     it("installs the acceptance predicate as the guard even when a default is substituted", () => {
       // The by-reference fast form only shortcuts present-and-valid input, so it
       // would be unsound here: a `false` does not imply rejection when the

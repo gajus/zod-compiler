@@ -462,11 +462,14 @@ export function generateValidator(
       usedHelpers: ctx.usedHelpers,
       // `fc` is a sound VERDICT here either way, but publishing it also promises
       // `parse()` may return the input — which a scrubbed output cannot (see
-      // fastResultIsInput). `.is()` still gets the predicate through fastTotal.
+      // fastResultIsInput). `.is()` reads only the verdict, so it takes the
+      // predicate through `isFnName` whether or not `fc` is withheld —
+      // `fastTotal` below qualifies `fastFnName` alone.
       fastFnName: fastResultIsInput(ir) ? fastFnName : null,
       // Total predicate: mutation-free fast path, fc(input) ⟺ accepts(input).
       // generateIIFE installs fc directly as the zero-allocation `.is()`.
       fastTotal: true,
+      isFnName: fastFnName,
     };
   }
 

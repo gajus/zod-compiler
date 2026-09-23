@@ -76,7 +76,9 @@ export interface CodeGenResult {
    * Hosted predicate installed as `.is()`, when it differs from `fastFnName`.
    * A schema that rebuilds its output has no by-reference shortcut (so
    * `fastFnName` is null) yet still has an exact acceptance predicate, because
-   * stripping reshapes the payload and never the verdict.
+   * stripping reshapes the payload and never the verdict. Nor does a record or
+   * a loose/catchall object, whose returned value may be a copy scrubbed of its
+   * own `__proto__`; the fast check is its total predicate all the same.
    */
   isFnName?: string | null;
   /**
