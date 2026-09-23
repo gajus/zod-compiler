@@ -363,6 +363,25 @@ export const ZC_FZ_DECL =
 export const ZC_PFX_DECL =
   "function __zcPfx(d,s,b,k){for(var i=0;i<s.length;i++){var x=s[i];x.path=b.concat(k,x.path);d.push(x);}}";
 
+/**
+ * `[...p, k]`: a path with one segment appended, as a fresh array.
+ *
+ * `extendPath` splices a segment into a path that is still an array literal,
+ * but a shared walk receives its path as a parameter, opaque at build time, so
+ * there the segment is appended at run time. A nested shared walk's call site
+ * evaluates that append up front — on a valid parse too, once per property and
+ * per array element, whenever the schema runs its walk eagerly because it has
+ * no build path (a `z.url()`, a `.catch()`, a `superRefine()`).
+ *
+ * `Array.prototype.concat`, which this replaces, is a C++ builtin in V8: ~70 ns
+ * a call against ~7 ns for the copy below. On the eager walk of a 14-property
+ * product schema calling six shared sub-walks, a valid parse went from 713 to
+ * 299 ns and an `.error` read from 2.05 to 1.44 µs. The preallocated copy also
+ * beat `slice()` + `push` (391 ns), a `push` loop (338 ns) and spread (361 ns).
+ */
+export const ZC_PATH_APPEND_DECL =
+  "function __zcPa(p,k){var n=p.length,r=new Array(n+1);for(var i=0;i<n;i++)r[i]=p[i];r[n]=k;return r;}";
+
 /** Does `keyExpr` hold one of zod's `util.propertyKeyTypes` (string|number|symbol)? */
 export function propertyKeyTest(keyExpr: string): string {
   return `typeof ${keyExpr}==="string"||typeof ${keyExpr}==="number"||typeof ${keyExpr}==="symbol"`;
@@ -520,6 +539,7 @@ export const RUNTIME_HELPER_DECLS: Readonly<Record<string, string>> = {
   __zcPs: ZC_PROTO_SCRUB_DECL,
   __zcPlain: ZC_PLAIN_DECL,
   __zcPfx: ZC_PFX_DECL,
+  __zcPa: ZC_PATH_APPEND_DECL,
   __zcCu: ZC_CUSTOM_OK_DECL,
   __zcSr: ZC_SR_DECL,
   __zcSrOk: ZC_SR_OK_DECL,

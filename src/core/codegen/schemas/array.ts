@@ -60,7 +60,7 @@ export function slowArray(ir: SchemaIR & { type: "array" }, g: SlowGen): string 
     original: g.input,
     copy: `${arr}.slice()`,
     key: idxVar,
-    path: extendPath(g.path, idxVar),
+    path: extendPath(g.ctx, g.path, idxVar),
     issues: g.issues,
   });
   code += emit`

@@ -79,8 +79,8 @@ export function refineCheck(check: RefineEffectCheckIR, expr: string, g: SlowGen
   const path = (check.path ?? []).reduce<string>(
     (acc, segment) =>
       typeof segment === "number"
-        ? extendStaticPathIndex(acc, segment)
-        : extendStaticPath(acc, segment),
+        ? extendStaticPathIndex(g.ctx, acc, segment)
+        : extendStaticPath(g.ctx, acc, segment),
     g.path,
   );
   // `.refine(fn, { params })`: $ZodCustom's check does

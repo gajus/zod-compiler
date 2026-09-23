@@ -7,6 +7,7 @@ import type {
   SetCheckIR,
 } from "../types.js";
 import type { SharedSchemaPlan } from "./dedupe.js";
+import { ZC_PATH_APPEND_DECL } from "./issue-decls.js";
 import {
   fastTestSource,
   lookupWellKnownRegex,
@@ -788,25 +789,30 @@ export function emitRuntimeHelper(ctx: CodeGenContext, name: string, decl: strin
  * `[]` root, so any path that looks like an array literal IS one — the new
  * segment is spliced in to keep issue paths a single array allocation
  * (`["data","items",__i_7]`) instead of an allocation per nesting level
- * (`["data"].concat("items").concat(__i_7)`). Opaque expressions fall back
- * to .concat().
+ * (`["data"].concat("items").concat(__i_7)`). An opaque path — a shared walk's
+ * `path` parameter, or an extension of it — appends through `__zcPa` (see
+ * ZC_PATH_APPEND_DECL), not `.concat()`.
  */
-export function extendPath(parentPath: string, segExpr: string): string {
+export function extendPath(ctx: CodeGenContext, parentPath: string, segExpr: string): string {
   if (parentPath === "[]") return `[${segExpr}]`;
   if (parentPath.startsWith("[") && parentPath.endsWith("]")) {
     return `${parentPath.slice(0, -1)},${segExpr}]`;
   }
-  return `${parentPath}.concat(${segExpr})`;
+  return `${emitRuntimeHelper(ctx, "__zcPa", ZC_PATH_APPEND_DECL)}(${parentPath},${segExpr})`;
 }
 
 /** Extend a path expression with a static string key. */
-export function extendStaticPath(parentPath: string, key: string): string {
-  return extendPath(parentPath, escapeString(key));
+export function extendStaticPath(ctx: CodeGenContext, parentPath: string, key: string): string {
+  return extendPath(ctx, parentPath, escapeString(key));
 }
 
 /** Extend a path expression with a numeric index. */
-export function extendStaticPathIndex(parentPath: string, index: number): string {
-  return extendPath(parentPath, String(index));
+export function extendStaticPathIndex(
+  ctx: CodeGenContext,
+  parentPath: string,
+  index: number,
+): string {
+  return extendPath(ctx, parentPath, String(index));
 }
 
 /**

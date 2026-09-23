@@ -472,6 +472,59 @@ describe("schema dedupe", () => {
     expect([...shared.usedHelpers].length).toBeGreaterThan(0);
     expect(shared.usedHelpers).toContain("__zcIT");
   });
+
+  it("extends a shared walk's opaque path without Array.prototype.concat", () => {
+    // Money nests inside LineItem and both repeat, so LineItem's shared walk
+    // calls Money's with a path built from its own `path` parameter — an
+    // argument an eager walk evaluates on every parse, valid input included.
+    const Money = z.strictObject({ amount: z.number().int(), currency: z.string().length(3) });
+    const LineItem = z.strictObject({
+      sku: z.string().min(1),
+      price: Money,
+      tax: Money,
+      tags: z.array(z.string().min(1)),
+    });
+    const Order = z.strictObject({ id: z.string(), items: z.array(LineItem), total: Money });
+    const Quote = z.strictObject({ ref: z.string(), lines: z.array(LineItem) });
+    const exports = [
+      { exportName: "Order", schema: Order },
+      { exportName: "Quote", schema: Quote },
+    ];
+    const { schemas, shared } = compileSchemas(exports, { mode: "inline" });
+    expect(shared.code).toContain('__zcPa(path,"price")');
+    expect(shared.code).not.toContain("path.concat(");
+
+    const line = {
+      sku: "A-1",
+      price: { amount: 100, currency: "USD" },
+      tax: { amount: 8, currency: "USD" },
+      tags: ["x"],
+    };
+    const total = { amount: 216, currency: "USD" };
+    const checks: [string, z.ZodType, unknown][] = [
+      ["Order", Order, { id: "o1", items: [line, line], total }],
+      // Issues two shared walks deep, and at an array index inside one of them.
+      [
+        "Order",
+        Order,
+        {
+          id: "o1",
+          items: [line, { ...line, tax: { amount: 1.5, currency: "US" }, tags: ["ok", ""] }],
+          total,
+        },
+      ],
+      ["Quote", Quote, { ref: "q1", lines: [{ ...line, price: "free" }] }],
+    ];
+    for (const [name, zod, input] of checks) {
+      const compiled = build(pick(schemas, name), shared.code)(input);
+      const native = zod.safeParse(input);
+      expect(compiled.success).toBe(native.success);
+      expect(shape(compiled)).toBe(shape(native));
+    }
+
+    // Lean mode imports the helper from the runtime module instead.
+    expect(compileSchemas(exports, { mode: "lean" }).shared.usedHelpers).toContain("__zcPa");
+  });
 });
 
 describe("file-level Set dedupe", () => {

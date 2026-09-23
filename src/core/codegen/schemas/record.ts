@@ -55,7 +55,7 @@ export function slowRecord(ir: SchemaIR & { type: "record" }, g: SlowGen): strin
 
   const keyVar = g.temp("rkey");
   const keyIssuesVar = g.temp("rki");
-  const keyPath = extendPath(g.path, keyVar);
+  const keyPath = extendPath(g.ctx, g.path, keyVar);
   // for-in + hasOwnProperty guard instead of Object.keys(): identical
   // own-enumerable string-key set and iteration order, no keys-array
   // allocation. The loop iterates the binding as the walk found it — the clone,

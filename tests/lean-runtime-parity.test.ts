@@ -23,14 +23,14 @@
  * lean-compiled validator against the module the plugin actually ships. So (2)
  * and (3) were invisible, and (1) was only ever checked by regex over source.
  *
- * Every case below compiles in lean mode through `compileLeanLikeProduction`,
- * whose helper bodies come from `loadVirtual(RESOLVED_RUNTIME_ID)` — the same
- * function the bundler plugins call, not a transcription — and compares the
- * resulting issues against zod's WHOLE issue objects (see expectParity's doc
- * comment for what "whole" covers). The spread is chosen to reach every entry
- * in ISSUE_DECLS and RUNTIME_HELPER_DECLS at least once; the registry
- * assertions at the bottom fail if a new helper appears and this file does not
- * exercise it.
+ * Every case below compiles in lean mode through `compileLeanLikeProduction`
+ * (or, for the file-level cases, `compileLeanFileLikeProduction`), whose helper
+ * bodies come from `loadVirtual(RESOLVED_RUNTIME_ID)` — the same function the
+ * bundler plugins call, not a transcription — and compares the resulting issues
+ * against zod's WHOLE issue objects (see expectParity's doc comment for what
+ * "whole" covers). The spread is chosen to reach every entry in ISSUE_DECLS and
+ * RUNTIME_HELPER_DECLS at least once; the registry assertions at the bottom
+ * fail if a new helper appears and this file does not exercise it.
  */
 import { describe, expect, it } from "vite-plus/test";
 import { z } from "zod";
@@ -39,7 +39,11 @@ import { ISSUE_DECLS, RUNTIME_HELPER_DECLS } from "#src/core/codegen/issue-decls
 import type { RefEntry } from "#src/core/extract/index.js";
 import { extractSchema } from "#src/core/extract/index.js";
 import { ALL_HELPER_NAMES, loadVirtual, RESOLVED_RUNTIME_ID } from "#src/unplugin/virtual.js";
-import { expectLeanParity } from "./parity-harness.js";
+import {
+  compileLeanFileLikeProduction,
+  expectLeanFileParity,
+  expectLeanParity,
+} from "./parity-harness.js";
 
 const RUNTIME_SOURCE = loadVirtual(RESOLVED_RUNTIME_ID) ?? "";
 
@@ -194,10 +198,65 @@ const CASES: [label: string, schema: z.ZodType, inputs: unknown[]][] = [
   ],
 ];
 
+/**
+ * Cases compiled as ONE file, the way the plugins compile a module: a shape
+ * repeated across exports becomes a shared walk (see dedupe.ts), and shared
+ * walks reach helpers no single-schema case can — `__zcPa` appends a segment
+ * to a walk's opaque `path` parameter.
+ */
+const Money = z.strictObject({ amount: z.number().int(), currency: z.string().length(3) });
+const LineItem = z.strictObject({
+  sku: z.string().min(1),
+  price: Money,
+  tax: Money,
+  tags: z.array(z.string().min(1)),
+});
+const line = {
+  sku: "A-1",
+  price: { amount: 100, currency: "USD" },
+  tax: { amount: 8, currency: "USD" },
+  tags: ["x"],
+};
+
+interface FileExport {
+  exportName: string;
+  schema: z.ZodType;
+  inputs: unknown[];
+}
+
+const FILE_CASES: [label: string, exports: FileExport[]][] = [
+  [
+    "issues inside nested shared walks",
+    [
+      {
+        exportName: "Order",
+        schema: z.strictObject({ items: z.array(LineItem), total: Money }),
+        inputs: [
+          { items: [line], total: { amount: 108, currency: "USD" } },
+          {
+            items: [line, { ...line, tax: { amount: 1.5, currency: "US" }, tags: ["ok", ""] }],
+            total: 5,
+          },
+        ],
+      },
+      {
+        exportName: "Quote",
+        schema: z.strictObject({ lines: z.array(LineItem) }),
+        inputs: [{ lines: [{ ...line, price: "free" }] }],
+      },
+    ],
+  ],
+];
+
 describe("lean runtime parity — issues built by the real virtual module", () => {
   for (const [label, schema, inputs] of CASES) {
     it(label, () => {
       expectLeanParity(schema, inputs, "lean");
+    });
+  }
+  for (const [label, exports] of FILE_CASES) {
+    it(label, () => {
+      expectLeanFileParity(exports);
     });
   }
 });
@@ -217,11 +276,14 @@ function generateLean(schema: z.ZodType, name: string): { code: string; usedHelp
   return { code: generated.code, usedHelpers: generated.usedHelpers };
 }
 
-/** Helper names every case in {@link CASES} causes lean codegen to reference. */
+/** Helper names every case in {@link CASES} and {@link FILE_CASES} causes lean codegen to reference. */
 function collectUsedHelpers(): Set<string> {
   const used = new Set<string>();
   for (const [label, schema] of CASES) {
     for (const helper of generateLean(schema, `lean_${label}`).usedHelpers) used.add(helper);
+  }
+  for (const [, exports] of FILE_CASES) {
+    for (const helper of compileLeanFileLikeProduction(exports).usedHelpers) used.add(helper);
   }
   return used;
 }
@@ -306,12 +368,18 @@ describe("lean runtime module ↔ codegen agreement", () => {
   it("passes no more arguments than each issue factory declares", () => {
     // Arity drift is silent: an extra positional argument is dropped, and a
     // removed parameter shifts every later field onto the wrong key.
-    for (const [label, schema] of CASES) {
-      const generated = generateLean(schema, `arity_${label}`);
-      for (const helper of generated.usedHelpers) {
+    const compiled = [
+      ...CASES.map(([label, schema]) => ({ label, ...generateLean(schema, `arity_${label}`) })),
+      ...FILE_CASES.map(([label, exports]) => ({
+        label,
+        ...compileLeanFileLikeProduction(exports),
+      })),
+    ];
+    for (const { label, code, usedHelpers } of compiled) {
+      for (const helper of usedHelpers) {
         const declared = declaredArity(RUNTIME_SOURCE, helper);
         if (declared === null) continue; // const-declared (regexes, __zcHop)
-        for (const observed of callArities(generated.code, helper)) {
+        for (const observed of callArities(code, helper)) {
           expect(
             observed,
             `${label}: ${helper} called with ${observed} args but declares ${declared}`,

@@ -101,7 +101,7 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
 
   for (const [key, propIR] of parsedProperties(ir)) {
     const keyStr = escapeString(key);
-    const propPath = extendStaticPath(g.path, key);
+    const propPath = extendStaticPath(g.ctx, g.path, key);
     // Every mode validates the value read from the ORIGINAL input, held in a
     // local. zod parses `input[key]` — a prototype-inclusive read — so a value
     // found on the prototype is accepted and, on a rebuild, copied out as an
@@ -258,7 +258,7 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
     const keys = Object.keys(ir.properties);
     const kVar = g.temp("ck");
     const test = keyMembershipTest(g.ctx, keys, kVar);
-    const catchallPath = extendPath(g.path, kVar);
+    const catchallPath = extendPath(g.ctx, g.path, kVar);
     let body: string;
     if (rebuild) {
       const slot = `${objVar}[${kVar}]`;

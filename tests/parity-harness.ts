@@ -18,7 +18,8 @@ import {
   ZOD_CONFIG_IMPORT,
   ZOD_MSG_DECLARATION,
 } from "#src/core/iife.js";
-import type { SafeParseResult } from "#src/core/types.js";
+import { compileSchemas } from "#src/core/pipeline.js";
+import type { DiscoveredSchema, SafeParseResult } from "#src/core/types.js";
 import { RESOLVED_RUNTIME_ID, loadVirtual } from "#src/unplugin/virtual.js";
 
 /**
@@ -109,6 +110,50 @@ export function compileLeanLikeProduction(
     refCount: refEntries.length,
     mode: "lean",
   });
+  return evaluateLean(`${generated.code}\nreturn ${generated.functionDef};`, refEntries);
+}
+
+/**
+ * {@link compileLeanLikeProduction} for a whole FILE: every export compiled
+ * together through `compileSchemas`, as the bundler plugins compile a module.
+ * A shape repeated across exports becomes a shared walk at module scope (see
+ * dedupe.ts), which reaches helpers no single-schema compile can, so the shared
+ * block is evaluated ahead of each validator. Also returns the generated text
+ * and every helper it references, for the registry guards in
+ * lean-runtime-parity.test.ts.
+ */
+export function compileLeanFileLikeProduction(schemas: DiscoveredSchema[]): {
+  validators: Map<string, (input: unknown) => SafeParseResult<unknown>>;
+  code: string;
+  usedHelpers: Set<string>;
+} {
+  const { schemas: results, shared } = compileSchemas(schemas, { mode: "lean" });
+  const validators = new Map<string, (input: unknown) => SafeParseResult<unknown>>();
+  const usedHelpers = new Set(shared.usedHelpers);
+  let code = shared.code;
+  for (const { exportName, codegenResult, refEntries } of results) {
+    for (const helper of codegenResult.usedHelpers) usedHelpers.add(helper);
+    code += `\n${codegenResult.code}\n${codegenResult.functionDef}`;
+    validators.set(
+      exportName,
+      evaluateLean(
+        `${shared.code}\n${codegenResult.code}\nreturn ${codegenResult.functionDef};`,
+        refEntries,
+      ),
+    );
+  }
+  return { validators, code, usedHelpers };
+}
+
+/**
+ * Evaluate lean-mode generated code over the real runtime module: its source
+ * with the `import` line and the `export` keywords stripped, so the module body
+ * runs as the head of a function body.
+ */
+function evaluateLean(
+  body: string,
+  refEntries: RefEntry[],
+): (input: unknown) => SafeParseResult<unknown> {
   const runtime = (loadVirtual(RESOLVED_RUNTIME_ID) ?? "")
     .replace(ZOD_CONFIG_IMPORT, "")
     .replaceAll(/^export /gm, "");
@@ -117,7 +162,7 @@ export function compileLeanLikeProduction(
     "__zcCore",
     "__zcZodError",
     "__rf",
-    `"use strict";${runtime}\n${generated.code}\nreturn ${generated.functionDef};`,
+    `"use strict";${runtime}\n${body}`,
   );
   return factory(
     z.config,
@@ -278,6 +323,18 @@ export function expectParity(
  */
 export function expectLeanParity(schema: ZodLikeSchema, inputs: unknown[], name?: string): void {
   expectCompiledParity(compileLeanLikeProduction(schema, name), schema, inputs);
+}
+
+/** {@link expectLeanParity} for exports compiled as one file (see compileLeanFileLikeProduction). */
+export function expectLeanFileParity(
+  exports: { exportName: string; schema: ZodLikeSchema; inputs: unknown[] }[],
+): void {
+  const { validators } = compileLeanFileLikeProduction(exports);
+  for (const { exportName, schema, inputs } of exports) {
+    const compiled = validators.get(exportName);
+    if (compiled === undefined) throw new Error(`no compiled validator for ${exportName}`);
+    expectCompiledParity(compiled, schema, inputs);
+  }
 }
 
 function expectCompiledParity(

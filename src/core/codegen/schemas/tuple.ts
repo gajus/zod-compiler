@@ -119,7 +119,7 @@ export function slowTuple(ir: SchemaIR & { type: "tuple" }, g: SlowGen): string 
       original: g.input,
       copy: `${x}.slice()`,
       key: String(i),
-      path: extendStaticPathIndex(g.path, i),
+      path: extendStaticPathIndex(g.ctx, g.path, i),
       issues: itemIssues,
     });
     // One copy of the item code per slot: an absent slot is materialized as an
@@ -167,7 +167,7 @@ export function slowTuple(ir: SchemaIR & { type: "tuple" }, g: SlowGen): string 
       original: g.input,
       copy: `${x}.slice()`,
       key: idxVar,
-      path: extendPath(g.path, idxVar),
+      path: extendPath(g.ctx, g.path, idxVar),
       issues: g.issues,
     });
     itemsCode += emit`

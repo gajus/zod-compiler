@@ -43,7 +43,7 @@ export function slowDiscriminatedUnion(
   const optionsList = ir.cases.map(({ value }) => literalToJs(value)).join(",");
   code += emit`
     default:
-      ${g.issues}.push({code:"invalid_union",errors:[],note:"No matching discriminator",discriminator:${discKey},options:[${optionsList}],input:${g.input},path:${extendPath(g.path, discKey)}${msgProp}});
+      ${g.issues}.push({code:"invalid_union",errors:[],note:"No matching discriminator",discriminator:${discKey},options:[${optionsList}],input:${g.input},path:${extendPath(g.ctx, g.path, discKey)}${msgProp}});
     }`;
   // Propagate what the matched option produced back to the output location.
   // Each option is visited with output:objVar — a fresh local — so its result is
