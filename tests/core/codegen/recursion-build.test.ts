@@ -120,3 +120,78 @@ describe("build path — recursive passthrough after fast-path rollback (#20)", 
     expectDeclaredFastTargets(Wrapper);
   });
 });
+
+/** Every hosted build and recursive fast check the code names — used or not — is declared. */
+function expectDeclaredHelpers(schema: z.ZodType): void {
+  const generated = generateValidator(extractSchema(schema, []), "selfRecursiveRoot");
+  const code = `${generated.code}\n${generated.functionDef}`;
+  const declarations = new Set(
+    [...code.matchAll(/function (__(?:fcr|vbr?)_\d+)\(/g)].map((match) => match[1]),
+  );
+  for (const [name] of code.matchAll(/__(?:fcr|vbr?)_\d+\b/g)) {
+    expect(declarations.has(name), `${name} must be declared in this validator`).toBe(true);
+  }
+}
+
+describe("build path — self-recursive roots", () => {
+  const Tree: z.ZodType = z.object({
+    value: z.string().min(1),
+    children: z.array(z.lazy(() => Tree)),
+  });
+  const GetterTree = z.object({
+    value: z.string().min(1),
+    get children() {
+      return z.array(GetterTree);
+    },
+  });
+  const Json: z.ZodType = z.lazy(() =>
+    z.union([
+      z.string(),
+      z.number(),
+      z.boolean(),
+      z.null(),
+      z.array(Json),
+      z.record(z.string(), Json),
+    ]),
+  );
+  const tree = (depth: number): unknown =>
+    depth === 0
+      ? { value: "leaf", children: [], extra: true }
+      : { value: `d${depth}`, children: [tree(depth - 1), tree(depth - 1)], extra: true };
+  const trees = [
+    tree(3),
+    { value: "root", children: [{ value: "", children: [] }] },
+    { value: "root", children: [{ value: "a", children: [{ value: "b", children: "none" }] }] },
+    { value: "root", children: [null] },
+    { value: 1, children: [] },
+    "nope",
+  ];
+
+  // The root is its own recursion target, so the back-edge calls the root's
+  // build; these used to decline the pass and run the eager walk on every parse.
+  it.each<[string, z.ZodType, unknown[]]>([
+    ["a z.lazy() tree", Tree, trees],
+    ["a tree written with the getter idiom", GetterTree, trees],
+    [
+      "a JSON value",
+      Json,
+      [
+        { a: 1, b: [1, "x", null, { c: true }] },
+        JSON.parse('{"__proto__": {"x": 1}, "y": [1, {"__proto__": 2}]}'),
+        { a: [1, { b: undefined }] },
+        { a: { b: { c: Number.NaN } } },
+        [1, [2, [3]]],
+        "str",
+        undefined,
+      ],
+    ],
+  ])("builds %s in one pass and hands `.is()` its predicate", (_label, schema, samples) => {
+    const generated = generateValidator(extractSchema(schema, []), "selfRecursiveRoot");
+    expect(generated.functionDef).toMatch(/=__vb_\d+\(input\)/);
+    expect(generated.isFnName).toEqual(expect.any(String));
+    expectDeclaredHelpers(schema);
+    expectParity(schema, samples);
+    expectLeanParity(schema, samples);
+    expectParity(schema, samples, "compactSelfRecursiveRoot", undefined, { compact: true });
+  });
+});

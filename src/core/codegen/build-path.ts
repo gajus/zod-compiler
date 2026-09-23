@@ -377,9 +377,18 @@ export function generateBuild(ir: SchemaIR, ctx: CodeGenContext): string | null 
   if (needsProtoScrub(ir) && !rebuildSet(ir, false).has(ir)) return null;
   const fail = emitFailSentinel(ctx);
   const scope: FastScope = { temps: [], used: 0 };
-  const built = build(ir, "input", { ctx, extractable: false, fail, rebuilds, scope });
-  if (built === null) return null;
+  // The root is recursion target 0, so a self-reference is a call to this very
+  // function: named before its body, as buildRecursionTarget names the others.
+  // Without the entry a self-recursive root — a `z.lazy()` tree, the getter
+  // idiom, a JSON value — declined the whole pass for the eager walk.
   const name = emitTemp(ctx, "vb");
+  const recNames = (ctx.buildRecNames ??= new Map<number, string>());
+  recNames.set(0, name);
+  const built = build(ir, "input", { ctx, extractable: false, fail, rebuilds, scope });
+  if (built === null) {
+    recNames.delete(0);
+    return null;
+  }
   ctx.preamble.push(
     `function ${name}(input){${declareFastTemps(scope)}${built.code}return ${built.value};}`,
   );

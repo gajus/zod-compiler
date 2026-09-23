@@ -147,7 +147,7 @@ export interface CodeGenContext {
   sharedConstantNames?: ReadonlyMap<string, string> | undefined;
   /** Name of the build path's FAIL sentinel, declared once per validator. */
   buildFailName?: string;
-  /** Hosted build-function name per recursion target refId, so back-edges resolve. */
+  /** Hosted build-function name per recursion target refId (0: the root's own), so back-edges resolve. */
   buildRecNames?: Map<number, string>;
   /** Memo for estimateFastCost (size-gated fast-check extraction). Lazily created. */
   fastSizeCache?: WeakMap<SchemaIR, number>;

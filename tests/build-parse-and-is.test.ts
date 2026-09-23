@@ -56,6 +56,44 @@ describe("build-path schema: .is()", () => {
       );
     }
   });
+
+  it("holds for self-recursive roots", () => {
+    // Built twice rather than cloned: a clone's back-edge still points at the
+    // original, which would then carry the compiled methods.
+    const shapes: (() => z.ZodType)[] = [
+      () => {
+        const Tree: z.ZodType = z.object({
+          value: z.string().min(1),
+          children: z.array(z.lazy(() => Tree)),
+        });
+        return Tree;
+      },
+      () => {
+        const Json: z.ZodType = z.lazy(() =>
+          z.union([z.string(), z.number(), z.array(Json), z.record(z.string(), Json)]),
+        );
+        return Json;
+      },
+    ];
+    const recursiveInputs = [
+      { value: "a", children: [{ value: "b", children: [], extra: 1 }] },
+      { value: "a", children: [{ value: "", children: [] }] },
+      { value: "a", children: [{ value: "b" }] },
+      { value: "a", children: null },
+      ["x", 1, ["y", { k: 2 }]],
+      { k: [true] },
+      null,
+    ];
+    for (const make of shapes) {
+      const plainSchema = make();
+      const compiledSchema = jit(make(), { eager: true });
+      for (const input of recursiveInputs) {
+        expect(compiledSchema.is(input), JSON.stringify(input)).toBe(
+          plainSchema.safeParse(input).success,
+        );
+      }
+    }
+  });
 });
 
 describe("build-path schema: parse(), parseAsync() and ~standard", () => {
