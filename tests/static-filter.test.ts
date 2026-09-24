@@ -1,7 +1,57 @@
 import { describe, expect, it } from "vite-plus/test";
-import { mayExportSchemas } from "#src/static-filter.js";
+import { hasObviousCandidateExport, mayExportSchemas } from "#src/static-filter.js";
 
 const TS = "/project/src/file.ts";
+
+describe("hasObviousCandidateExport()", () => {
+  // A match answers "candidate" without transpiling, so it may only ever match
+  // an initializer the full analysis calls a candidate too: a call, a member
+  // access or a `new`.
+  it.each([
+    [
+      "a z.object() export",
+      `import { z } from "zod";\nexport const S = z.object({ a: z.string() });`,
+    ],
+    ["a compile() export", `export const validateUser = compile(UserSchema);`],
+    ["a generic call", `export const s = z.custom<{ a: 1 }>(() => true);`],
+    ["a member access", `export const User = schemas.User;`],
+    ["a new expression", `export const v = new Builder();`],
+    ["a type-annotated export", `export const S: z.ZodType<string> = z.string();`],
+    ["a chain continued on the next line", `export const S = z\n  .object({})\n  .strict();`],
+    ["a let export", `export let S = z.string();`],
+    ["a default-exported call", `export default defineConfig({});`],
+    [
+      "a callee named like a keyword",
+      `export const h = asyncHandler(f);\nexport const c = classNames();`,
+    ],
+  ])("matches %s", (_label, code) => {
+    expect(hasObviousCandidateExport(code)).toBe(true);
+  });
+
+  it.each([
+    ["a function declaration", `export function parse(v: unknown) { return z.string().parse(v); }`],
+    ["classes", `export class UserService {}\nexport default class Repo {}`],
+    ["an arrow function", `export const fmt = (a: string): string => a.trim();`],
+    [
+      "an async arrow",
+      `export const check = async (v: unknown) => z.string().safeParse(v).success;`,
+    ],
+    ["an arrow-typed annotation", `export const fmt: (a: string) => string = trim;`],
+    ["literals and templates", `export const MAX = 5;\nexport const TPL = \`v\${1}\`;`],
+    ["objects and arrays", `export const config = { retries: 3 };\nexport const order = ["a"];`],
+    ["a bare identifier", `export const User = Base;`],
+    ["unary operators", `export const t = typeof a.b;\nexport const v = void f();`],
+    ["await", `export const S = await import("./schemas").then((m) => m.S);`],
+    ["a default-exported function", `export default async function main() {}`],
+    ["re-exports", `export { UserSchema } from "./schemas";\nexport * from "./more";`],
+    [
+      "commented-out exports",
+      `// export const S = z.string();\n/**\n * export const S = z.string();\n */`,
+    ],
+  ])("leaves %s to the full analysis", (_label, code) => {
+    expect(hasObviousCandidateExport(code)).toBe(false);
+  });
+});
 
 describe("mayExportSchemas()", () => {
   describe("skips files whose exports provably cannot be schemas", () => {

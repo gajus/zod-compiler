@@ -20,7 +20,8 @@ import type { Jiti } from "jiti";
  * only export functions, components, or constants — executing them is pure
  * waste. This filter transpiles the single file (no dependencies) with
  * jiti's transform and inspects the top-level exports of the resulting
- * CommonJS with acorn.
+ * CommonJS with acorn — unless a line of the source already settles the
+ * answer (see hasObviousCandidateExport).
  *
  * Conservative by construction: it returns false ("skip") only when every
  * export is statically provable as a non-schema (function, class, arrow,
@@ -42,11 +43,40 @@ function getTransformer(): Promise<Jiti> {
 }
 
 /**
+ * `export const X = ident(…)`, `ident.member`, `ident<T>(…)` or `new Ident(…)`,
+ * or `export default` of the same, starting a line.
+ */
+const OBVIOUS_CANDIDATE_EXPORT =
+  /^[ \t]*export[ \t]+(?:(?:const|let|var)[ \t]+[A-Za-z_$][\w$]*[ \t]*(?::[^=;]*)?=|default[ \t]+)\s*(?:new\s+)?(?!(?:async|function|class|typeof|void|delete|await)\b)[A-Za-z_$][\w$]*\s*[.(<]/m;
+
+/**
+ * Does the source export a value the analysis would call a candidate on sight?
+ *
+ * Such an initializer is a call, member or `new` expression, and
+ * `classifyValue` reports every one of those as a candidate, so for a file that
+ * has one the transpile and parse below cannot change the answer. A schema
+ * file almost always does (`z.object(…)`, `compile(…)`), and skipping jiti's
+ * Babel transform for it took a quarter off a cold build of a 181-file corpus.
+ * The prefixes the analysis calls SAFE stay out of the pattern — `typeof`,
+ * `void` and `delete` (unary), `async`, `function` and `class` — and `await`
+ * is left to it as well.
+ *
+ * A line it misreads — inside a block comment or template literal, an `export`
+ * nested in a namespace, a `<` comparison — errs toward candidate, the
+ * filter's documented safe direction: one extra execution, never a missed
+ * schema.
+ */
+export function hasObviousCandidateExport(code: string): boolean {
+  return OBVIOUS_CANDIDATE_EXPORT.test(code);
+}
+
+/**
  * Check whether a file's exports could include Zod schemas (or compile()
  * results) without executing the file. `filename` selects the TS/JSX
  * transforms; the file does not need to exist on disk.
  */
 export async function mayExportSchemas(code: string, filename: string): Promise<boolean> {
+  if (hasObviousCandidateExport(code)) return true;
   let transpiled: string;
   try {
     const jiti = await getTransformer();
