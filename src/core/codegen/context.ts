@@ -1,3 +1,4 @@
+import type { ZodErrorClass } from "../extract/error-class.js";
 import type {
   BigIntCheckIR,
   CheckIR,
@@ -16,6 +17,17 @@ import {
 
 /** Codegen output mode. "inline" emits self-contained code (CLI .compiled.ts). "lean" emits references to imports from "virtual:zod-compiler/runtime" (unplugin). */
 export type CodegenMode = "inline" | "lean";
+
+/**
+ * The finalizers a validator calls, by the error class its schema fails with
+ * (see zodErrorClassOf): `eager` for issues already collected, `deferred` for a
+ * walk run on the first `.error` read. Codegen names one pair in the generated
+ * code, and each emitter declares or imports whichever names that code uses.
+ */
+export const FINALIZERS = {
+  ZodError: { eager: "__zcFin", deferred: "__zcFinD" },
+  $ZodError: { eager: "__zcFinC", deferred: "__zcFinDC" },
+} as const satisfies Record<ZodErrorClass, { eager: string; deferred: string }>;
 
 /**
  * Kind of a poolable constant. Decides the shared identifier's prefix, so a

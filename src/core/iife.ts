@@ -3,17 +3,27 @@
  * Used by both CLI emitter and unplugin transform.
  */
 
-import { RETAINED_SCHEMA_VAR } from "./codegen/context.js";
+import { FINALIZERS, RETAINED_SCHEMA_VAR } from "./codegen/context.js";
 import type { CompiledSchemaInfo } from "./pipeline.js";
 
 /**
- * Import statement required by generateIIFE output (references
+ * Import statements required by generateIIFE output (references
  * __zodCompilerConfig). `core` is bound for $ZodAsyncError: superRefine and
  * custom callbacks may only reveal that they are async through the promise
- * they return, at which point zod's own synchronous parse raises.
+ * they return, at which point zod's own synchronous parse raises. It also
+ * supplies `$ZodRealError`, the error class `zod/mini` schemas fail with (see
+ * FAIL_CORE_CLASS_DECL); `ZodRealError` is classic's.
+ *
+ * `core` comes from `zod/v4/core` directly — the same module object classic
+ * re-exports as `core`, but reached as a namespace IMPORT, whose member reads a
+ * bundler can resolve one by one. Through classic's `export * as core`
+ * re-export, esbuild instead materializes the whole namespace, every locale
+ * included: a `zod/mini` bundle touching one `__zcCore` member measured 20 KB
+ * before that read and 398 KB after.
  */
 export const ZOD_CONFIG_IMPORT =
-  'import { config as __zodCompilerConfig, core as __zcCore, ZodRealError as __zcZodError } from "zod";';
+  'import { config as __zodCompilerConfig, ZodRealError as __zcZodError } from "zod";\n' +
+  'import * as __zcCore from "zod/v4/core";';
 
 /**
  * File-level `__zcMsg` declaration (must appear once after ZOD_CONFIG_IMPORT):
@@ -79,19 +89,63 @@ export const ZOD_MSG_DECLARATION =
  * `Object.prototype` stays out, as it does from zod's spread. All of it runs only
  * after a caller asks for `.error` on a failed parse, and is memoised in `_c`.
  */
-export const FAIL_CLASS_DECL =
-  "function __ZcFail(e,f,i){this.success=false;this._e=e;this._f=f;this._i=i;this._c=undefined;}" +
-  'Object.defineProperty(__ZcFail.prototype,"error",{configurable:true,get:function(){' +
-  "if(this._c)return this._c;" +
-  "var e=this._f!==null?this._f(this._i):this._e;" +
-  'for(var i=0;i<e.length;i++){var s=e[i],o={},k;if(s.message===undefined&&typeof __zcMsg==="function")s.message=__zcMsg(s);' +
-  'for(k in s){if(k!=="input"&&k!=="continue"&&Object.prototype.hasOwnProperty.call(s,k))o[k]=s[k];}e[i]=o;}' +
-  "return this._c=new __zcZodError(e);}});";
+export const FAIL_CLASS_DECL = failClassDecl("__ZcFail", "__zcZodError");
+
+/**
+ * {@link FAIL_CLASS_DECL} for a schema that fails with zod/v4/core's
+ * `$ZodError` instead of classic's `ZodError`: `zod/mini`, whose methods call
+ * core's parse functions, and raw core (see zodErrorClassOf). The finalization
+ * is identical; only the class constructed at the end differs, and with it
+ * everything the class carries (`name`, the trait `instanceof` tests,
+ * classic's `.format()`/`.flatten()`).
+ *
+ * A class of its own, with its own finalizers, rather than a constructor
+ * picked per failure: generated code names the pair its schema needs, so a
+ * bundle keeps only the class its validators construct (see failClassDecl).
+ */
+export const FAIL_CORE_CLASS_DECL = failClassDecl("__ZcFailC", "__zcCore.$ZodRealError");
+
+/**
+ * The failure class, for either error flavor; `errorClass` is the constructor
+ * expression.
+ *
+ * Wrapped in a `@__PURE__` IIFE so a bundle drops whichever class its
+ * validators never construct. A bare declaration is kept by every bundler
+ * for the `Object.defineProperty` that installs the getter (rolldown and
+ * esbuild both measured): the core class would cost every classic bundle
+ * ~500 B, and the classic class cost every `zod/mini` bundle 2.3-3.1 KB, since
+ * it carries classic zod's error class in with it. The wrapper itself costs a
+ * classic bundle 26-64 B.
+ *
+ * The binding is a `var`, not a hoisted function, so it must be initialized
+ * before a validator fails. Every emitter declares it at the head of the module
+ * (or of the evaluated body, under `jit()`), ahead of the finalizers and of
+ * every statement that could run a validator.
+ */
+function failClassDecl(name: string, errorClass: string): string {
+  return (
+    `var ${name}=/* @__PURE__ */(function(){` +
+    `function ${name}(e,f,i){this.success=false;this._e=e;this._f=f;this._i=i;this._c=undefined;}` +
+    `Object.defineProperty(${name}.prototype,"error",{configurable:true,get:function(){` +
+    "if(this._c)return this._c;" +
+    "var e=this._f!==null?this._f(this._i):this._e;" +
+    'for(var i=0;i<e.length;i++){var s=e[i],o={},k;if(s.message===undefined&&typeof __zcMsg==="function")s.message=__zcMsg(s);' +
+    'for(k in s){if(k!=="input"&&k!=="continue"&&Object.prototype.hasOwnProperty.call(s,k))o[k]=s[k];}e[i]=o;}' +
+    `return this._c=new ${errorClass}(e);}});` +
+    `return ${name};})();`
+  );
+}
 
 /** Eager finalizer (mutation / partial-fast-path schemas): issues already
  * collected in `e`; success short-circuits to a plain result literal. */
-export const FIN_DECL =
-  "function __zcFin(e,d){if(!e.length)return{success:true,data:d};return new __ZcFail(e,null,null);}";
+export const FIN_DECL = finDecl(FINALIZERS.ZodError.eager, "__ZcFail");
+
+/** {@link FIN_DECL} for schemas failing with core's `$ZodError` (see {@link FAIL_CORE_CLASS_DECL}). */
+export const FIN_CORE_DECL = finDecl(FINALIZERS.$ZodError.eager, "__ZcFailC");
+
+function finDecl(name: string, failClass: string): string {
+  return `function ${name}(e,d){if(!e.length)return{success:true,data:d};return new ${failClass}(e,null,null);}`;
+}
 
 /**
  * Deferred-collection finalizer for Fast-Path-eligible schemas. When the
@@ -115,7 +169,26 @@ export const FIN_DECL =
  * mutated value (zod materializes at parse time). Same caveat class as the
  * documented __zcFin deferral.
  */
-export const FIN_DEFERRED_DECL = "function __zcFinD(f,inp){return new __ZcFail(null,f,inp);}";
+export const FIN_DEFERRED_DECL = finDeferredDecl(FINALIZERS.ZodError.deferred, "__ZcFail");
+
+/** {@link FIN_DEFERRED_DECL} for schemas failing with core's `$ZodError` (see {@link FAIL_CORE_CLASS_DECL}). */
+export const FIN_DEFERRED_CORE_DECL = finDeferredDecl(FINALIZERS.$ZodError.deferred, "__ZcFailC");
+
+function finDeferredDecl(name: string, failClass: string): string {
+  return `function ${name}(f,inp){return new ${failClass}(null,f,inp);}`;
+}
+
+/**
+ * Whether generated code that uses `helpers` builds core `$ZodError`s.
+ *
+ * Every emitter has always supplied the classic `__zcFin` whether or not any
+ * validator calls it. A file whose validators fail with core errors skips that
+ * default (a validator that does call it names it anyway): there it would be
+ * dead code that reaches for classic zod's error class.
+ */
+export function usesCoreErrors(helpers: ReadonlySet<string>): boolean {
+  return helpers.has(FINALIZERS.$ZodError.eager) || helpers.has(FINALIZERS.$ZodError.deferred);
+}
 
 /**
  * Compact-mode failure class — a lazy failure that delegates error reporting to

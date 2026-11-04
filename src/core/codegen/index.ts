@@ -1,3 +1,4 @@
+import type { ZodErrorClass } from "../extract/error-class.js";
 import type { SchemaIR } from "../types.js";
 import type {
   CodeGenContext,
@@ -17,6 +18,7 @@ import {
   emitRetainedMethod,
   emitRfDelegate,
   emitRuntimeHelper,
+  FINALIZERS,
   hasMutation,
   needsProtoScrub,
   RETAINED_SCHEMA_VAR,
@@ -50,6 +52,13 @@ export interface GenerateValidatorOptions {
   onConstant?: ((constant: GeneratedConstant) => void) | undefined;
   /** Internal exact-initializer plan used by the file pipeline's final generation pass. */
   sharedConstantNames?: ReadonlyMap<string, string> | undefined;
+  /**
+   * The error class the schema's own methods fail with (`zodErrorClassOf` on
+   * the root schema): classic's `ZodError`, or core's `$ZodError` for
+   * `zod/mini`. Picks the finalizers (see FINALIZERS), and so the class a
+   * failed parse's `.error` is built with. Defaults to `"ZodError"`.
+   */
+  errorClass?: ZodErrorClass | undefined;
 }
 
 /**
@@ -68,6 +77,10 @@ export function generateValidator(
 ): CodeGenResult {
   const fnName = `safeParse_${name}`;
   const mode: CodegenMode = options?.mode ?? "inline";
+  // Every failure the compiled walk reports goes through one of these two, so
+  // they decide the class `.error` is built with. (Compact and root-fallback
+  // validators return zod's own result, built by the schema's own class.)
+  const { eager: fin, deferred: finD } = FINALIZERS[options?.errorClass ?? "ZodError"];
   const ctx: CodeGenContext = {
     preamble: [],
     counter: 0,
@@ -319,10 +332,10 @@ export function generateValidator(
     for (const t of ctx.recTargets.values()) {
       if (t.isRoot) continue;
       const body = generateSlow(t.inner as SchemaIR, createSlowGen("_d", "_d", "[]", "_e", ctx));
-      ctx.usedHelpers.add("__zcFin");
+      ctx.usedHelpers.add(fin);
       ctx.preamble.push(
         `function ${t.slowName}(input){var _e=[];\nvar _d=input;\n${body}\n` +
-          `if(_e.length===0){return{success:true,data:_d};}\nreturn __zcFin(_e,_d);}`,
+          `if(_e.length===0){return{success:true,data:_d};}\nreturn ${fin}(_e,_d);}`,
       );
     }
   }
@@ -346,7 +359,7 @@ export function generateValidator(
   // read every property twice — but it is still an EXACT acceptance predicate
   // (stripping reshapes the output, never the verdict), so `.is()` installs it.
   if (buildFnName !== null && ctx.buildFailName !== undefined) {
-    ctx.usedHelpers.add("__zcFinD");
+    ctx.usedHelpers.add(finD);
     const built = `__bd_${ctx.counter++}`;
     // A self-recursive walk calls this validator BY NAME (slowRecursiveRef),
     // and that binding exists only inside the named function expression — so
@@ -356,13 +369,13 @@ export function generateValidator(
     const recursive = slowCode.includes(fnName);
     let deferred: string;
     if (recursive) {
-      deferred = `__zcFinD(function(input){var _e=[];\nvar _d=input;\n${slowCode}\nreturn _e;},input)`;
+      deferred = `${finD}(function(input){var _e=[];\nvar _d=input;\n${slowCode}\nreturn _e;},input)`;
     } else {
       const walkName = `__sw_${ctx.counter++}`;
       ctx.preamble.push(
         `function ${walkName}(input){var _e=[];\nvar _d=input;\n${slowCode}\nreturn _e;}`,
       );
-      deferred = `__zcFinD(${walkName},input)`;
+      deferred = `${finD}(${walkName},input)`;
     }
     return {
       code: buildCode(),
@@ -426,7 +439,7 @@ export function generateValidator(
     // it within V8's inlining budget — callers in hot loops get the
     // success-path result object escape-analyzed away entirely, which the
     // old shape (slow walk inlined into the body) made impossible.
-    ctx.usedHelpers.add("__zcFinD");
+    ctx.usedHelpers.add(finD);
     if (slowCode.includes(fnName)) {
       // Self-recursive slow paths call the safeParse function by NAME
       // (slowRecursiveRef) — that binding exists only inside the named
@@ -436,7 +449,7 @@ export function generateValidator(
       // shape; everything else gets the hosted walk.
       functionDefParts.push(
         `if(${fastExpr}){return{success:true,data:${fastData}};}`,
-        `return __zcFinD(function(input){`,
+        `return ${finD}(function(input){`,
         `var _e=[];`,
         `var _d=input;`,
         slowCode,
@@ -451,7 +464,7 @@ export function generateValidator(
       );
       functionDefParts.push(
         `if(${fastExpr}){return{success:true,data:${fastData}};}`,
-        `return __zcFinD(${walkName},input);`,
+        `return ${finD}(${walkName},input);`,
         `}`,
       );
     }
@@ -493,7 +506,7 @@ export function generateValidator(
     `var _d=input;`,
     slowCode,
     `if(_e.length===0){return{success:true,data:_d};}`,
-    `return __zcFin(_e,_d);`,
+    `return ${fin}(_e,_d);`,
     `}`,
   );
 

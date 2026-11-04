@@ -16,8 +16,11 @@ import { ISSUE_DECLS, RUNTIME_HELPER_DECLS, ZC_SR_RUN_DECL } from "../core/codeg
 import { fastTestSource, WELL_KNOWN_REGEXES } from "../core/codegen/well-known-regex.js";
 import {
   FAIL_CLASS_DECL,
+  FAIL_CORE_CLASS_DECL,
   FAILZ_CLASS_DECL,
+  FIN_CORE_DECL,
   FIN_DECL,
+  FIN_DEFERRED_CORE_DECL,
   FIN_DEFERRED_DECL,
   FINZ_DECL,
   MK_VALIDATOR_DECL,
@@ -65,11 +68,17 @@ function buildRuntimeSource(): string {
     // Module-local (never imported by generated code) — __zcFin/__zcFinD below
     // construct it. Must precede them; both reference __ZcFail by closure.
     FAIL_CLASS_DECL,
+    // Module-local likewise — the core-error twin __zcFinC/__zcFinDC construct,
+    // for validators of zod/mini schemas. A bundle compiling none of those
+    // tree-shakes it out with them.
+    FAIL_CORE_CLASS_DECL,
     // Module-local (never imported by generated code) — __zcFinZ constructs it.
     FAILZ_CLASS_DECL,
     `export ${MK_VALIDATOR_DECL}`,
     `export ${FIN_DECL}`,
     `export ${FIN_DEFERRED_DECL}`,
+    `export ${FIN_CORE_DECL}`,
+    `export ${FIN_DEFERRED_CORE_DECL}`,
     `export ${FINZ_DECL}`,
     // Module-local (never imported by generated code) — __zcSr/__zcSrOk call it.
     ZC_SR_RUN_DECL,
@@ -135,6 +144,8 @@ export const ALL_HELPER_NAMES: readonly string[] = [
   "__zcMkv",
   "__zcFin",
   "__zcFinD",
+  "__zcFinC",
+  "__zcFinDC",
   "__zcFinZ",
   ...Object.keys(ISSUE_DECLS),
   ...Object.keys(RUNTIME_HELPER_DECLS),

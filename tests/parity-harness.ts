@@ -7,12 +7,16 @@ import { expect } from "vite-plus/test";
 import { ZodRealError, z, core } from "zod";
 import { generateValidator } from "#src/core/codegen/index.js";
 import { RETAINED_SCHEMA_VAR } from "#src/core/codegen/context.js";
+import { zodErrorClassOf } from "#src/core/extract/error-class.js";
 import type { ExtractOptions, RefEntry } from "#src/core/extract/index.js";
 import { extractSchema } from "#src/core/extract/index.js";
 import {
   FAIL_CLASS_DECL,
+  FAIL_CORE_CLASS_DECL,
   FAILZ_CLASS_DECL,
+  FIN_CORE_DECL,
   FIN_DECL,
+  FIN_DEFERRED_CORE_DECL,
   FIN_DEFERRED_DECL,
   FINZ_DECL,
   ZOD_CONFIG_IMPORT,
@@ -66,6 +70,7 @@ export function compileLikeProduction(
   const generated = generateValidator(ir, name, {
     refCount: refEntries.length,
     compact: options?.compact,
+    errorClass: zodErrorClassOf(schema),
   });
   const rf = refEntries.map((e) => e.schema);
   const factory = new Function(
@@ -81,7 +86,9 @@ export function compileLikeProduction(
     RETAINED_SCHEMA_VAR,
     // Strict, like the ES module the generated code ships inside: an
     // assignment to an undeclared identifier must fail here, not in the bundle.
-    `"use strict";${ZOD_MSG_DECLARATION}${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\n${generated.code}\nreturn ${generated.functionDef};`,
+    // The `$ZodError` finalizers a zod/mini schema's validator calls instead
+    // (see FAIL_CORE_CLASS_DECL), declared from the production source too.
+    `"use strict";${ZOD_MSG_DECLARATION}${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}${FAIL_CORE_CLASS_DECL}${FIN_CORE_DECL}${FIN_DEFERRED_CORE_DECL}\n${generated.code}\nreturn ${generated.functionDef};`,
   );
   return factory(z.config, ZodRealError, core, localizedFin, finZ, rf, schema) as (
     input: unknown,
@@ -109,6 +116,7 @@ export function compileLeanLikeProduction(
   const generated = generateValidator(ir, name, {
     refCount: refEntries.length,
     mode: "lean",
+    errorClass: zodErrorClassOf(schema),
   });
   return evaluateLean(`${generated.code}\nreturn ${generated.functionDef};`, refEntries);
 }
@@ -255,6 +263,16 @@ function renderIssue(issue: unknown): unknown {
 }
 
 /**
+ * What tells zod's error classes apart: the `name` zod assigns, and the traits
+ * its `instanceof` checks read (`z.ZodError` tests for "ZodError", which only
+ * classic's class carries; core's `$ZodError` carries "$ZodError" alone).
+ */
+export function errorClassSignature(error: unknown): { name: unknown; traits: string[] } {
+  const { name, _zod } = error as { name?: unknown; _zod?: { traits?: Iterable<string> } };
+  return { name, traits: [...(_zod?.traits ?? [])].sort() };
+}
+
+/**
  * Assert compiled accept/reject, output data, and the whole ISSUE LIST match Zod
  * for every input. Schemas that throw synchronously (async refinements, function
  * schemas) must throw identically on both sides.
@@ -386,6 +404,14 @@ function expectCompiledParity(
       }
     }
     if (!zodResult.success && !compiledResult.success) {
+      // The error's CLASS before its contents. Classic and zod/mini schemas
+      // fail with different classes holding the same issues, so every check
+      // below passed while compiled Mini schemas returned classic's `ZodError`.
+      expect(
+        errorClassSignature(compiledResult.error),
+        `error class for ${describeInput(input)}`,
+      ).toStrictEqual(errorClassSignature(zodResult.error));
+
       const zodIssues = (zodResult.error?.issues ?? []) as { code?: string; path?: unknown[] }[];
       const compiledIssues = compiledResult.error.issues as { code?: string; path?: unknown[] }[];
       expect(

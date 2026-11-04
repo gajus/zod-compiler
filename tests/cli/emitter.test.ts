@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { z } from "zod";
+import * as zm from "zod/mini";
 import { generateCompiledFileContent, resolveOutputPath } from "#src/cli/emitter.js";
 import { expectParses } from "../expect-parses.js";
 import type { CodeGenResult } from "#src/core/codegen/index.js";
@@ -140,7 +141,8 @@ describe("generateCompiledFileContent()", () => {
     expectParses(content);
 
     expect(content).toContain(
-      'import { config as __zodCompilerConfig, core as __zcCore, ZodRealError as __zcZodError } from "zod"',
+      'import { config as __zodCompilerConfig, ZodRealError as __zcZodError } from "zod";\n' +
+        'import * as __zcCore from "zod/v4/core";',
     );
     // __zcMsg, __zcMkv, __zcFin are declared at file level (once per file).
     // __zcMsg reads the config PER CALL — a snapshot would miss a `z.config()`
@@ -150,6 +152,37 @@ describe("generateCompiledFileContent()", () => {
     expect(content).toContain("c.localeError");
     expect(content).toContain("function __zcMkv(fn,schema,fc,is)");
     expect(content).toContain("function __zcFin(e,d)");
+  });
+
+  it("declares the $ZodError finalizers for zod/mini exports, and classic ones only where used", () => {
+    // A compiled zod/mini schema fails with core's `$ZodError`, as the schema
+    // itself does, through its own finalizers and class (FAIL_CORE_CLASS_DECL).
+    const mini = compileSchemas(
+      [{ exportName: "Mini", schema: zm.object({ name: zm.string() }) }],
+      {
+        mode: "inline",
+      },
+    );
+    const miniOnly = generateCompiledFileContent(mini.schemas, "./mini.ts");
+    expectParses(miniOnly);
+    expect(miniOnly).toContain("var __ZcFailC=");
+    expect(miniOnly).toMatch(/function __zcFinD?C\(/);
+    // Nothing calls the classic pair, and its class is what references
+    // classic zod's error, so a Mini-only file leaves both out.
+    expect(miniOnly).not.toContain("var __ZcFail=");
+    expect(miniOnly).not.toMatch(/function __zcFinD?\(/);
+
+    const mixed = compileSchemas(
+      [
+        { exportName: "Mini", schema: zm.object({ name: zm.string() }) },
+        { exportName: "Classic", schema: z.object({ name: z.string() }) },
+      ],
+      { mode: "inline" },
+    );
+    const both = generateCompiledFileContent(mixed.schemas, "./mixed.ts");
+    expectParses(both);
+    expect(both).toContain("var __ZcFail=");
+    expect(both).toContain("var __ZcFailC=");
   });
 
   it("always imports source schemas for zodCompat", () => {

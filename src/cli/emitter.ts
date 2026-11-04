@@ -2,12 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   FAIL_CLASS_DECL,
+  FAIL_CORE_CLASS_DECL,
   FAILZ_CLASS_DECL,
+  FIN_CORE_DECL,
   FIN_DECL,
+  FIN_DEFERRED_CORE_DECL,
   FIN_DEFERRED_DECL,
   FINZ_DECL,
   generateIIFE,
   MK_VALIDATOR_DECL,
+  usesCoreErrors,
   ZOD_CONFIG_IMPORT,
   ZOD_MSG_DECLARATION,
 } from "../core/iife.js";
@@ -45,6 +49,17 @@ export function generateCompiledFileContent(
   // Compact-mode schemas delegate cold errors to zod via __zcFinZ (its own
   // __ZcFailZ class), emitted only when some export uses it.
   const usesFinZ = schemas.some((s) => s.codegenResult.usedHelpers.has("__zcFinZ"));
+
+  // Exports of zod/mini schemas fail with core's `$ZodError`, through their own
+  // finalizer pair (see FAIL_CORE_CLASS_DECL). The classic pair is emitted as it
+  // always has been, whether called or not, except in a file whose validators
+  // all build core errors: there nothing calls it.
+  const usesCore = schemas.some((s) => usesCoreErrors(s.codegenResult.usedHelpers));
+  const usesClassic = schemas.some(
+    (s) =>
+      s.codegenResult.usedHelpers.has("__zcFin") || s.codegenResult.usedHelpers.has("__zcFinD"),
+  );
+  const classicFinalizers = usesClassic || !usesCore;
 
   // A schema needs the source import when:
   //   - zodCompat: true (__zcMkv installs compiled methods on the schema)
@@ -85,10 +100,10 @@ export function generateCompiledFileContent(
     "",
     ZOD_CONFIG_IMPORT,
     ZOD_MSG_DECLARATION,
-    FAIL_CLASS_DECL,
+    ...(classicFinalizers ? [FAIL_CLASS_DECL] : []),
     MK_VALIDATOR_DECL,
-    FIN_DECL,
-    FIN_DEFERRED_DECL,
+    ...(classicFinalizers ? [FIN_DECL, FIN_DEFERRED_DECL] : []),
+    ...(usesCore ? [FAIL_CORE_CLASS_DECL, FIN_CORE_DECL, FIN_DEFERRED_CORE_DECL] : []),
     ...(usesFinZ ? [FAILZ_CLASS_DECL, FINZ_DECL] : []),
     ...(options?.sharedCode ? ["", options.sharedCode] : []),
     "",

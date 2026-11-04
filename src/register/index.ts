@@ -3,8 +3,8 @@ import { registerHooks } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { init } from "es-module-lexer";
-import type { ZodType } from "zod";
 import { isCompiledSchema } from "../core/compile.js";
+import type { CompilableSchema } from "../core/types.js";
 import { jit, jitAll, type JitOptions } from "../jit.js";
 import type { ZodCompilerRegisterConfig } from "./config.js";
 import { decodeModuleSource, instrumentModule, isRegisterFormat } from "./transform.js";
@@ -63,7 +63,7 @@ registerHooks({
 
 function registerValue(value: unknown): void {
   if (config.schemas === "explicit") {
-    if (isCompiledSchema(value)) jit(value as unknown as ZodType, jitOptions);
+    if (isCompiledSchema(value)) jit(value as unknown as CompilableSchema, jitOptions);
   } else {
     jitAll({ value }, jitOptions);
   }

@@ -6,6 +6,7 @@ import type {
 } from "./codegen/context.js";
 import { createSharedSchemaPlan, SHARED_BLOCK_MARKER } from "./codegen/dedupe.js";
 import { generateValidator } from "./codegen/index.js";
+import { zodErrorClassOf, type ZodErrorClass } from "./extract/error-class.js";
 import type { RefEntry } from "./extract/index.js";
 import { extractSchema } from "./extract/index.js";
 import type { DiscoveredSchema, SchemaIR } from "./types.js";
@@ -153,12 +154,21 @@ export function compileSchemas(
     schema: unknown;
     ir: SchemaIR;
     refEntries: RefEntry[];
+    errorClass: ZodErrorClass;
   }> = [];
   for (const s of schemas) {
     try {
       const refEntries: RefEntry[] = [];
       const ir = extractSchema(s.schema, refEntries);
-      extracted.push({ exportName: s.exportName, schema: s.schema, ir, refEntries });
+      extracted.push({
+        exportName: s.exportName,
+        schema: s.schema,
+        ir,
+        refEntries,
+        // Read off the schema object, whose methods the validator replaces;
+        // the IR is the same for classic and mini.
+        errorClass: zodErrorClassOf(s.schema),
+      });
     } catch (err) {
       handle(s.exportName, err);
     }
@@ -181,6 +191,7 @@ export function compileSchemas(
     schema: unknown;
     ir: SchemaIR;
     refEntries: RefEntry[];
+    errorClass: ZodErrorClass;
     codegenResult: CodeGenResult;
   }> = [];
   const constantsByResult = new Map<CodeGenResult, GeneratedConstant[]>();
@@ -192,6 +203,7 @@ export function compileSchemas(
         mode: options.mode,
         sharedSchemas: plan,
         compact: options.compact,
+        errorClass: e.errorClass,
         onConstant(constant) {
           constants.set(constant.name, constant);
         },
@@ -202,6 +214,7 @@ export function compileSchemas(
         schema: e.schema,
         ir: e.ir,
         refEntries: e.refEntries,
+        errorClass: e.errorClass,
         codegenResult,
       });
     } catch (err) {
@@ -228,6 +241,7 @@ export function compileSchemas(
         mode: options.mode,
         sharedSchemas: plan,
         compact: options.compact,
+        errorClass: entry.errorClass,
         sharedConstantNames,
       });
     }

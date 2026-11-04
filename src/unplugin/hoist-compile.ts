@@ -32,6 +32,7 @@
 
 import type { CodegenMode } from "../core/codegen/context.js";
 import { generateValidator } from "../core/codegen/index.js";
+import { zodErrorClassOf } from "../core/extract/error-class.js";
 import { extractSchema, type RefEntry } from "../core/extract/index.js";
 import {
   isUnsupportedZodVersionError,
@@ -118,7 +119,10 @@ async function compileOne(
     // than leaving the plain hoisted construction in place.
     if (ir.type === "fallback") return null;
 
-    const codegenResult = generateValidator(ir, schema.name, { mode });
+    const codegenResult = generateValidator(ir, schema.name, {
+      mode,
+      errorClass: zodErrorClassOf(value),
+    });
     return {
       name: schema.name,
       text: schema.text,

@@ -10,13 +10,17 @@ import {
 } from "../core/extract/zod-version.js";
 import {
   FAIL_CLASS_DECL,
+  FAIL_CORE_CLASS_DECL,
   FAILZ_CLASS_DECL,
+  FIN_CORE_DECL,
   FIN_DECL,
+  FIN_DEFERRED_CORE_DECL,
   FIN_DEFERRED_DECL,
   FINZ_DECL,
   generateIIFE,
   iifeDerefsSchema,
   MK_VALIDATOR_DECL,
+  usesCoreErrors,
   ZOD_CONFIG_IMPORT,
   ZOD_MSG_DECLARATION,
 } from "../core/iife.js";
@@ -366,7 +370,7 @@ export async function transformCodeWithMap(
     staged.apply(spliceEdits);
     if (hoistCompiledCount > 0) {
       hoistHelpers.add("__zcMkv");
-      hoistHelpers.add("__zcFin");
+      if (!usesCoreErrors(hoistHelpers)) hoistHelpers.add("__zcFin");
     }
   }
 
@@ -526,14 +530,17 @@ export async function transformCodeWithMap(
     failed: failedCount,
   });
 
-  // __zcMkv and __zcFin are always needed (they wrap every IIFE). Helpers used
-  // by compiled hoisted schemas ride along in the same injection.
+  // __zcMkv wraps every IIFE. __zcFin has always been supplied alongside it
+  // whether called or not; that default is skipped when the file's validators
+  // fail with core errors (zod/mini, via __zcFinC/__zcFinDC), since a validator
+  // that does call __zcFin lists it already. Helpers used by compiled hoisted
+  // schemas ride along in the same injection.
   const usedHelpers = aggregateUsedHelpers(compiled);
   usedHelpers.add("__zcMkv");
-  usedHelpers.add("__zcFin");
   for (const helper of hoistHelpers) {
     usedHelpers.add(helper);
   }
+  if (!usesCoreErrors(usedHelpers)) usedHelpers.add("__zcFin");
   // Shared dedup validators ride the same runtime import.
   for (const helper of shared.usedHelpers) {
     usedHelpers.add(helper);
@@ -644,9 +651,16 @@ function computeRuntimePrefix(
   if (!code.includes("function __zcMkv(")) {
     prefix.push(MK_VALIDATOR_DECL);
   }
+  // Validators of zod/mini schemas fail with core's `$ZodError`, through the
+  // __zcFinC/__zcFinDC twins and their own __ZcFailC (see FAIL_CORE_CLASS_DECL).
+  const needsFinC = code.includes("__zcFinC(") && !code.includes("function __zcFinC(");
+  const needsFinDC = code.includes("__zcFinDC(") && !code.includes("function __zcFinDC(");
+  const usesCore = code.includes("__zcFinC(") || code.includes("__zcFinDC(");
   // __zcFin and __zcFinD both construct __ZcFail; declare it once before either,
   // guarding against a header already shipped earlier in the same module.
-  const needsFin = !code.includes("function __zcFin(");
+  // __zcFin is supplied even when nothing calls it, as it always has been —
+  // except beside the core twins, where it would be dead code.
+  const needsFin = !code.includes("function __zcFin(") && (!usesCore || code.includes("__zcFin("));
   const needsFinD = code.includes("__zcFinD(") && !code.includes("function __zcFinD(");
   if ((needsFin || needsFinD) && !code.includes("function __ZcFail(")) {
     prefix.push(FAIL_CLASS_DECL);
@@ -656,6 +670,15 @@ function computeRuntimePrefix(
   }
   if (needsFinD) {
     prefix.push(FIN_DEFERRED_DECL);
+  }
+  if ((needsFinC || needsFinDC) && !code.includes("function __ZcFailC(")) {
+    prefix.push(FAIL_CORE_CLASS_DECL);
+  }
+  if (needsFinC) {
+    prefix.push(FIN_CORE_DECL);
+  }
+  if (needsFinDC) {
+    prefix.push(FIN_DEFERRED_CORE_DECL);
   }
   // Compact mode (output: "compact") delegates cold errors to zod via __zcFinZ,
   // which constructs its own __ZcFailZ (distinct from __ZcFail).

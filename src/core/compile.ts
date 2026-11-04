@@ -1,5 +1,5 @@
-import type { output, ZodType } from "zod";
-import type { CompiledSchema } from "./types.js";
+import type { output } from "zod";
+import type { CompilableSchema, CompiledSchema } from "./types.js";
 
 const COMPILED_MARKER = Symbol.for("zod-compiler:compiled");
 
@@ -42,10 +42,11 @@ function createFallback<T>(zodSchema: unknown): CompiledSchema<T> {
  * compiled marker so build-time discovery can find it.
  * After `npx zod-compiler generate`, import from the `.compiled.ts` file instead.
  *
+ * Accepts classic `zod` and `zod/mini` schemas alike (see {@link CompilableSchema}).
  * The return type is `T & CompiledSchema<output<T>>`, preserving the original
  * Zod schema type for compatibility with libraries like `@hono/zod-validator`.
  */
-export function compile<T extends ZodType>(zodSchema: T): T & CompiledSchema<output<T>> {
+export function compile<T extends CompilableSchema>(zodSchema: T): T & CompiledSchema<output<T>> {
   const result = createFallback<output<T>>(zodSchema);
   if (!(COMPILED_MARKER in (result as object))) {
     Object.defineProperty(result, COMPILED_MARKER, { value: true, enumerable: false });

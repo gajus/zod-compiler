@@ -36,15 +36,19 @@
  * the same validator with no runtime evaluation at all.
  */
 
-import { config as zodConfig, core as zodCore, ZodRealError, type output, type ZodType } from "zod";
+import { config as zodConfig, core as zodCore, ZodRealError, type output } from "zod";
 import {
   FAIL_CLASS_DECL,
+  FAIL_CORE_CLASS_DECL,
   FAILZ_CLASS_DECL,
+  FIN_CORE_DECL,
   FIN_DECL,
+  FIN_DEFERRED_CORE_DECL,
   FIN_DEFERRED_DECL,
   FINZ_DECL,
   generateIIFE,
   MK_VALIDATOR_DECL,
+  usesCoreErrors,
   ZOD_MSG_DECLARATION,
 } from "./core/iife.js";
 import {
@@ -55,7 +59,7 @@ import {
   zodVersionOf,
 } from "./core/extract/zod-version.js";
 import { compileSchemas } from "./core/pipeline.js";
-import type { CompiledSchema } from "./core/types.js";
+import type { CompilableSchema, CompiledSchema } from "./core/types.js";
 import { isZodSchema } from "./is-zod-schema.js";
 
 /**
@@ -64,6 +68,10 @@ import { isZodSchema } from "./is-zod-schema.js";
  * evaluated code has no module scope to resolve. Byte-for-byte the same helper
  * source the CLI emitter writes into a `.compiled.ts`, so a JIT validator and
  * an AOT one share their entire runtime layer.
+ *
+ * Two of them, by the error class the schema fails with: the classic finalizers,
+ * or the `$ZodError` twins a `zod/mini` schema's validator calls. Each schema is
+ * evaluated on its own, so it gets exactly the pair its code names.
  */
 const RUNTIME_PRELUDE = [
   ZOD_MSG_DECLARATION,
@@ -71,6 +79,15 @@ const RUNTIME_PRELUDE = [
   MK_VALIDATOR_DECL,
   FIN_DECL,
   FIN_DEFERRED_DECL,
+  FAILZ_CLASS_DECL,
+  FINZ_DECL,
+].join("\n");
+const RUNTIME_PRELUDE_CORE = [
+  ZOD_MSG_DECLARATION,
+  FAIL_CORE_CLASS_DECL,
+  MK_VALIDATOR_DECL,
+  FIN_CORE_DECL,
+  FIN_DEFERRED_CORE_DECL,
   FAILZ_CLASS_DECL,
   FINZ_DECL,
 ].join("\n");
@@ -120,9 +137,10 @@ export interface JitOptions {
  *
  * Schemas the compiler cannot reproduce fall back to Zod per sub-schema, the
  * same way they do at build time; a schema that cannot be compiled at all is
- * left as plain Zod.
+ * left as plain Zod. `zod/mini` schemas compile the same way, and keep failing
+ * with Mini's own error class (see {@link CompilableSchema}).
  */
-export function jit<T extends ZodType>(
+export function jit<T extends CompilableSchema>(
   schema: T,
   options?: JitOptions,
 ): T & CompiledSchema<output<T>> {
@@ -352,7 +370,10 @@ function fromZod(
  */
 export function jitAll(schemas: object, options?: JitOptions): void {
   for (const value of Object.values(schemas)) {
-    if (isZodSchema(value)) jit(value, options);
+    // Whatever zod built, raw `zod/v4/core` schemas included. jit()'s
+    // narrower constraint keeps the TYPE it returns honest; this call
+    // discards the return, and the runtime path takes any zod schema.
+    if (isZodSchema(value)) jit(value as CompilableSchema, options);
   }
 }
 
@@ -425,9 +446,10 @@ function buildValidator(schema: unknown, options?: JitOptions): void {
   const compiled = schemas[0];
   if (compiled === undefined) throw new Error("zod-compiler: schema produced no validator");
 
-  const body = [RUNTIME_PRELUDE, shared.code, `return ${generateIIFE("__schema", compiled)};`].join(
-    "\n",
-  );
+  const prelude = usesCoreErrors(compiled.codegenResult.usedHelpers)
+    ? RUNTIME_PRELUDE_CORE
+    : RUNTIME_PRELUDE;
+  const body = [prelude, shared.code, `return ${generateIIFE("__schema", compiled)};`].join("\n");
 
   // The three bindings ZOD_CONFIG_IMPORT would have imported, passed in so the
   // evaluated code needs no module resolution of its own.

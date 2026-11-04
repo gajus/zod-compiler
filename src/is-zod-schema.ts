@@ -1,9 +1,11 @@
-import type { ZodType } from "zod";
+import type { core } from "zod";
 
 /**
  * Is this value a Zod schema? Zod schemas carry `_zod.def`, so that is the
  * probe — the same one auto-discovery uses at build time and `jitAll` uses at
- * runtime.
+ * runtime. It holds for every flavor (classic, `zod/mini`, raw `zod/v4/core`),
+ * so the narrowing is to the `$ZodType` they all extend, not to classic's
+ * `ZodType`.
  *
  * The probe is applied to values the caller does not control: every own value
  * of a module namespace under `jitAll`, every export of a candidate file under
@@ -17,7 +19,7 @@ import type { ZodType } from "zod";
  * Kept as a leaf module with no runtime imports: `jit`/`jitAll` reach it on the
  * startup path, where pulling in the build-time graph would be pure cost.
  */
-export function isZodSchema(value: unknown): value is ZodType {
+export function isZodSchema(value: unknown): value is core.$ZodType {
   if (typeof value !== "object" || value === null) return false;
   try {
     if (!("_zod" in value)) return false;

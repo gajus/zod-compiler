@@ -9,6 +9,10 @@ Requires **Zod ≥ 4.5**; compiled output reproduces 4.5's semantics exactly, so
 earlier 4.x releases. Use zod-compiler 1.x for Zod 4.0–4.4. An older Zod is refused with an explicit
 error; the build plugin and `jit()` warn once and leave schemas as plain Zod.
 
+Classic `zod` and `zod/mini` schemas compile alike, and `compile()` and `jit()` accept both. A compiled
+schema fails the way its flavor does: classic schemas with `ZodError`, Mini schemas with Zod core's
+`$ZodError`.
+
 - [What Gets Compiled](#what-gets-compiled)
 - [Schema Hoisting](#schema-hoisting)
 - [z.compile vs zod-compiler](#zcompile-vs-zod-compiler)

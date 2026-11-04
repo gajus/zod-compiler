@@ -3,6 +3,9 @@
  * Extracted from Zod's `_zod.def` and `_zod.bag` at build time.
  */
 
+import type { ZodType } from "zod";
+import type { ZodMiniType } from "zod/mini";
+
 // ─── Check IR ───────────────────────────────────────────────────────────────
 
 /** Shared base: static custom error message extracted from the check's `error` param. */
@@ -819,3 +822,17 @@ export interface CompiledSchema<T> {
    */
   is(input: unknown): input is T;
 }
+
+/**
+ * What `compile()` and `jit()` accept: a schema built by classic `zod` or by
+ * `zod/mini`. The compiler reads only the internals the two share, so either
+ * compiles to the same validator.
+ *
+ * Deliberately narrower than zod/v4/core's `$ZodType`, which both extend. Both
+ * functions return the schema itself, typed as carrying `parse`/`safeParse`,
+ * and until a build replaces them those are the schema's OWN methods (and stay
+ * so under `jit()` wherever runtime codegen is off). A schema built straight
+ * from `zod/v4/core` has none, so admitting it would type-check calls that
+ * throw.
+ */
+export type CompilableSchema = ZodType | ZodMiniType;
