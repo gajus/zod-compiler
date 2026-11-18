@@ -570,3 +570,109 @@ describe("__zcMkv — identity preservation (zod identity-keyed APIs)", () => {
     expect("_zod" in bag).toBe(false);
   });
 });
+
+/**
+ * A ZodError leaves `parse()` / `parseAsync()` carrying the frames of whoever
+ * called them.
+ *
+ * Zod constructs its errors with stack capture switched off and restores the
+ * frames only where the error is THROWN (`captureStackTrace(e, callee)` in
+ * `parse` / `parseAsync`). The compiled methods build theirs through the same
+ * constructor and used to raise it untouched: `.stack` was the message and
+ * nothing else, so a failure surfacing in a log or an uncaught-exception
+ * report said what was wrong and not where.
+ */
+describe("__zcMkv — thrown errors carry their caller's stack", () => {
+  type Mkv = (
+    fn: (input: unknown) => unknown,
+    schema: object | null,
+    fc: ((input: unknown) => boolean) | null,
+  ) => {
+    parse: (input: unknown) => unknown;
+    parseAsync: (input: unknown) => Promise<unknown>;
+    safeParse: (input: unknown) => { error: Error };
+  };
+  const mkv = new Function(`${MK_VALIDATOR_DECL}; return __zcMkv;`)() as Mkv;
+
+  /** An error as zod's constructor leaves it: no frames, only the header line. */
+  const frameless = (): Error => {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 0;
+    try {
+      return new Error("frameless");
+    } finally {
+      Error.stackTraceLimit = limit;
+    }
+  };
+  const frames = (error: unknown): string[] =>
+    String((error as Error).stack)
+      .split("\n")
+      .filter((line) => line.trimStart().startsWith("at "));
+
+  // Named so the frame the stack has to start at can be recognized.
+  function syncCaller(validator: { parse: (input: unknown) => unknown }): unknown {
+    try {
+      return validator.parse(0);
+    } catch (error) {
+      return error;
+    }
+  }
+  async function asyncCaller(validator: {
+    parseAsync: (input: unknown) => Promise<unknown>;
+  }): Promise<unknown> {
+    try {
+      return await validator.parseAsync(0);
+    } catch (error) {
+      return error;
+    }
+  }
+
+  // Both closure variants `__zcMkv` builds: with a by-reference fast check and without.
+  const VARIANTS: [string, ((input: unknown) => boolean) | null][] = [
+    ["with a fast check", () => false],
+    ["without a fast check", null],
+  ];
+
+  for (const [label, fc] of VARIANTS) {
+    it(`parse() raises the validator's own error, with the caller as its first frame (${label})`, () => {
+      const error = frameless();
+      expect(frames(error)).toEqual([]);
+      const thrown = syncCaller(mkv(() => ({ success: false, error }), null, fc));
+
+      expect(thrown).toBe(error);
+      expect(frames(thrown)[0]).toContain("syncCaller");
+    });
+
+    it(`parseAsync() rejects with the caller as the first frame (${label})`, async () => {
+      const error = frameless();
+      const thrown = await asyncCaller(mkv(() => ({ success: false, error }), null, fc));
+
+      expect(thrown).toBe(error);
+      expect(frames(thrown)[0]).toContain("asyncCaller");
+    });
+  }
+
+  it("leaves a safeParse error exactly as the validator built it", () => {
+    const error = frameless();
+    const validator = mkv(() => ({ success: false, error }), null, null);
+
+    expect(validator.safeParse(0).error).toBe(error);
+    expect(frames(error)).toEqual([]);
+  });
+
+  it("still raises the error on an engine without Error.captureStackTrace", () => {
+    const error = frameless();
+    const validator = mkv(() => ({ success: false, error }), null, null);
+    // Taken off and put back as a descriptor, so the engine's own function
+    // returns to its slot exactly as it was.
+    const descriptor = Object.getOwnPropertyDescriptor(Error, "captureStackTrace");
+    if (descriptor === undefined) throw new Error("this engine has no Error.captureStackTrace");
+    Reflect.deleteProperty(Error, "captureStackTrace");
+    try {
+      expect(syncCaller(validator)).toBe(error);
+    } finally {
+      Object.defineProperty(Error, "captureStackTrace", descriptor);
+    }
+    expect(frames(error)).toEqual([]);
+  });
+});

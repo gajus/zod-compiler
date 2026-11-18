@@ -321,11 +321,41 @@ export const FINZ_DECL = "function __zcFinZ(z,r,i){return new __ZcFailZ(z,r,i);}
  * and even across eight schemas sharing this closure — where it cannot — the
  * direct call came out level (41.5 vs 41.8 ns), for a wider signature on every
  * bundle.
+ *
+ * `parse()` and `parseAsync()` put the stack frames back on the error they are
+ * about to raise (`__zcSt`). Zod builds every ZodError with stack capture
+ * suppressed — it dominates a failed parse (see `newError` in
+ * zod/v4/core/core.js) — and then, in `parse`/`parseAsync` alone, restores the
+ * frames with `captureStackTrace(e, callee)`: a THROWN error points at its
+ * caller, while the `.error` of a `safeParse` result carries no frames at all.
+ * The compiled pair constructs through that same suppressing constructor,
+ * inside the lazy `.error` accessor, and used to raise the result as it came —
+ * a ZodError whose `.stack` was its message and nothing else, so an uncaught or
+ * logged failure gave no indication of where the parse had been called from.
+ *
+ * The callee handed over is the method itself, as zod hands over its own, so
+ * the first frame is the caller's in both. That is why the two are NAMED
+ * function expressions: the name lets each refer to itself without `__zcMkv`
+ * holding it in a variable, i.e. without a context slot per compiled schema
+ * (measured: 472 B retained per validator before and after). Failure path only
+ * — the success exits are untouched — and `safeParse` is left alone because
+ * zod's carries no frames either.
+ *
+ * `__zcSt` is module-local (generated code never imports it) and rides along in
+ * this declaration, after `__zcMkv` so that an `export ` prefix still lands on
+ * the factory, rather than being a closure `__zcMkv` would allocate per schema.
+ * An engine without `Error.captureStackTrace` is one where zod never suppressed
+ * the capture in the first place, so there the error already has its frames.
  */
 export const MK_VALIDATOR_DECL =
-  "function __zcMkv(fn,schema,fc,is){var w=schema||{};var zpa=w.parseAsync,zspa=w.safeParseAsync;w.parse=fc?function(input){if(fc(input))return input;var r=fn(input);if(r.success)return r.data;throw r.error;}:function(input){var r=fn(input);if(r.success)return r.data;throw r.error;};w.safeParse=fn;w.safeParseAsync=function(input){try{return Promise.resolve(fn(input));}catch(e){if(zspa)return zspa(input);throw e;}};w.parseAsync=fc?function(input){try{if(fc(input))return Promise.resolve(input);var r=fn(input);if(r.success)return Promise.resolve(r.data);return Promise.reject(r.error);}catch(e){if(zpa)return zpa(input);throw e;}}:function(input){try{var r=fn(input);if(r.success)return Promise.resolve(r.data);return Promise.reject(r.error);}catch(e){if(zpa)return zpa(input);throw e;}};w.is=is||function(input){return fn(input).success;};" +
+  "function __zcMkv(fn,schema,fc,is){var w=schema||{};var zpa=w.parseAsync,zspa=w.safeParseAsync;" +
+  "w.parse=fc?function parse(input){if(fc(input))return input;var r=fn(input);if(r.success)return r.data;throw __zcSt(r.error,parse);}:function parse(input){var r=fn(input);if(r.success)return r.data;throw __zcSt(r.error,parse);};" +
+  "w.safeParse=fn;w.safeParseAsync=function(input){try{return Promise.resolve(fn(input));}catch(e){if(zspa)return zspa(input);throw e;}};" +
+  "w.parseAsync=fc?function parseAsync(input){try{if(fc(input))return Promise.resolve(input);var r=fn(input);if(r.success)return Promise.resolve(r.data);return Promise.reject(__zcSt(r.error,parseAsync));}catch(e){if(zpa)return zpa(input);throw e;}}:function parseAsync(input){try{var r=fn(input);if(r.success)return Promise.resolve(r.data);return Promise.reject(__zcSt(r.error,parseAsync));}catch(e){if(zpa)return zpa(input);throw e;}};" +
+  "w.is=is||function(input){return fn(input).success;};" +
   'Object.defineProperty(w,"~standard",{configurable:true,value:{version:1,vendor:"zod",validate:function(input){var r;try{if(fc&&fc(input))return{value:input};r=fn(input);}catch(e){if(zspa)return zspa(input).then(function(q){return q.success?{value:q.data}:{issues:q.error.issues};});throw e;}return r.success?{value:r.data}:{issues:r.error.issues};}}});' +
-  "return w;}";
+  "return w;}" +
+  'function __zcSt(e,c){var t=Error.captureStackTrace;if(typeof t==="function")t(e,c);return e;}';
 
 function extractFunctionName(functionDef: string): string {
   const match = /^function\s+(\w+)\s*\(/.exec(functionDef);

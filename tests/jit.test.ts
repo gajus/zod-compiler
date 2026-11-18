@@ -638,6 +638,79 @@ describe("jit — every installed method agrees with Zod, not just safeParse", (
     );
   });
 
+  /**
+   * Where a failure is REPORTED from, not just what it reports. Zod suppresses
+   * stack capture when it constructs a ZodError and puts the frames back in
+   * `parse` / `parseAsync` only, so a thrown error starts at its caller and a
+   * `safeParse` error has no frames. The compiled methods raised the error as
+   * constructed — a `.stack` holding the message alone.
+   */
+  describe("a thrown ZodError points at its caller, as Zod's does", () => {
+    const frames = (error: unknown): string[] =>
+      String((error as Error).stack)
+        .split("\n")
+        .filter((line) => line.trimStart().startsWith("at "));
+
+    // One call site per method, shared by the plain and the compiled schema, so
+    // the frame each error has to start at is the same line of this file.
+    function throwSite(schema: z.ZodType, input: unknown): unknown {
+      try {
+        return schema.parse(input);
+      } catch (error) {
+        return error;
+      }
+    }
+    async function rejectSite(schema: z.ZodType, input: unknown): Promise<unknown> {
+      try {
+        return await schema.parseAsync(input);
+      } catch (error) {
+        return error;
+      }
+    }
+
+    const SHAPES: [string, () => z.ZodType, unknown, Parameters<typeof jit>[1]][] = [
+      ["a rebuilt object", () => z.object({ a: z.string() }), { a: 1 }, { eager: true }],
+      ["a by-reference object", () => z.strictObject({ a: z.string() }), { a: 1 }, { eager: true }],
+      [
+        "a schema delegated to Zod whole",
+        () => z.array(z.number()).readonly(),
+        ["x"],
+        { eager: true },
+      ],
+      [
+        "compact output, whose error is Zod's own",
+        () => z.strictObject({ a: z.string() }),
+        { a: 1 },
+        { eager: true, output: "compact" },
+      ],
+    ];
+
+    for (const [label, make, bad, options] of SHAPES) {
+      it(`${label}: parse()`, () => {
+        const plain = throwSite(make(), bad);
+        const compiled = throwSite(jit(make(), options), bad);
+
+        expect(compiled).toBeInstanceOf(z.ZodError);
+        expect(frames(plain)[0]).toContain("throwSite");
+        expect(frames(compiled)[0]).toBe(frames(plain)[0]);
+      });
+
+      it(`${label}: parseAsync()`, async () => {
+        const plain = await rejectSite(make(), bad);
+        const compiled = await rejectSite(jit(make(), options), bad);
+
+        expect(compiled).toBeInstanceOf(z.ZodError);
+        expect(frames(plain)[0]).toContain("rejectSite");
+        expect(frames(compiled)[0]).toBe(frames(plain)[0]);
+      });
+
+      it(`${label}: a safeParse error carries no frames, as Zod's does not`, () => {
+        expect(frames(make().safeParse(bad).error)).toEqual([]);
+        expect(frames(jit(make(), options).safeParse(bad).error)).toEqual([]);
+      });
+    }
+  });
+
   const ASYNC: [string, () => z.ZodType, unknown[]][] = [
     ["async refinement", () => z.string().refine(async (v) => v.length > 1), ["ab", "a", 1]],
     ["z.promise()", () => z.promise(z.string()), [Promise.resolve("x"), "x"]],
