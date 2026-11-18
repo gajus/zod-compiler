@@ -33,6 +33,77 @@ function lastIndexReset(regexVar: string, flags: string | undefined): string {
 const HTTP_PROTOCOL_SOURCE = "^https?$";
 
 /**
+ * `regexes.domain.source`, the hostname pattern `z.httpUrl()` installs. Compared
+ * against a url check's hostname SOURCE to recognize zod's own default — see
+ * {@link urlFastAccept}. Pinned against the live zod in
+ * tests/core/codegen/url-fast-accept.test.ts, like the well-known regex table.
+ */
+export const URL_DOMAIN_SOURCE =
+  "^(?=.{1,253}$)([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\\.)+[a-zA-Z]{2,63}$";
+
+/**
+ * Strings `z.url()` accepts WITHOUT the URL parser having to look: an `http` or
+ * `https` URL whose host is a plain lowercase ASCII domain.
+ *
+ * `URL.canParse` costs ~65 ns and `new URL` ~130, on every URL, to answer a
+ * question that for the URLs payloads actually carry has one answer. A match
+ * here proves it, by leaving the parser nothing it can fail on:
+ *
+ *  - the scheme is `http`/`https` followed by `//` — a special scheme with its
+ *    authority, which is also the `://` guard zod applies ahead of the parser;
+ *  - the authority is host and optional port only: no `@`, so no credentials,
+ *    and it ends at `/`, `?`, `#` or the end of the string;
+ *  - the host is dot-separated non-empty labels of `[a-z0-9-]`: no forbidden
+ *    host code point and nothing to percent-decode. No label starts with
+ *    `xn--`, so domain-to-ASCII is the identity (it only decodes and validates
+ *    punycode labels), and the LAST label starts with a letter, so the host
+ *    cannot "end in a number" and be handed to the IPv4 parser, which is where
+ *    `http://1.2.3.4.5` and `http://0x100000000` fail;
+ *  - a port, when present, is one to four digits, so it is in range;
+ *  - what follows is path, query and fragment, which the parser percent-encodes
+ *    and never rejects.
+ *
+ * The tail also excludes tab, LF and CR. Those are what zod deletes from the
+ * value it writes back, so a match additionally means that value is the trimmed
+ * input itself.
+ *
+ * Deliberately one-directional and narrow: an uppercase scheme or host, an IP
+ * literal, credentials, an IDN, a trailing dot, a five-digit port all simply
+ * fail to match and take the parser, exactly as before. Soundness — every match
+ * is a string zod accepts, yielding the trimmed input — is pinned by a
+ * differential sweep in tests/core/codegen/url-fast-accept.test.ts.
+ */
+export const URL_FAST_ACCEPT_SOURCE = String.raw`^https?:\/\/(?:(?!xn--)[a-z0-9-]+\.)*(?!xn--)[a-z][a-z0-9-]*(?::[0-9]{1,4})?(?:[\/?#][^\t\n\r]*)?$`;
+
+/**
+ * {@link URL_FAST_ACCEPT_SOURCE} for `z.httpUrl()`, whose hostname must ALSO
+ * match zod's `regexes.domain` ({@link URL_DOMAIN_SOURCE}) and whose protocol
+ * must be http(s). The parser lowercases the host and leaves it otherwise as
+ * written (see above), so the domain test can be made on the input: labels that
+ * start and end alphanumeric, at least one dot, a letters-only TLD of two or
+ * more. The lookahead caps the whole host at 63 characters, which bounds every
+ * label and the TLD at zod's 63 and the host at its 253 in one count.
+ */
+export const HTTP_URL_FAST_ACCEPT_SOURCE = String.raw`^https?:\/\/(?=[a-z0-9.-]{1,63}(?:[:\/?#]|$))(?:(?!xn--)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::[0-9]{1,4})?(?:[\/?#][^\t\n\r]*)?$`;
+
+/**
+ * The fast-accept pattern for a url check, or null when it has none: the parsed
+ * URL is itself the output (`normalize` writes back `url.href`), or the check
+ * constrains hostname/protocol with something other than zod's own
+ * `z.httpUrl()` defaults, which only the parsed URL can be tested against.
+ */
+export function urlFastAccept(check: CheckStringFormat): string | null {
+  if (check.normalize === true) return null;
+  const httpProtocol = check.protocol === HTTP_PROTOCOL_SOURCE && !check.protocolFlags;
+  if (check.protocol !== undefined && !httpProtocol) return null;
+  if (check.hostname === undefined) return URL_FAST_ACCEPT_SOURCE;
+  if (check.hostname === URL_DOMAIN_SOURCE && !check.hostnameFlags) {
+    return HTTP_URL_FAST_ACCEPT_SOURCE;
+  }
+  return null;
+}
+
+/**
  * Is this a `z.url()` check — one that trims the value and writes back a
  * rewrite of it? A patterned "url" is a custom format that borrowed the name
  * (see buildString), validating through its own regex like any other format.
@@ -135,6 +206,17 @@ function slowUrlCheck(check: CheckStringFormat, g: SlowGen): string {
         ${parse}
       }`;
   }
+  // An ordinary URL is settled by one regex, and its write-back is the trimmed
+  // input (see urlFastAccept); only what that does not recognize is parsed.
+  const fastAccept = urlFastAccept(check);
+  if (fastAccept !== null) {
+    parse = emit`
+      if(${g.regex("urlOk", fastAccept)}.test(${trimmedVar})){
+        ${g.output}=${trimmedVar};
+      }else{
+        ${parse}
+      }`;
+  }
   return emit`
     var ${trimmedVar}=${g.input}.trim();
     ${parse}`;
@@ -154,7 +236,26 @@ export function buildUrlCheck(
   ctx: CodeGenContext,
 ): string {
   const trimmedVar = temp("but");
-  let code = `${trimmedVar}=${value}.trim();`;
+  const trim = `${trimmedVar}=${value}.trim();`;
+  // An ordinary URL is settled by one regex, and its write-back is the trimmed
+  // input (see urlFastAccept); only what that does not recognize is parsed.
+  const fastAccept = urlFastAccept(check);
+  const parsed = buildParsedUrl(check, value, trimmedVar, fail, temp, ctx);
+  if (fastAccept === null) return trim + parsed;
+  const re = emitRegex(ctx, "urlOk", fastAccept);
+  return `${trim}if(${re}.test(${trimmedVar})){${value}=${trimmedVar};}else{${parsed}}`;
+}
+
+/** The parser half of {@link buildUrlCheck}: zod's guard, `new URL`, and the hostname/protocol tests. */
+function buildParsedUrl(
+  check: CheckStringFormat,
+  value: string,
+  trimmedVar: string,
+  fail: string,
+  temp: (prefix: string) => string,
+  ctx: CodeGenContext,
+): string {
+  let code = "";
   if (!check.normalize && check.protocol === HTTP_PROTOCOL_SOURCE) {
     const re = emitRegex(ctx, "httpUrl", "^https?:\\/\\/", "i");
     code += `if(!${re}.test(${trimmedVar}))return ${fail};`;

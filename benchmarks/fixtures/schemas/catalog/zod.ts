@@ -4,8 +4,9 @@ import { z } from "zod";
 // Money and Image recur across the module, and the product is itself nested in
 // the page, so zod-compiler emits each repeated shape's error walk once per file
 // and calls it from every schema that contains it — shared walks calling shared
-// walks. `z.url()` has no single-pass build path, so both schemas run that
-// error-collecting walk on every parse, valid input included.
+// walks. Every image carries a `z.url()`, the most expensive leaf there is: an
+// ordinary URL is settled by one regex, and only an unusual one reaches the URL
+// parser.
 
 const Money = z.object({
   amount: z.number().int().nonnegative(),

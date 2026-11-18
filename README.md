@@ -657,6 +657,7 @@ single pass that bails on the first failure.
 Other optimizations:
 
 - Regexes pre-compiled, bounded repeats unrolled; `z.email()` is a linear scan, not a backtracking regex.
+- An ordinary `http(s)` URL is accepted by one regex; only an unusual one reaches the URL parser.
 - Checks run cheapest-first, regardless of declaration order.
 - Each nested value is loaded once, so checks stay fast when payloads arrive with different key orders.
 - Discriminated unions dispatch through a `switch`; plain tagged unions are auto-discriminated into one.
