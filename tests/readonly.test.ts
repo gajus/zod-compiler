@@ -84,13 +84,12 @@ describe("readonly — an unobservable freeze compiles away", () => {
 
 describe("readonly — an observable freeze still delegates to Zod", () => {
   // Every container here is one the compiler hands back BY REFERENCE, so
-  // freezing would freeze the caller's own data. z.date()/z.file() are objects
-  // in their own right. Each keeps Zod's rebuild-then-freeze.
+  // freezing would freeze the caller's own data, and none is an array a
+  // `slice()` could stand in for. z.date()/z.file() are objects in their own
+  // right. Each keeps Zod's rebuild-then-freeze.
   const fallsBack: [string, z.ZodType][] = [
     ["strict object", z.strictObject({ a: z.string() }).readonly()],
     ["loose object", z.looseObject({ a: z.string() }).readonly()],
-    ["array", z.array(z.number()).readonly()],
-    ["tuple", z.tuple([z.string()]).readonly()],
     ["record", z.record(z.string(), z.number()).readonly()],
     ["date", z.date().readonly()],
     ["map", z.map(z.string(), z.number()).readonly()],
@@ -99,6 +98,10 @@ describe("readonly — an observable freeze still delegates to Zod", () => {
     ["unknown", z.unknown().readonly()],
     ["union containing an object", z.union([z.string(), z.object({ a: z.string() })]).readonly()],
     ["optional over object", z.object({ a: z.string() }).optional().readonly()],
+    // Not looked through: the value may be `undefined`/`null`, with nothing to slice.
+    ["optional over array", z.array(z.number()).optional().readonly()],
+    ["nullable over array", z.array(z.number()).nullable().readonly()],
+    ["union containing an array", z.union([z.string(), z.array(z.number())]).readonly()],
   ];
 
   for (const [label, schema] of fallsBack) {
@@ -134,6 +137,191 @@ describe("readonly — an observable freeze still delegates to Zod", () => {
     extractSchema(inner, baseline);
     expect(withReadonly.length).toBe(baseline.length);
   });
+});
+
+/**
+ * An array or tuple under `.readonly()`.
+ *
+ * Zod parses it into a fresh array and freezes that. The compiled walks hand a
+ * pass-through array back BY REFERENCE, so freezing what they return would
+ * freeze the caller's own array — which is why these used to be delegated to
+ * Zod whole, at Zod's speed. Two things make them compilable: an array whose
+ * members rewrite is rebuilt by both walks anyway, and one whose members do not
+ * is exactly reproduced by a shallow copy.
+ */
+describe("readonly — an array is frozen as Zod freezes it: a fresh one", () => {
+  type ReadonlyShape = { type: string; freeze?: boolean; copy?: string; inner: { type: string } };
+
+  it("copies an array the walks hand back by reference", () => {
+    const shapes: [string, z.ZodType, string][] = [
+      ["array of primitives", z.array(z.number()).readonly(), "array"],
+      [
+        "array of pass-through objects",
+        z.array(z.strictObject({ a: z.string() })).readonly(),
+        "array",
+      ],
+      ["array with checks", z.array(z.string()).min(1).max(3).readonly(), "array"],
+      ["tuple", z.tuple([z.string(), z.number()]).readonly(), "tuple"],
+      ["tuple with rest", z.tuple([z.string()]).rest(z.number()).readonly(), "tuple"],
+    ];
+    for (const [label, schema, inner] of shapes) {
+      const ir = irOf(schema) as ReadonlyShape;
+      expect(ir, label).toMatchObject({ type: "readonly", freeze: true, copy: "array" });
+      expect(ir.inner.type, label).toBe(inner);
+      expect(diagnoseSchema(ir as never).coveragePct, label).toBe(100);
+    }
+  });
+
+  it("freezes in place an array both walks already rebuilt", () => {
+    const shapes: [string, z.ZodType][] = [
+      ["array of stripping objects", z.array(z.object({ a: z.string() })).readonly()],
+      ["array of rewritten strings", z.array(z.string().trim()).readonly()],
+      ["array of defaults", z.array(z.number().default(1)).readonly()],
+      ["tuple with a rewriting item", z.tuple([z.string().trim(), z.number()]).readonly()],
+      ["array of readonly arrays", z.array(z.array(z.number()).readonly()).readonly()],
+    ];
+    for (const [label, schema] of shapes) {
+      const ir = irOf(schema) as ReadonlyShape;
+      expect(ir, label).toMatchObject({ type: "readonly", freeze: true });
+      expect(ir.copy, label).toBeUndefined();
+    }
+  });
+
+  it("an outer readonly does not copy what an inner one already produced", () => {
+    const ir = irOf(z.array(z.number()).readonly().readonly()) as ReadonlyShape;
+    expect(ir).toMatchObject({
+      type: "readonly",
+      freeze: true,
+      inner: { type: "readonly", freeze: true, copy: "array" },
+    });
+    expect(ir.copy).toBeUndefined();
+  });
+
+  it("withholds every by-reference shortcut", () => {
+    for (const schema of [z.array(z.number()).readonly(), z.tuple([z.string()]).readonly()]) {
+      const ir = irOf(schema);
+      expect(rebuildsOutput(ir)).toBe(true);
+      expect(fastResultIsInput(ir)).toBe(false);
+    }
+  });
+
+  it("returns a frozen copy and leaves the caller's array exactly as it was", () => {
+    const schema = z.array(z.number()).readonly();
+    const compiled = compileLikeProduction(schema, "roArray");
+    const input = [1, 2, 3];
+    const result = compiled(input) as { success: boolean; data: number[] };
+
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual([1, 2, 3]);
+    expect(result.data).not.toBe(input);
+    expect(Object.isFrozen(result.data)).toBe(true);
+    expect(Object.isFrozen(input)).toBe(false);
+    input.push(4);
+    expect(result.data).toEqual([1, 2, 3]);
+  });
+
+  it("accepts an input that is itself frozen", () => {
+    const schema = z.array(z.number()).readonly();
+    const input = Object.freeze([1, 2]);
+    const result = compileLikeProduction(schema, "roFrozenIn")(input) as { data: unknown };
+    expect(result.data).toEqual(schema.parse(input));
+    expect(Object.isFrozen(result.data)).toBe(true);
+  });
+
+  // Verdict, data, issues, frozen-ness of the output, and that the caller's
+  // input is neither frozen nor changed — each against Zod, input by input.
+  const PARITY: [string, z.ZodType, unknown[]][] = [
+    [
+      "array of numbers",
+      z.array(z.number()).readonly(),
+      [[1, 2], [], ["x"], [1, "x"], null, "no", {}],
+    ],
+    [
+      "array with size checks and a refinement",
+      z
+        .array(z.string())
+        .min(1)
+        .max(2)
+        .refine((values) => values[0] !== "no")
+        .readonly(),
+      [["a"], [], ["a", "b", "c"], ["no"], [1]],
+    ],
+    [
+      "array of pass-through objects",
+      z.array(z.strictObject({ a: z.string() })).readonly(),
+      [[{ a: "x" }], [{ a: 1 }], [{ a: "x", b: 1 }], []],
+    ],
+    [
+      "array of stripping objects",
+      z.array(z.object({ a: z.string() })).readonly(),
+      [[{ a: "x", extra: 1 }], [{ a: 1 }], [], "no"],
+    ],
+    ["array of anything", z.array(z.any()).readonly(), [[1, "a", null, undefined], [], 1]],
+    [
+      "tuple",
+      z.tuple([z.string(), z.number()]).readonly(),
+      [["a", 1], ["a"], [1, "a"], ["a", 1, 2], []],
+    ],
+    [
+      "tuple with rest",
+      z.tuple([z.string()]).rest(z.number()).readonly(),
+      [["a"], ["a", 1, 2], ["a", "b"], []],
+    ],
+    [
+      "tuple with an optional tail",
+      z.tuple([z.string(), z.number().optional()]).readonly(),
+      [["a"], ["a", 1], ["a", undefined], [1]],
+    ],
+    [
+      "tuple that pads a short input",
+      z.tuple([z.string(), z.number().default(7)]).readonly(),
+      [["a"], ["a", 1], []],
+    ],
+    [
+      "a field of a stripping object",
+      z.object({ id: z.string(), tags: z.array(z.string()).readonly() }),
+      [{ id: "a", tags: ["x"], extra: 1 }, { id: "a", tags: [1] }, { id: "a" }, {}],
+    ],
+    [
+      "a field of a strict object",
+      z.strictObject({ tags: z.array(z.string()).readonly() }),
+      [{ tags: ["x"] }, { tags: ["x"], extra: 1 }, { tags: "x" }],
+    ],
+    [
+      "a field of a loose object",
+      z.looseObject({ tags: z.array(z.string()).readonly() }),
+      [{ tags: ["x"], more: 1 }, { tags: [1] }],
+    ],
+    [
+      "nested readonly arrays",
+      z.array(z.array(z.number()).readonly()).readonly(),
+      [[[1], [2, 3]], [[1], ["x"]], [1], []],
+    ],
+    [
+      "an option of a union",
+      z.union([z.string(), z.array(z.number()).readonly()]),
+      ["a", [1], ["x"], 1],
+    ],
+    [
+      "beside a field that keeps the schema on the eager walk",
+      z.object({ xs: z.array(z.number()).readonly(), c: z.number().catch(0) }),
+      [
+        { xs: [1], c: "bad" },
+        { xs: [1], c: 1 },
+        { xs: ["x"], c: 1 },
+      ],
+    ],
+    [
+      "inside a record",
+      z.record(z.string(), z.array(z.number()).readonly()),
+      [{ a: [1], b: [] }, { a: ["x"] }],
+    ],
+    ["double readonly", z.array(z.number()).readonly().readonly(), [[1], ["x"]]],
+  ];
+
+  for (const [label, schema, inputs] of PARITY) {
+    it(`matches Zod: ${label}`, () => assertParity(schema, inputs, label));
+  }
 });
 
 describe("readonly — a stripping object freezes the value it rebuilt", () => {
@@ -264,7 +452,7 @@ describe("readonly — parity with Zod", () => {
     assertParity(z.union([z.string(), z.number()]).readonly(), ["a", 1, true], "union");
   });
 
-  it("container readonly still matches Zod through the fallback", () => {
+  it("container readonly matches Zod, compiled or delegated", () => {
     assertParity(
       z.object({ name: z.string() }).readonly(),
       [{ name: "Alice" }, {}, null, "not object"],
@@ -297,7 +485,7 @@ describe("readonly — parity with Zod", () => {
   it("a delegated readonly explains itself instead of claiming to be unsupported", () => {
     // The generic "not yet supported" hint reads as an oversight; delegating a
     // pass-through container is a deliberate trade-off, so it gets its own reason.
-    const d = diagnoseSchema(irOf(z.array(z.string()).readonly()));
+    const d = diagnoseSchema(irOf(z.record(z.string(), z.string()).readonly()));
     expect(d.fallbacks[0]?.reason).toBe("readonly");
     expect(d.fallbacks[0]?.hint).toContain("caller's own input");
     expect(d.fastPathBlocker).toBe("fallback (readonly)");

@@ -21,6 +21,7 @@ export const ReadonlyRootSchema = z
   .readonly();
 
 // 3. Over an array — a container compiled validators hand back BY REFERENCE.
-//    Freezing it would freeze the caller's own array, so this still delegates to
-//    zod; the row exists to keep that cost visible rather than invisible.
+//    Freezing it would freeze the caller's own array, so the validator freezes a
+//    shallow copy instead, which is what zod's own rebuild amounts to here. Costs
+//    the copy plus the Object.freeze that zod also pays.
 export const ReadonlyArraySchema = z.array(z.number().int()).readonly();

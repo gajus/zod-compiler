@@ -809,11 +809,13 @@ function passthrough(ir: SchemaIR, input: string, g: BuildGen): Built | null {
 /**
  * Freeze the inner's built value, matching zod's `Object.freeze(payload.value)`.
  *
- * Sound only because `freeze` is set exclusively over a stripping object, whose
- * build ALWAYS allocates (`buildObject` assembles a fresh `__bo_N`) — so the
- * frozen value is never the caller's input. A pass-through inner would return
- * `input` here and freezing it would mutate data the caller still owns, which
- * is why the extractor withholds the flag for every other container.
+ * Sound only because the frozen value is never the caller's input. Without
+ * `copy`, `freeze` is set exclusively over an inner whose build ALWAYS
+ * allocates — a stripping object (`buildObject` assembles a fresh `__bo_N`), an
+ * array or tuple of rewriting members (`buildArray` / `buildTuple`). With
+ * `copy`, the inner is an array validated in place: its build is a pass-through
+ * that returns `input`, freezing which would mutate data the caller still owns,
+ * so it is the `slice()` that gets frozen (see ReadonlyIR.copy).
  */
 function buildReadonly(
   ir: SchemaIR & { type: "readonly" },
@@ -823,7 +825,8 @@ function buildReadonly(
   const built = build(ir.inner, input, g);
   if (built === null || ir.freeze !== true) return built;
   const slot = local(g, "bz");
-  return { code: `${built.code}${slot}=Object.freeze(${built.value});`, value: slot };
+  const value = ir.copy === "array" ? `${built.value}.slice()` : built.value;
+  return { code: `${built.code}${slot}=Object.freeze(${value});`, value: slot };
 }
 
 function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {

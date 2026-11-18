@@ -554,7 +554,7 @@ A schema delegates to Zod when it reaches JavaScript the generated code cannot r
 | `ctx`-taking or `async` callbacks                    | Needs Zod's parse context / the async pipeline                             |
 | `z.jwt()`                                            | Algorithmic format (signature parsing)                                     |
 | Overlapping or policy-sensitive object intersections | Zod's independent parse-and-merge semantics cannot be safely collapsed     |
-| `.readonly()` over a pass-through container          | Zod freezes the output it rebuilt; these are the caller's own input        |
+| `.readonly()` over a pass-through object, set or map | Zod freezes the output it rebuilt; these are the caller's own input        |
 | Unresolvable `z.lazy()`                              | Not knowable at build time                                                 |
 
 Everything else compiles, including context-free `preprocess` callbacks and
@@ -607,7 +607,7 @@ Schema-level `error` and `z.config()` maps are unaffected; for a per-call map us
 | large object (100 items)                        | 13K    | 18K    | **764K**         | 1.3M  | 124K  | **43x**   |
 | readonly field (wrapper compiles away)          | 3.1M   | 6.6M   | **17.8M**        | —     | —     | 2.7x      |
 | readonly root object (rebuild + freeze)         | 2.9M   | 5.6M   | **13.5M**        | —     | —     | 2.4x      |
-| readonly array (delegates to Zod)               | 4.0M   | 4.4M   | **4.4M**         | —     | —     | 1.0x      |
+| readonly array (copy + freeze)                  | 4.0M   | 4.2M   | **12.9M**        | —     | —     | 3.1x      |
 | recursive tree (7 nodes)                        | 574K   | 997K   | **9.0M**         | 11.9M | 4.8M  | 9.0x      |
 | recursive tree (121 nodes)                      | 32K    | 58K    | **986K**         | 1.9M  | 375K  | **17x**   |
 | nested recursion (7 nodes)                      | 390K   | 696K   | **7.8M**         | 10.5M | 2.9M  | **11x**   |

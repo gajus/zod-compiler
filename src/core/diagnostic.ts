@@ -75,7 +75,7 @@ const FALLBACK_HINTS: Record<string, string> = {
   custom: "Replace z.custom() with a supported schema type",
   lazy: "Ensure the lazy getter resolves to a static schema (recursion compiles automatically)",
   readonly:
-    "Zod freezes the container it rebuilt; compiled containers are the caller's own input, so this delegates rather than freeze it. .readonly() over a primitive compiles",
+    "Zod freezes the container it rebuilt; this one is the caller's own input, so it delegates rather than freeze that. .readonly() over a primitive, a z.object() or an array compiles",
   unsupported: "This schema type is not yet supported by zod-compiler",
   coalesced:
     "Every property falls back to Zod, so the whole object is delegated once (faster than per-field delegation)",

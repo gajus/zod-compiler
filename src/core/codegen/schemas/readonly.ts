@@ -15,8 +15,15 @@ export function slowReadonly(ir: SchemaIR & { type: "readonly" }, g: SlowGen): s
   // siblings, so an absolute test would skip the freeze as soon as an earlier
   // sibling had failed. Same relative-mark discipline as slowObject's
   // refineMark, slowPipe's lenVar and slowEffect's beforeVar.
+  //
+  // `copy` slices first: the walk leaves a pass-through array in `output` as
+  // the caller's own (see ReadonlyIR.copy). A clean inner means the value is
+  // that array, so there is always something to slice — and slicing a value the
+  // walk happened to copy already (a member handed back a replacement) costs a
+  // second small copy on a path that only runs eagerly when no build pass does.
   const mark = g.temp("rf");
-  return `var ${mark}=${g.issues}.length;\n${inner}if(${g.issues}.length===${mark}){${g.output}=Object.freeze(${g.output});}\n`;
+  const value = ir.copy === "array" ? `${g.output}.slice()` : g.output;
+  return `var ${mark}=${g.issues}.length;\n${inner}if(${g.issues}.length===${mark}){${g.output}=Object.freeze(${value});}\n`;
 }
 
 export function fastReadonly(ir: ReadonlyIR, g: FastGen): string | null {

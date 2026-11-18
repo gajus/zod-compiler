@@ -38,7 +38,7 @@ describe("safeParse: readonly root object (rebuild + freeze)", () => {
   });
 });
 
-describe("safeParse: readonly array (delegates to zod)", () => {
+describe("safeParse: readonly array (copy + freeze)", () => {
   bench("zod", () => {
     ReadonlyArraySchema.safeParse(validReadonlyArray);
   });

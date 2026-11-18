@@ -344,8 +344,13 @@ describe("extractSchema — readonly", () => {
   });
 
   it("falls back for readonly over a pass-through container (would freeze caller input)", () => {
-    const ir = extractSchema(z.array(z.string()).readonly());
+    const ir = extractSchema(z.record(z.string(), z.string()).readonly());
     expect(ir.type).toBe("fallback");
+  });
+
+  it("freezes a copy of a pass-through array rather than delegating it", () => {
+    const ir = extractSchema(z.array(z.string()).readonly());
+    expect(ir).toMatchObject({ type: "readonly", freeze: true, copy: "array" });
   });
 });
 

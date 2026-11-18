@@ -564,6 +564,18 @@ export interface ReadonlyIR {
    * `parse()` / `~standard` can hand back an unfrozen input.
    */
   freeze?: boolean;
+  /**
+   * Freeze a shallow COPY of the inner's value instead of the value itself.
+   * Only ever set together with {@link freeze}.
+   *
+   * Set when the inner is an array or tuple the compiled walks validate in
+   * place and hand back by reference: there the value IS the caller's own
+   * array, and freezing it would be a side effect on the caller that zod —
+   * which freezes the array it rebuilt — does not have. `slice()` gives the
+   * same thing zod's rebuild does for such a node, a fresh array holding the
+   * very elements that were validated, and that copy is what gets frozen.
+   */
+  copy?: "array";
 }
 
 export interface DefaultIR {
