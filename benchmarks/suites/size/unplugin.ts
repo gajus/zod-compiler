@@ -4,9 +4,10 @@
  * Builds a 5-file fixture (10 schemas, all sharing z.email() and z.uuid())
  * with the unplugin in autoDiscover mode and measures the resulting bundle.
  *
- * The cross-file dedup objective: well-known regexes (`__zcReEmail`,
- * `__zcReUuid`) and shared helpers (`__zcMkv`, `__zcFin`, issue factories) must
- * appear exactly ONCE in the bundle no matter how many files reference them.
+ * The cross-file dedup objective: well-known regexes (`__zcReUuid`), the
+ * `z.email()` scanner (`__zcEmail`) and shared helpers (`__zcMkv`, `__zcFin`,
+ * issue factories) must appear exactly ONCE in the bundle no matter how many
+ * files reference them.
  *
  * Run: vp run size:unplugin
  */
@@ -26,7 +27,7 @@ interface BundleResult {
   gzip: number;
   /** Number of occurrences of each well-known dedup probe in the bundled chunk. */
   probes: {
-    emailRegex: number;
+    emailScanner: number;
     emailSrcString: number;
     mkvFactory: number;
     uuidRegex: number;
@@ -69,10 +70,14 @@ async function bundle(plugins: ZodCompilerPlugin[]): Promise<BundleResult> {
     raw: Buffer.byteLength(code, "utf-8"),
     gzip: gzipSync(code).length,
     probes: {
-      // Distinctive substrings from each pattern; they survive minification.
-      // __zcReEmail is built from the fast rewrite (structural local part, no
-      // lookaheads); __zcReEmailSrc carries zod's original pattern for issues.
-      emailRegex: count(code, "(?:[A-Za-z0-9_'+"),
+      // Distinctive fragments of each shared artifact; they survive minification.
+      // z.email() runs the `__zcEmail` scanner, not a RegExp (see ZC_EMAIL_DECL),
+      // so its probe is a fragment of CODE rather than of a pattern string — see
+      // EMAIL_SCANNER_PROBE. The fast email regex is no longer referenced by any
+      // validator and is tree-shaken out, which is why probing for it reported a
+      // dedup failure on a bundle that had none. __zcReEmailSrc still carries
+      // zod's original pattern for issues.
+      emailScanner: count(code, EMAIL_SCANNER_PROBE),
       emailSrcString: count(code, "(?!.*"),
       // __zcReUuid is built with counted repeats unrolled into explicit
       // repetition, so only it has a character class sitting directly before
@@ -87,7 +92,19 @@ async function bundle(plugins: ZodCompilerPlugin[]): Promise<BundleResult> {
   };
 }
 
-function count(haystack: string, needle: string): number {
+/**
+ * The one stretch of `__zcEmail` nothing else in a bundle spells: the local
+ * part's punctuation test — `_`, `'`, `+`, `-` by character code, in that order
+ * (`c===95||c===39||c===43||c===45`). A scanner has no string literal to look
+ * for, so the probe has to tolerate what a minifier does to code: the variable
+ * is renamed, a lib build keeps its whitespace, and `===` may be narrowed to
+ * `==`.
+ */
+const EMAIL_SCANNER_PROBE =
+  /={2,3}\s*95\s*\|\|\s*[\w$]+\s*={2,3}\s*39\s*\|\|\s*[\w$]+\s*={2,3}\s*43\s*\|\|\s*[\w$]+\s*={2,3}\s*45/g;
+
+function count(haystack: string, needle: string | RegExp): number {
+  if (typeof needle !== "string") return [...haystack.matchAll(needle)].length;
   let n = 0;
   let from = 0;
   for (;;) {
@@ -113,7 +130,7 @@ async function main() {
 
   // Cross-file dedup is working iff each probe appears exactly once.
   const allDeduped =
-    optimized.probes.emailRegex === 1 &&
+    optimized.probes.emailScanner === 1 &&
     optimized.probes.emailSrcString === 1 &&
     optimized.probes.uuidRegex === 1 &&
     optimized.probes.uuidSrcString === 1 &&
@@ -123,7 +140,7 @@ async function main() {
   console.log("Cross-file dedup probes (each must appear exactly once):");
   // oxlint-disable-next-line no-console -- report output
   console.log(
-    `  __zcReEmail    (fast regex):     ${optimized.probes.emailRegex}  ${optimized.probes.emailRegex === 1 ? "OK" : "FAIL"}`,
+    `  __zcEmail      (linear scan):    ${optimized.probes.emailScanner}  ${optimized.probes.emailScanner === 1 ? "OK" : "FAIL"}`,
   );
   // oxlint-disable-next-line no-console -- report output
   console.log(
