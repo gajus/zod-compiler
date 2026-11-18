@@ -95,12 +95,19 @@ export const extractRegistry = {
 // Lives here (not in types.ts) to avoid circular imports:
 // visit() → dispatch() → imports from types.ts
 
+/** What an extractor asked of `dispatch` beyond the IR it returned. */
+interface ExtractionRequests {
+  /** Leave this node's issues to zod (see ExtractorContext.delegateIssues). */
+  delegateIssues: boolean;
+}
+
 function createExtractorContext(
   schema: unknown,
   path: string,
   refs: RefEntry[] | undefined,
   visiting: Set<unknown>,
   recursion: RecursionState,
+  requests: ExtractionRequests,
 ): ExtractorContext {
   return {
     schema,
@@ -114,6 +121,9 @@ function createExtractorContext(
     },
     fallback(reason: FallbackIR["reason"]) {
       return makeFallback(reason, schema, refs, path);
+    },
+    delegateIssues() {
+      requests.delegateIssues = true;
     },
   };
 }
@@ -183,7 +193,9 @@ export function dispatch(
   visiting.add(zodSchema);
   try {
     const extractor = extractRegistry[def.type as SupportedZodDefType];
-    const ctx = createExtractorContext(zodSchema, path, refs, visiting, recursion);
+    // Per node: a child gets a context (and requests) of its own through visit().
+    const requests: ExtractionRequests = { delegateIssues: false };
+    const ctx = createExtractorContext(zodSchema, path, refs, visiting, recursion, requests);
     let ir = extractor ? extractor(def, ctx) : makeFallback("unsupported", zodSchema, refs, path);
     if (ir.type === "fallback") return ir;
 
@@ -193,15 +205,35 @@ export function dispatch(
     }
 
     // Schema-level custom error (z.string({ error: "..." })): bake static
-    // messages as the node's default issue message; dynamic error maps can't
-    // be compiled — delegate to Zod so messages stay exact.
+    // messages as the node's default issue message. A dynamic error map can't
+    // be baked, so the node's issues go to zod instead (below).
     if (def.error !== undefined) {
       const resolved = resolveCheckMessage(def.error);
       if (resolved.kind === "dynamic") {
-        return makeFallback("refine", zodSchema, refs, path);
-      }
-      if (resolved.kind === "static") {
+        requests.delegateIssues = true;
+      } else if (resolved.kind === "static") {
         ir = { ...ir, typeMessage: resolved.message };
+      }
+    }
+
+    // A message only zod can produce — a dynamic error map on the schema or on
+    // one of its checks. The map cannot change what the node accepts or yields,
+    // so the IR extracted above stands and keeps its fast and build paths; only
+    // the issue walk is handed to the retained schema, which runs the map on
+    // the failure it is reporting. (Delegating the whole node, as this once
+    // did, cost the enclosing schema its fast path, its build path and its
+    // `.is()` over what is, on valid input, dead code: 96.5 against 32.4 ns for
+    // one such field in a seven-field object, 106 against 7.4 ns on rejection.)
+    //
+    // Without a ref table there is nothing to hold the retained schema, so the
+    // node falls back as before. A `custom` node already produces its issues
+    // through its own schema, and a `zodDelegate` already delegates.
+    if (requests.delegateIssues) {
+      if (refs === undefined) return makeFallback("refine", zodSchema, refs, path);
+      if (ir.type !== "custom" && ir.type !== "zodDelegate") {
+        const refIndex = refs.length;
+        refs.push({ schema: zodSchema, accessPath: path });
+        ir = { type: "zodDelegate", inner: ir, refIndex };
       }
     }
 

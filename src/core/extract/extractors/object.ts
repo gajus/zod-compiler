@@ -142,13 +142,14 @@ export function extractObject(def: ZodDef, ctx: ExtractorContext): SchemaIR {
   };
 
   if (def.checks && def.checks.length > 0) {
-    const { checkIRs, hasFallback } = extractChecks(
+    const { checkIRs, hasFallback, dynamicMessage } = extractChecks(
       def.checks,
       refineRefRegistrar(ctx, def.checks),
       (index) => payloadCheckRef(ctx, def.checks, index),
       customParamsRefRegistrar(ctx, def.checks),
     );
     if (hasFallback) return ctx.fallback("refine");
+    if (dynamicMessage) ctx.delegateIssues();
     // Object codegen supports the two callback kinds; anything else (overwrite,
     // exotic .check() entries) must not be dropped.
     if (checkIRs.some((c) => c.kind !== "refine_effect" && c.kind !== "super_refine_effect")) {

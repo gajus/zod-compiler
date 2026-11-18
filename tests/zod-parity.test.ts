@@ -12,7 +12,7 @@
  * parity against Zod itself.
  */
 import { describe, expect, it } from "vite-plus/test";
-import { ZodRealError, z } from "zod";
+import { core, ZodRealError, z } from "zod";
 import { generateValidator } from "#src/core/codegen/index.js";
 import type { RefEntry } from "#src/core/extract/index.js";
 import { extractSchema } from "#src/core/extract/index.js";
@@ -44,6 +44,9 @@ function compileLikeProduction(
   const factory = new Function(
     "__zcMsg",
     "__zcZodError",
+    // The helpers that run a retained zod schema for a node's issues read zod's
+    // config and `finalizeIssue` through this binding, as emitted modules do.
+    "__zcCore",
     "__zcFin",
     "__rf",
     `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\n${generated.code}\nreturn ${generated.functionDef};`,
@@ -51,6 +54,7 @@ function compileLikeProduction(
   return factory(
     zcMsg,
     ZodRealError,
+    core,
     localizedFin,
     refEntries.map((e) => e.schema),
   ) as (input: unknown) => SafeParseResult<unknown>;
@@ -348,7 +352,7 @@ describe("zod parity — custom error messages", () => {
     expectParity(z.tuple([z.string()], { error: "exactly one" }), [[], ["a", "b"]]);
   });
 
-  it("dynamic error maps fall back so messages stay exact", () => {
+  it("dynamic error maps leave the message to zod, so it stays exact", () => {
     expectParity(
       z.string().refine((v) => v.length > 2, {
         error: (issue) => `got ${String((issue.input as string).length)} chars`,

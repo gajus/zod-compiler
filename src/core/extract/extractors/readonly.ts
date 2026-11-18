@@ -50,6 +50,8 @@ function freezeIsNoop(ir: SchemaIR): boolean {
     case "optional":
     case "nullable":
     case "readonly":
+    // Only its ISSUES come from zod; the value is the inner's own.
+    case "zodDelegate":
       return freezeIsNoop(ir.inner);
     case "union":
     case "discriminatedUnion":
@@ -79,6 +81,10 @@ function freezeTargetIsFresh(ir: SchemaIR): boolean {
       return ir.stripUnknownKeys === true;
     // Freezing twice is idempotent; the inner wrapper does the work.
     case "readonly":
+      return freezeTargetIsFresh(ir.inner);
+    // The build pass produces the inner's value and the eager walk zod's own
+    // output for it, so the wrapper is as fresh as what it wraps.
+    case "zodDelegate":
       return freezeTargetIsFresh(ir.inner);
     default:
       return false;

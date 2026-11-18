@@ -29,23 +29,25 @@ export function extractString(def: ZodDef, ctx: ExtractorContext): SchemaIR {
   // its own check def (check: "string_format"). Reuse extractChecks so pattern
   // flags, url constraints, and custom messages are handled uniformly.
   if (def.check === "string_format") {
-    const { checkIRs, hasFallback } = extractChecks([
+    const { checkIRs, hasFallback, dynamicMessage } = extractChecks([
       { _zod: { def } } as unknown as ZodCheckSchema,
     ]);
     if (hasFallback) return ctx.fallback("unsupported");
+    if (dynamicMessage) ctx.delegateIssues();
     allChecks.push(...checkIRs);
   }
 
   // Appended checks (.min(), .refine(), .trim(), ... — also present on format
   // schemas like z.email().min(5), which previously lost them entirely).
   if (def.checks && def.checks.length > 0) {
-    const { checkIRs, hasFallback } = extractChecks(
+    const { checkIRs, hasFallback, dynamicMessage } = extractChecks(
       def.checks,
       refineRefRegistrar(ctx, def.checks),
       (index) => payloadCheckRef(ctx, def.checks, index),
       customParamsRefRegistrar(ctx, def.checks),
     );
     if (hasFallback) return ctx.fallback("refine");
+    if (dynamicMessage) ctx.delegateIssues();
     allChecks.push(...checkIRs);
   }
 

@@ -239,9 +239,16 @@ export function extractChecks(
 ): {
   checkIRs: CheckOrEffectIR[];
   hasFallback: boolean;
+  /**
+   * A check carries an error map that has to be CALLED to know its message
+   * (see resolveCheckMessage). The check itself is compiled, without a message;
+   * the caller hands the node's issues to zod (ExtractorContext.delegateIssues).
+   */
+  dynamicMessage: boolean;
 } {
   const checkIRs: CheckOrEffectIR[] = [];
   let hasFallback = false;
+  let dynamicMessage = false;
 
   for (const [index, check] of checks.entries()) {
     const def = check._zod?.def;
@@ -254,14 +261,12 @@ export function extractChecks(
       continue;
     }
 
-    // Per-check custom error: bake static messages into the IR; error maps
-    // that read the issue (dynamic) can't be compiled — fall back so Zod
-    // produces the exact message.
+    // Per-check custom error: bake static messages into the IR. A dynamic
+    // error map decides nothing but the message, so the check still compiles —
+    // minus a message — and the node's issues are left to zod, which calls the
+    // map and reports what it answers.
     const resolved = resolveCheckMessage(def.error);
-    if (resolved.kind === "dynamic") {
-      hasFallback = true;
-      continue;
-    }
+    if (resolved.kind === "dynamic") dynamicMessage = true;
     const message = resolved.kind === "static" ? { message: resolved.message } : {};
 
     switch (def.check) {
@@ -445,7 +450,7 @@ export function extractChecks(
     }
   }
 
-  return { checkIRs, hasFallback };
+  return { checkIRs, hasFallback, dynamicMessage };
 }
 
 function regexFields(
@@ -482,8 +487,9 @@ export type ResolvedMessage =
  *     still catches a map that reads its argument on the way there
  *     (`({ code }) => "msg"`).
  *
- * A dynamic map makes the schema fall back to Zod, which produces the exact
- * message.
+ * A dynamic map costs the node nothing but its compiled ISSUES: it cannot
+ * change a verdict, so the node keeps its fast and build paths and only its
+ * cold walk goes to zod, which calls the map (see `delegateIssues`).
  */
 export function resolveCheckMessage(error: unknown): ResolvedMessage {
   if (error === null || error === undefined) return { kind: "none" };

@@ -555,7 +555,7 @@ A schema delegates to Zod when it reaches JavaScript the generated code cannot r
 | `z.jwt()`                                            | Algorithmic format (signature parsing)                                     |
 | Overlapping or policy-sensitive object intersections | Zod's independent parse-and-merge semantics cannot be safely collapsed     |
 | `.readonly()` over a pass-through container          | Zod freezes the output it rebuilt; these are the caller's own input        |
-| Dynamic error maps, unresolvable `z.lazy()`          | Not knowable at build time                                                 |
+| Unresolvable `z.lazy()`                              | Not knowable at build time                                                 |
 
 Everything else compiles, including context-free `preprocess` callbacks and
 `transform`/`refine`/`superRefine` whether or not the callback captures. A zero-capture one is inlined,
@@ -662,8 +662,9 @@ Other optimizations:
 - `z.custom()` / `z.instanceof()` compile to a direct predicate call.
 - Oversized check functions are split to stay within V8's optimizer budget.
 
-Intersections and `custom` keep the original Zod schema to construct issues, so rejections match Zod
-exactly without slowing the hot path.
+Intersections, `custom` and schemas with a dynamic error map (`error: (issue) => …`, an i18n lookup)
+keep the original Zod schema to construct issues, so rejections match Zod exactly without slowing the
+hot path.
 
 ## Development
 

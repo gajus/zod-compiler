@@ -53,9 +53,11 @@ describe("custom schema extraction", () => {
     ).toBe("fallback");
   });
 
-  it("keeps input-dependent error maps delegated to Zod", () => {
+  it("keeps the predicate compiled under an input-dependent error map", () => {
+    // The issue was Zod's to build already (schemaRefIndex), so a dynamic map
+    // changes nothing: Zod calls it while producing that issue.
     const schema = z.custom(() => false, { error: (issue) => `bad ${String(issue.input)}` });
-    expect(extractWithRefs(schema).ir.type).toBe("fallback");
+    expect(extractWithRefs(schema).ir).toMatchObject({ type: "custom", schemaRefIndex: 0 });
     expectParity(schema, [1, "x"]);
   });
 

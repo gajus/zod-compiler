@@ -221,6 +221,19 @@ export interface ExtractorContext {
 
   /** Create a fallback entry for non-compilable sub-schemas. */
   fallback(reason: import("../types.js").FallbackIR["reason"]): import("../types.js").FallbackIR;
+
+  /**
+   * Leave this node's ISSUES to zod while its verdict and output stay compiled.
+   *
+   * Called by an extractor that met a message it cannot bake — an error map on
+   * one of the node's checks whose answer is only known when it is called (see
+   * resolveCheckMessage). A message is all such a map decides: which inputs the
+   * node accepts, and what it yields for them, are exactly what they would be
+   * without it. So the extractor carries on and returns the node's IR as usual,
+   * and `dispatch` wraps it in a `zodDelegate`, whose cold walk hands the value
+   * to the retained schema and whose hot paths never look at it.
+   */
+  delegateIssues(): void;
 }
 
 /** Extractor function signature — registered in extractRegistry. */

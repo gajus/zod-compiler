@@ -11,7 +11,7 @@ export function extractSet(def: ZodDef, ctx: ExtractorContext): SchemaIR {
       if (!checkDef) continue;
       if (hasUncompilableModifiers(checkDef)) return ctx.fallback("refine");
       const resolved = resolveCheckMessage(checkDef.error);
-      if (resolved.kind === "dynamic") return ctx.fallback("refine");
+      if (resolved.kind === "dynamic") ctx.delegateIssues();
       const message = resolved.kind === "static" ? { message: resolved.message } : {};
       if (checkDef.check === "min_size") {
         setChecks.push({ kind: "min_size", minimum: checkDef.minimum, ...message });

@@ -26,7 +26,7 @@ export function extractNumber(def: ZodDef, ctx: ExtractorContext): SchemaIR {
   // its own check def. Schema-level custom error applies to the format issue.
   if (def.check === "number_format" && def.format) {
     const resolved = resolveCheckMessage(def.error);
-    if (resolved.kind === "dynamic") return ctx.fallback("refine");
+    if (resolved.kind === "dynamic") ctx.delegateIssues();
     allChecks.push({
       kind: "number_format",
       format: def.format as "safeint" | "int32" | "uint32" | "float32" | "float64",
@@ -37,13 +37,14 @@ export function extractNumber(def: ZodDef, ctx: ExtractorContext): SchemaIR {
   // Appended checks (.min(), .refine(), ... — also present on format schemas
   // like z.int().refine(fn), which previously lost them entirely).
   if (def.checks && def.checks.length > 0) {
-    const { checkIRs, hasFallback } = extractChecks(
+    const { checkIRs, hasFallback, dynamicMessage } = extractChecks(
       def.checks,
       refineRefRegistrar(ctx, def.checks),
       (index) => payloadCheckRef(ctx, def.checks, index),
       customParamsRefRegistrar(ctx, def.checks),
     );
     if (hasFallback) return ctx.fallback("refine");
+    if (dynamicMessage) ctx.delegateIssues();
     allChecks.push(...checkIRs);
   }
 

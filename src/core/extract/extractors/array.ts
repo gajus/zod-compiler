@@ -21,7 +21,7 @@ export function extractArray(def: ZodDef, ctx: ExtractorContext): SchemaIR {
   if (!def.checks || def.checks.length === 0) {
     return { type: "array", element, checks: [] };
   }
-  const { checkIRs, hasFallback } = extractChecks(
+  const { checkIRs, hasFallback, dynamicMessage } = extractChecks(
     def.checks,
     refineRefRegistrar(ctx, def.checks),
     (i) => payloadCheckRef(ctx, def.checks, i),
@@ -30,6 +30,7 @@ export function extractArray(def: ZodDef, ctx: ExtractorContext): SchemaIR {
   // Previously hasFallback was ignored here, silently dropping uncompilable
   // refinements (e.g. captured-variable .refine()) from compiled output.
   if (hasFallback) return ctx.fallback("refine");
+  if (dynamicMessage) ctx.delegateIssues();
   if (checkIRs.some((c) => !ARRAY_CHECK_KINDS.has(c.kind))) {
     return ctx.fallback("unsupported");
   }

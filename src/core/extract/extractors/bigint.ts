@@ -17,7 +17,7 @@ export function extractBigint(def: ZodDef, ctx: ExtractorContext): SchemaIR {
     const range = BIGINT_FORMAT_RANGES[def.format];
     if (!range) return ctx.fallback("unsupported");
     const resolved = resolveCheckMessage(def.error);
-    if (resolved.kind === "dynamic") return ctx.fallback("refine");
+    if (resolved.kind === "dynamic") ctx.delegateIssues();
     const message = resolved.kind === "static" ? { message: resolved.message } : {};
     bigintChecks.push({
       kind: "bigint_greater_than",
@@ -34,7 +34,7 @@ export function extractBigint(def: ZodDef, ctx: ExtractorContext): SchemaIR {
       if (!checkDef) continue;
       if (hasUncompilableModifiers(checkDef)) return ctx.fallback("refine");
       const resolved = resolveCheckMessage(checkDef.error);
-      if (resolved.kind === "dynamic") return ctx.fallback("refine");
+      if (resolved.kind === "dynamic") ctx.delegateIssues();
       const message = resolved.kind === "static" ? { message: resolved.message } : {};
       switch (checkDef.check) {
         case "greater_than":
