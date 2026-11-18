@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   isContextFreeUnaryCallback,
   observesSecondArgument,
+  returnsFixedValue,
   tryCompileEffect,
 } from "#src/core/extract/effects.js";
 
@@ -27,6 +28,106 @@ describe("isContextFreeUnaryCallback", () => {
   it("rejects async and non-function values", () => {
     expect(isContextFreeUnaryCallback(async (value: unknown) => value)).toBe(false);
     expect(isContextFreeUnaryCallback(null)).toBe(false);
+  });
+});
+
+/**
+ * The gate in front of baking an error map's message at build time: only a
+ * result that cannot differ on a later call may be evaluated now. An error map
+ * that never looks at its issue is not thereby constant — `() => t("key")`
+ * answers with whatever the translation layer holds when it is called.
+ */
+describe("returnsFixedValue", () => {
+  const message = "captured";
+  const params = { error: "captured", message: "captured" };
+  const dictionary = { required: "captured" };
+  const t = (key: string): string => key;
+
+  it("accepts the two closures zod wraps a string message in", () => {
+    // `normalizeParams`: `() => params` for the bare-string form, and
+    // `() => params.error` for `{ error }` / `{ message }`.
+    expect(returnsFixedValue(() => message)).toBe(true);
+    expect(returnsFixedValue(() => params.error)).toBe(true);
+    // The same closures as a down-levelling or minifying bundler prints them.
+    expect(
+      returnsFixedValue(function () {
+        return message;
+      }),
+    ).toBe(true);
+    expect(returnsFixedValue(new Function("e", "return ()=>e;")("m"))).toBe(true);
+    expect(returnsFixedValue(new Function("e", "return ()=>e.error;")({ error: "m" }))).toBe(true);
+  });
+
+  it("accepts a literal result, whatever the function's shape", () => {
+    expect(returnsFixedValue(() => "Required")).toBe(true);
+    expect(returnsFixedValue(() => `Required`)).toBe(true);
+    expect(returnsFixedValue(() => ({ message: "Required" }))).toBe(true);
+    expect(returnsFixedValue((_issue: unknown) => "Required")).toBe(true);
+    expect(
+      returnsFixedValue(function () {
+        return "Required";
+      }),
+    ).toBe(true);
+    const shorthand = {
+      error(this: void) {
+        return "Required";
+      },
+    };
+    expect(returnsFixedValue(shorthand.error)).toBe(true);
+  });
+
+  it("accepts a map that declines, since `undefined` is as fixed as a string", () => {
+    expect(returnsFixedValue(() => undefined)).toBe(true);
+    expect(returnsFixedValue(() => {})).toBe(true);
+    expect(
+      returnsFixedValue(function () {
+        return;
+      }),
+    ).toBe(true);
+  });
+
+  it("refuses anything that computes its answer when called", () => {
+    expect(returnsFixedValue(() => t("required"))).toBe(false);
+    expect(returnsFixedValue(() => dictionary.required)).toBe(false);
+    expect(returnsFixedValue(() => dictionary["required"])).toBe(false);
+    expect(returnsFixedValue(() => params.message)).toBe(false);
+    expect(returnsFixedValue(() => `${message}!`)).toBe(false);
+    expect(returnsFixedValue(() => message + "!")).toBe(false);
+    expect(returnsFixedValue(() => (message ? "a" : "b"))).toBe(false);
+    expect(returnsFixedValue(() => ({ message: t("required") }))).toBe(false);
+    expect(returnsFixedValue(() => ({ ...params }))).toBe(false);
+    expect(
+      returnsFixedValue(() => {
+        const resolved = t("required");
+        return resolved;
+      }),
+    ).toBe(false);
+    const shorthand = {
+      error(this: void) {
+        return t("required");
+      },
+    };
+    expect(returnsFixedValue(shorthand.error)).toBe(false);
+  });
+
+  it("refuses the function's own parameters, which are supplied or defaulted per call", () => {
+    expect(returnsFixedValue((issue: unknown) => issue)).toBe(false);
+    expect(returnsFixedValue((issue: { error: string }) => issue.error)).toBe(false);
+    expect(returnsFixedValue(({ message: own }: { message: string }) => own)).toBe(false);
+    expect(returnsFixedValue((_issue: unknown, resolved = t("required")) => resolved)).toBe(false);
+  });
+
+  it("refuses what it cannot read, and what does not return a message at all", () => {
+    expect(returnsFixedValue(String)).toBe(false);
+    expect(returnsFixedValue((() => "bound").bind(null))).toBe(false);
+    expect(returnsFixedValue(async () => "Required")).toBe(false);
+    expect(
+      returnsFixedValue(function* () {
+        yield "Required";
+      }),
+    ).toBe(false);
+    expect(returnsFixedValue("Required")).toBe(false);
+    expect(returnsFixedValue(null)).toBe(false);
   });
 });
 

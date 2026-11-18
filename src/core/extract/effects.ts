@@ -225,6 +225,111 @@ export function isContextFreeUnaryCallback(fn: unknown): boolean {
 }
 
 /**
+ * Is the value this error map returns FIXED by the time the schema exists?
+ *
+ * Asked before an error map is evaluated at build time to bake its message.
+ * "It never read the issue" is not an answer: `{ error: () => t("required") }`
+ * ignores the issue too, and what it returns is whatever the translation layer
+ * holds when it is CALLED — the active locale during the parse that failed, or
+ * the dictionary loaded since. Evaluating it once and baking the result froze
+ * every such message at whatever the build (or the first parse, under `jit()`)
+ * happened to see.
+ *
+ * So this reads the function's source and accepts only a return that cannot
+ * change between now and then:
+ *
+ *  - a literal — `() => "Required"`, a substitution-free template, or an object
+ *    literal built from such values, `() => ({ message: "Required" })`;
+ *  - a bare captured binding or its `.error` property. These are the two
+ *    closures zod's `normalizeParams` wraps a STRING message in — `() => params`
+ *    for `.min(3, "msg")`, `() => params.error` for `{ error: "msg" }` and
+ *    `{ message: "msg" }` — and by far the common case. They are recognized by
+ *    shape, not by the name `params`, so a zod that was bundled and minified
+ *    (`()=>e`, `()=>e.error`), which `jit()` can meet at runtime, still
+ *    qualifies. tests/error-maps.test.ts pins the shapes against the live zod.
+ *
+ * Anything that computes — a call, a lookup into a dictionary, a conditional,
+ * string building — is refused, as is a body with more than a single `return`.
+ * So is the function's own parameter: that is the issue, or a default evaluated
+ * per call (`(iss, m = t("x")) => m`), never a captured value. The caller
+ * treats a refusal as a dynamic map and leaves the message to zod.
+ *
+ * The one hand-written form this cannot tell from zod's own is `() => message`
+ * over a variable that is reassigned afterwards. Zod's wrapper is that very
+ * shape, so refusing it would cost every plain string message its compiled
+ * path.
+ */
+export function returnsFixedValue(fn: unknown): boolean {
+  if (typeof fn !== "function") return false;
+  const fnNode = recoverSignature(fn.toString()) as
+    | (FunctionNode & { async?: boolean; generator?: boolean })
+    | null;
+  if (fnNode === null || fnNode.body === undefined) return false;
+  // Either hands back a promise or an iterator, never a message.
+  if (fnNode.async === true || fnNode.generator === true) return false;
+  const params = new Set<string>();
+  for (const param of fnNode.params ?? []) collectBindingNames(param, params);
+
+  if (fnNode.body.type !== "BlockStatement") return isFixedValue(fnNode.body, params);
+  const statements = (fnNode.body as Node & { body: Node[] }).body;
+  // An empty body returns `undefined`: zod's "no opinion, ask the next map".
+  if (statements.length === 0) return true;
+  const only = statements[0] as Node & { argument?: Node | null };
+  if (statements.length !== 1 || only.type !== "ReturnStatement") return false;
+  return (
+    only.argument === null || only.argument === undefined || isFixedValue(only.argument, params)
+  );
+}
+
+/**
+ * Does evaluating this expression yield the same value however often, and
+ * whenever, it runs? `params` are the enclosing function's own bindings, which
+ * are supplied (or defaulted) per call and so are never fixed.
+ */
+function isFixedValue(node: Node, params: ReadonlySet<string>): boolean {
+  switch (node.type) {
+    case "Literal":
+      // A regex literal is a fresh object per evaluation (and no message).
+      return !("regex" in node);
+    case "TemplateLiteral":
+      return (node as Node & { expressions: Node[] }).expressions.length === 0;
+    // A captured binding — zod's `() => params` — or `undefined`.
+    case "Identifier":
+      return !params.has((node as Node & { name: string }).name);
+    // Exactly zod's `() => params.error`; any other property is a dictionary lookup.
+    case "MemberExpression": {
+      const member = node as Node & { object: Node; property: Node; computed: boolean };
+      return (
+        !member.computed &&
+        member.object.type === "Identifier" &&
+        !params.has((member.object as Node & { name: string }).name) &&
+        member.property.type === "Identifier" &&
+        (member.property as Node & { name: string }).name === "error"
+      );
+    }
+    case "ObjectExpression":
+      return (node as Node & { properties: Node[] }).properties.every((property) => {
+        // A spread copies whatever its operand holds at call time.
+        if (property.type !== "Property") return false;
+        const entry = property as Node & {
+          computed: boolean;
+          kind: string;
+          method: boolean;
+          value: Node;
+        };
+        return (
+          !entry.computed &&
+          entry.kind === "init" &&
+          !entry.method &&
+          isFixedValue(entry.value, params)
+        );
+      });
+    default:
+      return false;
+  }
+}
+
+/**
  * A `superRefine`: a `custom` check whose callback takes zod's PAYLOAD rather
  * than the value, collecting issues instead of returning a verdict. Zod stores
  * it on the check instance (`_zod.check`) rather than `def.fn`.

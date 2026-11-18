@@ -1,5 +1,10 @@
 import type { CheckOrEffectIR, CheckStringFormat } from "../types.js";
-import { isPayloadCheck, isReferenceablePredicate, tryCompileEffect } from "./effects.js";
+import {
+  isPayloadCheck,
+  isReferenceablePredicate,
+  returnsFixedValue,
+  tryCompileEffect,
+} from "./effects.js";
 import type { ExtractorContext, ZodCheckDef, ZodCheckSchema } from "./types.js";
 
 /**
@@ -464,15 +469,27 @@ export type ResolvedMessage =
  *
  * Zod normalizes `.min(3, "msg")` / `{ error: "msg" }` / `{ message: "msg" }`
  * into an error-map function that ignores its issue argument and returns the
- * string. We call the function with an access-tracking Proxy: if it never
- * inspects the issue, its return value is a constant we can bake into the
- * generated issue. If it reads any issue property (input-dependent message),
- * it is dynamic and the schema must fall back to Zod for exact messages.
+ * string. A message is baked into the generated issue only when BOTH hold:
+ *
+ *  1. the function's result is fixed once the schema exists — zod's own string
+ *     wrapper, or a literal (see {@link returnsFixedValue}). A map that reaches
+ *     outside for its answer — `() => t("required")`, a dictionary lookup — is
+ *     dynamic however little it looks at the issue: zod calls it on every
+ *     failure and reports what it returns THEN. Decided from the source, so
+ *     such a map is not run here at all;
+ *  2. calling it with an access-tracking Proxy shows it never inspected the
+ *     issue. The first test only looks at what is RETURNED; this one is what
+ *     still catches a map that reads its argument on the way there
+ *     (`({ code }) => "msg"`).
+ *
+ * A dynamic map makes the schema fall back to Zod, which produces the exact
+ * message.
  */
 export function resolveCheckMessage(error: unknown): ResolvedMessage {
   if (error === null || error === undefined) return { kind: "none" };
   if (typeof error === "string") return { kind: "static", message: error };
   if (typeof error !== "function") return { kind: "dynamic" };
+  if (!returnsFixedValue(error)) return { kind: "dynamic" };
 
   let accessed = false;
   const track = () => {
