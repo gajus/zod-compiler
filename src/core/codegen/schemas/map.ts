@@ -1,6 +1,6 @@
 import type { MapIR, SchemaIR } from "../../types.js";
 import type { FastGen, SlowGen } from "../context.js";
-import { declareFastTemps, emitRuntimeHelper, hasMutation } from "../context.js";
+import { declareFastTemps, emitRuntimeHelper, fastMember, hasMutation } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType } from "../emit-issue.js";
 import { propertyKeyTest, ZC_FZ_DECL, ZC_PFX_DECL } from "../issue-decls.js";
@@ -156,9 +156,9 @@ export function fastMap(ir: MapIR, g: FastGen): string | null {
   // independently of the caller.
   const entryVar = g.temp("me");
   const body = g.scoped(`${entryVar}[0]`);
-  const keyCheck = body.visit(ir.keyType, { input: `${entryVar}[0]` });
+  const keyCheck = fastMember(body, ir.keyType, `${entryVar}[0]`);
   if (keyCheck === null) return null;
-  const valCheck = body.visit(ir.valueType, { input: `${entryVar}[1]` });
+  const valCheck = fastMember(body, ir.valueType, `${entryVar}[1]`);
   if (valCheck === null) return null;
 
   if (keyCheck !== "true" || valCheck !== "true") {

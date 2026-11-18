@@ -8,11 +8,12 @@ import type { RefEntry } from "#src/core/extract/index.js";
 
 /**
  * `optional`/`nullable`/`default` bind their input to a `var` temp so the value
- * is loaded once (see fastSentinelWrapper). The declaration is emitted by
- * whichever function hosts the expression — and there are many such sites: the
- * root fast check, each extracted `__fo_` helper, the array/set element loops,
- * the tuple rest loop, the record and object-catchall for-in helpers, the
- * discriminated-union switch, and each non-root recursion target.
+ * is loaded once (see fastSentinelWrapper), and so does every container MEMBER
+ * whose check reads it more than once (see fastMember). The declaration is
+ * emitted by whichever function hosts the expression — and there are many such
+ * sites: the root fast check, each extracted `__fo_` helper, the array/set
+ * element loops, the tuple rest loop, the record and object-catchall for-in
+ * helpers, the discriminated-union switch, and each non-root recursion target.
  *
  * Miss one and the assignment targets an undeclared name: a ReferenceError in
  * the ES module the generated code actually ships inside. Every schema here
@@ -57,6 +58,18 @@ function compile(schema: z.ZodType, name: string): Compiled {
 }
 
 const Leaf = z.object({ v: z.string().optional(), w: z.number().nullable() });
+/** Members read more than once: a string with checks, a small enum, a nested object. */
+const Multi = z.strictObject({
+  name: z.string().min(2).max(20),
+  role: z.enum(["a", "b", "c"]),
+  at: z.strictObject({ x: z.number().int().min(0), y: z.string().min(1) }),
+});
+const multi = (over: object = {}): object => ({
+  name: "abc",
+  role: "b",
+  at: { x: 1, y: "y" },
+  ...over,
+});
 
 /** Each entry forces a hoisting wrapper into a different function-emitting site. */
 const CORPUS: [string, z.ZodType, unknown[]][] = [
@@ -137,6 +150,93 @@ const CORPUS: [string, z.ZodType, unknown[]][] = [
   ],
 ];
 
+// The same hosts again, this time holding a member that is read more than once.
+CORPUS.push(
+  [
+    "members: root object",
+    Multi,
+    [
+      multi(),
+      multi({ name: "a" }),
+      multi({ role: "z" }),
+      multi({ at: { x: -1, y: "y" } }),
+      multi({ at: null }),
+      multi({ extra: 1 }),
+      {},
+      null,
+    ],
+  ],
+  [
+    "members: array element helper",
+    z.array(Multi),
+    [[], [multi()], [multi(), multi({ name: 1 })], [multi({ at: { x: 1, y: "" } })]],
+  ],
+  [
+    "members: record value helper",
+    z.record(z.string(), Multi),
+    [{}, { k: multi() }, { k: multi({ role: 1 }) }],
+  ],
+  [
+    "members: tuple slots",
+    z.tuple([z.string().min(2).max(5), Multi, z.boolean()]),
+    [
+      ["ab", multi(), true],
+      ["a", multi(), true],
+      ["ab", multi({ name: "" }), true],
+      ["ab", multi(), 1],
+    ],
+  ],
+  [
+    "members: map key and value",
+    z.map(z.string().min(2), Multi),
+    [
+      new Map([["ab", multi()]]),
+      new Map([["a", multi()]]),
+      new Map([["ab", multi({ role: "z" })]]),
+    ],
+  ],
+  [
+    "members: set element helper",
+    z.set(Multi),
+    [new Set([multi()]), new Set([multi({ name: "a" })]), new Set()],
+  ],
+  [
+    "members: discriminated union switch",
+    z.discriminatedUnion("kind", [
+      z.strictObject({ kind: z.literal("a"), a: z.string().min(2).max(9) }),
+      z.strictObject({ kind: z.literal("b"), b: Multi }),
+    ]),
+    [
+      { kind: "a", a: "ab" },
+      { kind: "a", a: "a" },
+      { kind: "b", b: multi() },
+      { kind: "b", b: multi({ name: 1 }) },
+    ],
+  ],
+  [
+    "members: plain union",
+    z.union([Multi, z.strictObject({ other: z.string().min(3).max(4) })]),
+    [multi(), { other: "abc" }, { other: "ab" }, multi({ name: "a" }), 1],
+  ],
+  [
+    "members: object catchall helper",
+    z.object({ known: z.string() }).catchall(z.strictObject({ n: z.string().min(1).max(3) })),
+    [{ known: "x" }, { known: "x", other: { n: "ab" } }, { known: "x", other: { n: "" } }],
+  ],
+  [
+    "members: intersection",
+    z.intersection(
+      z.looseObject({ a: z.string().min(1).max(3) }),
+      z.looseObject({ b: z.string().min(1).max(3) }),
+    ),
+    [
+      { a: "a", b: "b" },
+      { a: "", b: "b" },
+      { a: "a", b: "bbbb" },
+    ],
+  ],
+);
+
 // Recursive schemas exercise the non-root recursion-target host.
 const Tree: z.ZodType = z.lazy(() =>
   z.object({ value: z.string().optional(), children: z.array(Tree).optional() }),
@@ -181,11 +281,12 @@ describe("fast-path hoisted locals", () => {
           const match = /^function\s+\w+\s*\([^)]*\)\s*\{(.*)\}$/.exec(line);
           if (!match) continue;
           const body = match[1] as string;
-          const used = new Set(body.match(/__w_\d+/g) ?? []);
+          // `__w_` is a sentinel wrapper's local, `__m_` a container member's.
+          const used = new Set(body.match(/__[wm]_\d+/g) ?? []);
           if (used.size === 0) continue;
           const declared = new Set(
             (body.match(/var ([\w,]+);/g) ?? []).flatMap((d) =>
-              (d.slice(4, -1).split(",") as string[]).filter((n) => n.startsWith("__w_")),
+              (d.slice(4, -1).split(",") as string[]).filter((n) => /^__[wm]_/.test(n)),
             ),
           );
           for (const name_ of used) {
@@ -214,6 +315,99 @@ describe("fast-path hoisted locals", () => {
   it("declareFastTemps emits nothing for a scope with no temps", () => {
     expect(declareFastTemps({ temps: [], used: 0 })).toBe("");
     expect(declareFastTemps({ temps: ["__w_0", "__w_1"], used: 0 })).toBe("var __w_0,__w_1;");
+  });
+
+  /**
+   * A member whose check reads it more than once is loaded into a local first,
+   * so that a nested value costs one load per level rather than one per check
+   * times its depth. V8 only folds the repeats while every access site is
+   * monomorphic, which real payloads end the moment a second key order shows up.
+   */
+  describe("container members", () => {
+    const fastFunction = (code: string): string =>
+      code.split("\n").find((line) => /^function __fc_\d+\(input\)/.test(line)) ?? "";
+
+    it("loads a member read more than once into a local, once", () => {
+      const fast = fastFunction(
+        compile(z.strictObject({ name: z.string().min(2).max(20) }), "S").code,
+      );
+      expect(fast).toMatch(/\((__m_\d+)=input\["name"\],typeof \1==="string"&&\1\.length>=2&&/);
+      expect(fast.split('input["name"]')).toHaveLength(2);
+    });
+
+    it("leaves a member read once as the bare load it was", () => {
+      const fast = fastFunction(
+        compile(
+          z.strictObject({
+            flag: z.boolean(),
+            count: z.number(),
+            id: z.string(),
+            whole: z.int(),
+            kind: z.literal("a"),
+            status: z.enum(["a", "b", "c", "d", "e", "f"]),
+            any: z.any(),
+          }),
+          "S",
+        ).code,
+      );
+      expect(fast).not.toContain("__m_");
+      expect(fast).toContain('typeof input["flag"]==="boolean"');
+      expect(fast).toContain('Number.isFinite(input["count"])');
+      expect(fast).toContain('Number.isSafeInteger(input["whole"])');
+    });
+
+    it("reads each level of a nested value once, however many checks sit below it", () => {
+      const fast = fastFunction(
+        compile(
+          z.strictObject({
+            a: z.strictObject({
+              b: z.strictObject({ c: z.string().min(1).max(9), d: z.string().min(1).max(9) }),
+            }),
+          }),
+          "S",
+        ).code,
+      );
+      expect(fast.split('["a"]')).toHaveLength(2);
+      expect(fast.split('["b"]')).toHaveLength(2);
+      expect(fast.split('["c"]')).toHaveLength(2);
+      expect(fast.split('["d"]')).toHaveLength(2);
+    });
+
+    it("leaves a sentinel wrapper to bind its own input", () => {
+      // optional/nullable/default already hoist; a second local would be noise.
+      const fast = fastFunction(
+        compile(z.strictObject({ a: z.string().min(1).optional() }), "S").code,
+      );
+      expect(fast).toContain("__w_");
+      expect(fast).not.toContain("__m_");
+    });
+
+    it("keeps a member's local across a recursive call in the same expression", () => {
+      // `wrap` is bound, its `child` re-enters this very function, and only then
+      // does the strict-key pass read `wrap` again. With one shared binding the
+      // inner frame would have replaced it with the CHILD's wrap, which has no
+      // extra key — and the outer one, which does, would pass.
+      interface Node {
+        wrap: { label: string; child?: Node | undefined };
+      }
+      const NodeSchema: z.ZodType<Node> = z.strictObject({
+        wrap: z.strictObject({
+          label: z.string().min(1),
+          child: z.lazy(() => NodeSchema).optional(),
+        }),
+      });
+      const { safeParse } = compile(NodeSchema, "S");
+      const clean = { wrap: { label: "a", child: { wrap: { label: "b" } } } };
+      const outerDirty = { wrap: { label: "a", extra: 1, child: { wrap: { label: "b" } } } };
+      const innerDirty = { wrap: { label: "a", child: { wrap: { label: "b", extra: 1 } } } };
+
+      expect(safeParse(clean).success).toBe(true);
+      expect(safeParse(outerDirty).success).toBe(false);
+      expect(safeParse(innerDirty).success).toBe(false);
+      for (const value of [clean, outerDirty, innerDirty]) {
+        expect(safeParse(value).success).toBe(NodeSchema.safeParse(value).success);
+      }
+    });
   });
 
   it("does not hoist when the input is already a local binding", () => {

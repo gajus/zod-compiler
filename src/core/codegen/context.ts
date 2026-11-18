@@ -310,6 +310,126 @@ function isPropertyAccess(expr: string): boolean {
   return expr.includes("[") || expr.includes(".");
 }
 
+/**
+ * Fast check for a MEMBER a container reaches by key — an object's property, a
+ * tuple's slot, either half of a map entry — where `access` is the load itself
+ * (`x["k"]`, `x[0]`).
+ *
+ * Handing the member's generator that load as its input makes every check it
+ * emits repeat it, and every nesting level repeats its parent's on top:
+ * `typeof x["a"]["b"]==="string"&&x["a"]["b"].length>=3&&x["a"]["b"].length<=20`
+ * is nine loads for one value. V8 collapses them only while each access site
+ * stays monomorphic — which holds in a benchmark fed one object literal and
+ * stops holding the moment real payloads arrive with a second key order, where
+ * every repeat is its own polymorphic or megamorphic lookup. Binding the value
+ * once makes the check as cheap as it looks:
+ *
+ *   (m=x["a"],typeof m==="object"&&m!==null&&!Array.isArray(m)&&
+ *     (n=m["b"],typeof n==="string"&&n.length>=3&&n.length<=20))
+ *
+ * Measured on a three-level strict object, `safeParse` on JSON-parsed input:
+ * unchanged at one key order (44.5 against 43.5 ns), 68-75 against 48-54 ns
+ * from two key orders up. It is also what the interpreter and baseline tiers
+ * run before any of that optimization exists — 604 against 487 ns and 399
+ * against 305 — and it is shorter: that check's function went from 1,888 to
+ * 1,247 characters.
+ *
+ * The assignment and every read of the local sit inside one parenthesized
+ * comma expression, so the value is bound before anything reads it whatever
+ * `&&`/`||` chain the result is spliced into. The local is function-scoped
+ * (see FastScope.temps), so a recursive validator re-entering this function
+ * gets its own.
+ *
+ * A member that reads its input once gains nothing from a local and keeps the
+ * bare load, which leaves the output for such members byte-identical — see
+ * {@link readsInputRepeatedly}. That test is structural and may misjudge a
+ * shape in either direction; both mistakes are free of consequences beyond a
+ * few characters, since binding changes what is loaded how often and never
+ * what is checked.
+ */
+export function fastMember(g: FastGen, memberIR: SchemaIR, access: string): string | null {
+  if (!readsInputRepeatedly(memberIR)) return g.visit(memberIR, { input: access });
+  const value = g.temp("m");
+  const check = g.visit(memberIR, { input: value });
+  if (check === null || check === "true") return check;
+  g.scope.temps.push(value);
+  return `(${value}=${access},${check})`;
+}
+
+/**
+ * Does this node's fast check read its input more than once? Mirrors what each
+ * fast generator emits, loosely: anything not known to be a single read counts
+ * as repeated.
+ */
+function readsInputRepeatedly(ir: SchemaIR): boolean {
+  switch (ir.type) {
+    // One `typeof`, one comparison, or one call.
+    case "boolean":
+    case "null":
+    case "undefined":
+    case "void":
+    case "nan":
+    case "never":
+    case "any":
+    case "unknown":
+    case "symbol":
+    case "custom":
+    case "recursiveRef":
+    case "recursionTarget":
+      return false;
+    // `typeof x==="string"` alone; each check reads again.
+    case "string":
+    case "bigint":
+      return ir.checks.length > 0;
+    case "number":
+      return numberReads(ir) > 1;
+    // One `===`, or one membership call when the values have no source form.
+    case "literal":
+      return ir.refIndex === undefined && ir.values.length > 1;
+    // An inline `===` chain up to the threshold, one `Set.has` past it.
+    case "enum":
+      return ir.values.length > 1 && ir.values.length <= ENUM_INLINE_THRESHOLD;
+    // These bind their own input (see fastSentinelWrapper).
+    case "optional":
+    case "nullable":
+    case "default":
+      return false;
+    // Transparent on the fast path: whatever the inner does.
+    case "readonly":
+    case "zodDelegate":
+    case "catch":
+      return readsInputRepeatedly(ir.inner);
+    default:
+      return true;
+  }
+}
+
+/** Reads of the input in fastNumber's expression: its type gate plus each check. */
+function numberReads(ir: SchemaIR & { type: "number" }): number {
+  let reads = 0;
+  let gate = 1; // Number.isFinite(x)
+  for (const check of ir.checks) {
+    switch (check.kind) {
+      case "number_format":
+        if (check.format === "safeint") {
+          // Number.isSafeInteger(x) is the type gate too.
+          gate = 0;
+          reads += 1;
+        } else if (check.format === "int32") {
+          reads += 2;
+        } else if (check.format === "uint32") {
+          reads += 4;
+        } else if (check.format === "float32") {
+          reads += 2;
+        }
+        break;
+      default:
+        reads += 1;
+    }
+  }
+  return reads + gate;
+}
+
 /** Context object for fast-path (boolean expression) generator functions. */
 export interface FastGen {
   readonly input: string;

@@ -181,11 +181,16 @@ describe("schema dedupe", () => {
     );
     const user = pick(schemas, "User");
     // The hosted fast-check function inlines the nested Address check — no shared call.
-    const fastFn = /function __fc_\d+\(input\)\{return ([^;]*);\}/.exec(user.codegenResult.code);
+    const fastFn = /function __fc_\d+\(input\)\{(?:var [^;]*;)?return ([^;]*);\}/.exec(
+      user.codegenResult.code,
+    );
     const fastBody = fastFn?.[1] ?? "";
     expect(fastBody).not.toBe("");
     expect(fastBody).not.toContain("__zcSw");
-    expect(fastBody).toContain('input["a"]["street"]');
+    // `a` is bound to a local once, and Address's own checks read through it.
+    expect(fastBody).toMatch(
+      /\((__m_\d+)=input\["a"\],typeof \1==="object".*typeof \1\["street"\]==="string"/,
+    );
   });
 
   it("shares a stripping z.object() — the walk returns its rebuild", () => {

@@ -658,6 +658,7 @@ Other optimizations:
 
 - Regexes pre-compiled, bounded repeats unrolled; `z.email()` is a linear scan, not a backtracking regex.
 - Checks run cheapest-first, regardless of declaration order.
+- Each nested value is loaded once, so checks stay fast when payloads arrive with different key orders.
 - Discriminated unions dispatch through a `switch`; plain tagged unions are auto-discriminated into one.
 - `z.custom()` / `z.instanceof()` compile to a direct predicate call.
 - Oversized check functions are split to stay within V8's optimizer budget.

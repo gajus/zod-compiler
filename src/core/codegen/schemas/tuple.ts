@@ -4,6 +4,7 @@ import {
   declareFastTemps,
   extendPath,
   extendStaticPathIndex,
+  fastMember,
   hasMutation,
   outputAlwaysDefined,
   tupleRewritesShortInput,
@@ -220,7 +221,7 @@ export function fastTuple(ir: TupleIR, g: FastGen): string | null {
   // reads are only meaningful once they hold.
   const indexed = ir.items.flatMap((itemIR, index) => (itemIR ? [{ index, itemIR }] : []));
   for (const { index, itemIR } of orderByRuntimeCost(indexed, (e) => e.itemIR, g.ctx)) {
-    const itemCheck = g.visit(itemIR, { input: `${x}[${index}]` });
+    const itemCheck = fastMember(g, itemIR, `${x}[${index}]`);
     if (itemCheck === null) return null;
     const kind = kinds[index];
     // The fast check answers true only where the output IS the input (see

@@ -6,6 +6,7 @@ import {
   escapeString,
   extendPath,
   extendStaticPath,
+  fastMember,
   hasMutation,
   keyMembershipTest,
   outputAlwaysDefined,
@@ -334,7 +335,7 @@ function fastObjectBody(ir: ObjectIR, g: FastGen, skipKey?: string): string[] | 
   for (const [key, propIR] of orderedProperties(ir, g)) {
     if (key === skipKey) continue;
     const keyStr = escapeString(key);
-    const propCheck = g.visit(propIR, { input: `${x}[${keyStr}]` });
+    const propCheck = fastMember(g, propIR, `${x}[${keyStr}]`);
     if (propCheck === null) return null; // All-or-nothing
     // Presence rules keyed on the schema's `optin`/`optout` (see ObjectIR): a
     // required key must be there whatever its schema makes of `undefined`, and

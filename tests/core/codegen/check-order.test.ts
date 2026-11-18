@@ -24,6 +24,14 @@ const fastCheckOf = (schema: z.ZodType): string =>
 /** Index of `needle` in the emitted fast check (-1 when absent). */
 const posIn = (code: string, needle: string): number => code.indexOf(needle);
 
+/**
+ * Index of the email scan of a container MEMBER. A member read more than once
+ * is bound to a local first (see fastMember), so the call names that local
+ * rather than the load — and `__zcEmail(` alone would find the helper's own
+ * declaration in the preamble.
+ */
+const memberEmailScan = (code: string): number => code.search(/__zcEmail\(__m_\d+\)/);
+
 describe("fast-path check ordering", () => {
   it("emits an object's cheap literal before its regex format check", () => {
     const code = fastCheckOf(
@@ -34,7 +42,7 @@ describe("fast-path check ordering", () => {
       }),
     );
     const kind = posIn(code, '["kind"]==="alpha"');
-    const email = posIn(code, "__zcEmail(input");
+    const email = memberEmailScan(code);
     expect(kind).toBeGreaterThanOrEqual(0);
     expect(email).toBeGreaterThanOrEqual(0);
     expect(kind).toBeLessThan(email);
@@ -71,7 +79,8 @@ describe("fast-path check ordering", () => {
 
   it("checks the cheaper tuple position first", () => {
     const code = fastCheckOf(z.tuple([z.email(), z.boolean()]));
-    expect(posIn(code, "[1]")).toBeLessThan(posIn(code, "__zcEmail(input"));
+    expect(memberEmailScan(code)).toBeGreaterThanOrEqual(0);
+    expect(posIn(code, "[1]")).toBeLessThan(memberEmailScan(code));
   });
 
   it("leaves the slow walk in declaration order (issue order is zod parity)", () => {
