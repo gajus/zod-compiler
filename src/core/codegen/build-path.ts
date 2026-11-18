@@ -891,27 +891,8 @@ function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {
     value: (built.get(key) as Built).value,
   }));
 
-  // Same assembly the eager strip walk uses: the longest LEADING run of
-  // always-present keys goes into one object literal (V8 stamps it from a
-  // cached boilerplate map in a single allocation), and everything after the
-  // first conditional key is appended so insertion order still matches zod.
-  // The per-key test is zod's own — keep the key when the parsed value is
-  // defined, or when it was present on the input at all.
   const out = local(g, "bo");
-  const literal: string[] = [];
-  let appends = "";
-  let leading = true;
-  for (const slot of slots) {
-    if (leading && slot.always) {
-      literal.push(`${slot.keyStr}:${slot.value}`);
-      continue;
-    }
-    leading = false;
-    appends += slot.always
-      ? `${out}[${slot.keyStr}]=${slot.value};`
-      : `if(${slot.value}!==undefined||(${slot.keyStr} in ${input})){${out}[${slot.keyStr}]=${slot.value};}`;
-  }
-  code += `${out}={${literal.join(",")}};${appends}`;
+  code += assembleObject(slots, out, input);
   // Zod parses the properties into the payload first and skips the check chain
   // when that produced issues, so a bad property suppresses the refine — which
   // this pass gets for free, having already returned FAIL at that property.
@@ -919,6 +900,91 @@ function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {
     code += buildRefine(check as RefineEffectCheckIR, out, g);
   }
   return { code, value: out };
+}
+
+/** One property's place in a rebuilt object: its key, the local holding its value, and whether zod always emits it. */
+interface OutputSlot {
+  always: boolean;
+  keyStr: string;
+  value: string;
+}
+
+/**
+ * Conditional keys an object resolves by choosing between literals, and the
+ * widest object (in keys the literals cover) that gets two rather than one.
+ *
+ * Each resolved key doubles the literals, so the cap is on bytes: one key costs
+ * about as much text again as the stores it replaces (a `"k":v` entry is
+ * shorter than an `o["k"]=v;` store), two cost that again, and past sixteen
+ * keys four copies of the shape are more than the second key is worth.
+ */
+const PRESENCE_LITERAL_KEYS = 2;
+const PRESENCE_LITERAL_PAIR_WIDTH = 16;
+
+/**
+ * Statements leaving the rebuilt object in `out`, its keys in shape order.
+ *
+ * zod writes a key when its parsed value is defined, or when the key was on
+ * the input at all — so a key that may come out absent (`.optional()` and
+ * friends) cannot simply sit in an object literal, and every key AFTER it
+ * depends on whether it is there. This once took the longest leading run of
+ * always-present keys as a literal and appended the rest one store at a time:
+ * fine when the optional key is last, but an optional key early in the shape
+ * turned the whole object into appends, each a transition plus — past the
+ * literal's in-object slots — a share of a backing-store regrow. Measured on a
+ * twelve-key object with its second key optional: 14.8 ns against 9.2 for the
+ * literal when the key is absent, 21.1 against 10.3 when it is present.
+ *
+ * So the first conditional keys that still have an always-present key behind
+ * them are resolved by SELECTING the literal instead: one object literal per
+ * presence pattern, each stamped from its own boilerplate in one allocation,
+ * with the keys spelled in shape order inside it. The test per key is zod's
+ * own, evaluated once on whichever branch is taken. Anything past the last
+ * resolved key is appended as before, which now only ever means keys behind a
+ * third conditional one — and a trailing run of conditional keys, which was
+ * never the problem: nothing comes after them.
+ */
+function assembleObject(slots: readonly OutputSlot[], out: string, input: string): string {
+  const conditional = slots.flatMap((slot, index) => (slot.always ? [] : [index]));
+  const lastAlways = slots.reduce((last, slot, index) => (slot.always ? index : last), -1);
+  // Resolving a key with nothing but conditional keys behind it buys no
+  // literal entry at all: those are guarded stores either way.
+  const worthResolving = conditional.filter((index) => index < lastAlways).length;
+  /** Slots the literals cover when `count` keys are resolved: up to the next conditional one. */
+  const coveredBy = (count: number): number => conditional[count] ?? slots.length;
+  let resolved = Math.min(worthResolving, PRESENCE_LITERAL_KEYS);
+  if (resolved === 2 && coveredBy(2) > PRESENCE_LITERAL_PAIR_WIDTH) resolved = 1;
+  const covered = coveredBy(resolved);
+
+  const present = (index: number): string => {
+    const slot = slots[index] as OutputSlot;
+    return `${slot.value}!==undefined||(${slot.keyStr} in ${input})`;
+  };
+  /** The literal for one presence pattern of the resolved keys, in shape order. */
+  const literal = (included: readonly boolean[]): string => {
+    const entries: string[] = [];
+    for (let index = 0; index < covered; index++) {
+      const position = conditional.indexOf(index);
+      if (position !== -1 && position < resolved && included[position] !== true) continue;
+      const slot = slots[index] as OutputSlot;
+      entries.push(`${slot.keyStr}:${slot.value}`);
+    }
+    return `{${entries.join(",")}}`;
+  };
+  /** `test ? <with the key> : <without it>`, nested for each further resolved key. */
+  const select = (included: readonly boolean[]): string => {
+    if (included.length === resolved) return literal(included);
+    const index = conditional[included.length] as number;
+    return `(${present(index)})?${select([...included, true])}:${select([...included, false])}`;
+  };
+
+  let code = `${out}=${select([])};`;
+  for (const slot of slots.slice(covered)) {
+    code += slot.always
+      ? `${out}[${slot.keyStr}]=${slot.value};`
+      : `if(${slot.value}!==undefined||(${slot.keyStr} in ${input})){${out}[${slot.keyStr}]=${slot.value};}`;
+  }
+  return code;
 }
 
 /**
