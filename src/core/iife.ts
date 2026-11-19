@@ -440,6 +440,13 @@ export const ZOD_RUN_HELPER = "__zcZr";
  * at build time to validators whose output zod would have built itself (see
  * `zodRunSupport`). generateIIFE emits the call for no others.
  *
+ * Where the validator has a build pass, the build answers instead (`v`, with
+ * its FAIL sentinel `f`): it returns the value or FAIL, so a success costs no
+ * result object. That is also how a schema whose validator returns containers
+ * by reference answers here at all. Its `v` is a second build that rebuilds
+ * every container, as zod does, so what zod's traversal receives is zod's own
+ * shape and never the caller's object.
+ *
  * It steps aside, as zod's own `z.compile` wrapper does, for
  *
  *  - an encode (`direction: "backward"`) and its check-less canary pass
@@ -470,10 +477,11 @@ export const ZOD_RUN_HELPER = "__zcZr";
  * follows the swap.
  */
 export const ZOD_RUN_DECL =
-  `function ${ZOD_RUN_HELPER}(w,fn,a){var z=w._zod,l=z.run,o=l.__originalRun||l,p=o===z.parse,` +
+  `function ${ZOD_RUN_HELPER}(w,fn,a,v,f){var z=w._zod,l=z.run,o=l.__originalRun||l,p=o===z.parse,` +
   `k=${ZOD_FALLBACK_FLAG},b=__zcCore.isBackEdge;` +
   'function run(q,c){if(c&&(a||c.async===false)&&c.direction!=="backward"&&!c.skipChecks&&!c[k]&&!(b&&b(c,q.value))){' +
-  "var r=fn(q.value);if(r.success){q.value=r.data;return q;}" +
+  "var r;if(v){r=v(q.value);if(r!==f){q.value=r;return q;}}" +
+  "else{r=fn(q.value);if(r.success){q.value=r.data;return q;}}" +
   "c[k]=true;r=p?z.parse(q,c):o(q,c);if(!(r instanceof Promise))c[k]=false;return r;}" +
   "return p?z.parse(q,c):o(q,c);}" +
   "run.__originalRun=o;z.run=run;return w;}";
@@ -601,8 +609,10 @@ export function generateIIFE(
   // where the validator may answer for zod too, its `_zod.run` (see
   // ZOD_RUN_DECL). A method bag has no schema for zod to reach.
   const made = `__zcMkv(${fnName},${schemaArg},${fcArg},${isArg},__zp,__zv)`;
+  const runBuild = codegenResult.zodRunBuild;
   const installed = installsZodRun(schema, options)
-    ? `${ZOD_RUN_HELPER}(${made},${fnName},${codegenResult.zodRun === "async" ? 1 : 0})`
+    ? `${ZOD_RUN_HELPER}(${made},${fnName},${codegenResult.zodRun === "async" ? 1 : 0}` +
+      `${runBuild === undefined ? "" : `,${runBuild.build},${runBuild.fail}`})`
     : made;
   const validated = `__zcVr(${fnName}(input))`;
   const validateFn =

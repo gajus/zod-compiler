@@ -102,6 +102,15 @@ export interface CodeGenResult {
    */
   zodRun?: "sync" | "async";
   /**
+   * The build function that answers zod's `_zod.run` in place of the
+   * validator, and the FAIL sentinel it returns on rejection (see
+   * ZOD_RUN_DECL). Either the validator's own build, when that returns no
+   * container by reference, or a second one that rebuilds every container.
+   * Absent when the validator answers, which is the case for a schema with no
+   * build.
+   */
+  zodRunBuild?: { build: string; fail: string };
+  /**
    * Compact mode only: this validator reads {@link RETAINED_SCHEMA_VAR}
    * directly, so `generateIIFE` must bind it even when the schema has no
    * fallback refs of its own. Absent for every non-compact (fully compiled)

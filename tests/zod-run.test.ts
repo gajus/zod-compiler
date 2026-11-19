@@ -147,6 +147,34 @@ describe("zod run — which schemas qualify", () => {
       "a disjoint-key intersection, which extraction collapses into one object",
       () => z.intersection(z.object({ a: z.string() }), z.object({ b: z.number() })),
     ],
+    // Containers the validator hands back by reference: zod's traversal is
+    // handed a copy of each, made as zod makes it (see zod-run.ts).
+    ["an array of primitives", () => z.array(z.string())],
+    ["an object holding one", () => z.object({ tags: z.array(z.string()) })],
+    ["a tuple of primitives", () => z.tuple([z.string(), z.number()])],
+    ["a strict object", () => z.strictObject({ a: z.string() })],
+    [
+      "a strict object nested in a stripping one",
+      () => z.object({ s: z.strictObject({ a: z.string() }) }),
+    ],
+    ["a loose object", () => z.looseObject({ a: z.string() })],
+    ["a catchall", () => z.object({ a: z.string() }).catchall(z.number())],
+    ["a record", () => z.record(z.string(), z.number())],
+    ["a record of rebuilt values", () => z.record(z.string(), Item())],
+    ["a set", () => z.set(z.string())],
+    ["a set of objects", () => z.set(z.strictObject({ a: z.number() }))],
+    ["a map", () => z.map(z.string(), z.number())],
+    ["a frozen copy of a pass-through array", () => z.array(z.number()).readonly()],
+    ["a frozen object holding an array", () => z.object({ tags: z.array(z.string()) }).readonly()],
+    [
+      "a discriminated union holding arrays",
+      () =>
+        z.discriminatedUnion("kind", [
+          z.object({ kind: z.literal("a"), tags: z.array(z.string()) }),
+          z.strictObject({ kind: z.literal("b"), ids: z.array(z.number()) }),
+        ]),
+    ],
+    ["a pipe of arrays", () => z.array(z.string()).pipe(z.array(z.string().min(1)))],
   ];
 
   const SYNC: [string, () => z.ZodType][] = [
@@ -160,20 +188,6 @@ describe("zod run — which schemas qualify", () => {
   ];
 
   const NEVER: [string, () => z.ZodType][] = [
-    ["an array of primitives (by reference)", () => z.array(z.string())],
-    ["an object holding one", () => z.object({ tags: z.array(z.string()) })],
-    ["a tuple of primitives", () => z.tuple([z.string(), z.number()])],
-    ["a strict object", () => z.strictObject({ a: z.string() })],
-    [
-      "a strict object nested in a stripping one",
-      () => z.object({ s: z.strictObject({ a: z.string() }) }),
-    ],
-    ["a loose object", () => z.looseObject({ a: z.string() })],
-    ["a catchall", () => z.object({ a: z.string() }).catchall(z.number())],
-    ["a record", () => z.record(z.string(), z.number())],
-    ["a record of rebuilt values (symbol keys)", () => z.record(z.string(), Item())],
-    ["a set", () => z.set(z.string())],
-    ["a map", () => z.map(z.string(), z.number())],
     [
       "an overlapping intersection (delegated)",
       () => z.intersection(z.object({ a: z.string() }), z.object({ a: z.string(), b: z.number() })),
@@ -182,7 +196,6 @@ describe("zod run — which schemas qualify", () => {
     ["a catch", () => z.object({ n: z.number().catch(0) })],
     ["a superRefine", () => Item().superRefine(() => {})],
     ["a superRefine on a member", () => z.object({ a: z.string().superRefine(() => {}) })],
-    ["a frozen copy of a pass-through array", () => z.array(z.number()).readonly()],
     ["a delegated member", () => z.object({ t: z.jwt() })],
     ["a schema delegated whole", () => Item().check(() => {})],
     [
@@ -198,6 +211,21 @@ describe("zod run — which schemas qualify", () => {
       },
     ],
     ["z.any(), which has nothing to shortcut", () => z.any()],
+  ];
+
+  /**
+   * Shapes the predicate has no objection to, whose copy for zod cannot be made
+   * exact, so the generator leaves them to zod after all.
+   */
+  const UNCOPYABLE: [string, () => z.ZodType][] = [
+    // Which option zod's union chose is not in the output; only a dispatch on
+    // a discriminator says.
+    ["an array under a plain union", () => z.union([z.string(), z.array(z.string())])],
+    // The callback already ran on a record whose symbol keys zod would have
+    // rejected first.
+    ["a record under a transform", () => z.record(z.string(), z.number()).transform((r) => r)],
+    // Zod walks a declared key set in its declared order, not the input's.
+    ["a record over a declared key set", () => z.partialRecord(z.enum(["a", "b"]), z.number())],
   ];
 
   for (const [label, make] of ASYNC) {
@@ -223,12 +251,35 @@ describe("zod run — which schemas qualify", () => {
       expect(servesZod(installOnto(make()))).toBe(false);
     });
   }
+  for (const [label, make] of UNCOPYABLE) {
+    it(`left to zod, no exact copy: ${label}`, () => {
+      expect(shapeSupport(make())).not.toBeNull();
+      expect(support(make())).toBeNull();
+      expect(servesZod(installOnto(make()))).toBe(false);
+    });
+  }
 
   it("is never installed on a method bag, which zod cannot reach", () => {
     const schema = Item();
     const [bag] = installLikeProduction([schema], { zodCompat: false });
     expect(servesZod(schema)).toBe(false);
     expect(Object.hasOwn(bag as object, "_zod")).toBe(false);
+  });
+
+  it("generates nothing for zod's route where no IIFE will install it", () => {
+    // An array field is copied for zod's traversal; a bag has none to copy for.
+    const schema = z.object({ tags: z.array(z.string()) });
+    const compile = (zodRun?: boolean) => {
+      const { schemas } = compileSchemas([{ exportName: "S", schema }], { mode: "lean", zodRun });
+      const [only] = schemas;
+      if (only === undefined) throw new Error("expected a compiled schema");
+      return only.codegenResult;
+    };
+    expect(compile().zodRunBuild).toBeDefined();
+    const bag = compile(false);
+    expect(bag.zodRun).toBeUndefined();
+    expect(bag.zodRunBuild).toBeUndefined();
+    expect(bag.code).not.toContain("__vz_");
   });
 
   it("is imported by a lean-mode file only where an IIFE calls it", () => {
@@ -240,7 +291,9 @@ describe("zod run — which schemas qualify", () => {
     };
     expect(iifeHelperNames(info(Item()))).toContain(ZOD_RUN_HELPER);
     expect(iifeHelperNames(info(Item()), { zodCompat: false })).not.toContain(ZOD_RUN_HELPER);
-    expect(iifeHelperNames(info(z.array(z.string())))).not.toContain(ZOD_RUN_HELPER);
+    expect(iifeHelperNames(info(z.object({ n: z.number().catch(0) })))).not.toContain(
+      ZOD_RUN_HELPER,
+    );
   });
 });
 
@@ -349,6 +402,12 @@ function untouched(input: unknown, before: string): boolean {
     shapeOf(input) === before && [...objectsIn(input)].every((object) => !Object.isFrozen(object))
   );
 }
+
+/**
+ * A symbol key for a record input. Each parse builds its input afresh, and a
+ * symbol made per input would make the two parses' issue paths unequal.
+ */
+const RECORD_SYMBOL = Symbol("s");
 
 /** A child schema, values it accepts and values it rejects (each built fresh per use). */
 type ChildCase = [
@@ -462,6 +521,99 @@ const CHILDREN: ChildCase[] = [
     () => z.intersection(z.object({ a: z.string() }), z.object({ b: z.number(), c: z.boolean() })),
     [() => ({ c: true, b: 1, a: "x", extra: 1 })],
     [() => ({ a: 1, b: "x" }), () => []],
+  ],
+  // Containers the validator hands back by reference, which zod's traversal is
+  // handed copies of (see zod-run.ts).
+  [
+    "an array of primitives, a sparse one included",
+    () => z.array(z.string().optional()).max(5),
+    [
+      () => ["a", "b"],
+      () => {
+        const sparse = ["a"];
+        sparse[2] = "c";
+        return sparse;
+      },
+    ],
+    [() => [1], () => "x", () => ["a", "b", "c", "d", "e", "f"]],
+  ],
+  [
+    "a strict object holding an array",
+    () => z.strictObject({ id: z.number(), tags: z.array(z.string()) }),
+    [() => ({ tags: ["x"], id: 1 })],
+    [() => ({ id: 1, tags: ["x"], extra: true }), () => ({ id: "1", tags: [] })],
+  ],
+  [
+    "a loose object, with unknown and inherited keys",
+    () => z.looseObject({ a: z.string(), list: z.array(z.number()) }),
+    [
+      () => ({ z: 1, list: [1], a: "x", b: { deep: [1] } }),
+      () => Object.assign(Object.create({ inherited: [1] }) as object, { a: "x", list: [] }),
+      () => JSON.parse('{"a":"x","list":[],"__proto__":{"polluted":true}}') as unknown,
+    ],
+    [() => ({ a: 1, list: [] })],
+  ],
+  [
+    "a catchall",
+    () => z.object({ a: z.string() }).catchall(z.array(z.number())),
+    [() => ({ x: [1, 2], a: "x", y: [] })],
+    [() => ({ a: "x", x: ["no"] })],
+  ],
+  [
+    "a record, with symbol and `__proto__` keys",
+    () => z.record(z.string(), z.array(z.number())),
+    [() => ({ b: [1], a: [2], 1: [3] }), () => JSON.parse('{"__proto__":[1],"k":[2]}') as unknown],
+    [() => ({ [RECORD_SYMBOL]: [1], a: [2] }), () => ({ a: ["x"] })],
+  ],
+  [
+    "a set and a map holding containers",
+    () =>
+      z.object({
+        s: z.set(z.strictObject({ a: z.number() })),
+        m: z.map(z.string(), z.array(z.number())),
+      }),
+    [() => ({ s: new Set([{ a: 1 }, { a: 2 }]), m: new Map([["k", [1]]]) })],
+    [() => ({ s: new Set([{ a: "x" }]), m: new Map() })],
+  ],
+  [
+    "a frozen copy of an array",
+    () => z.array(z.number()).readonly(),
+    [() => [1, 2]],
+    [() => ["x"], () => 1],
+  ],
+  [
+    "a discriminated union holding arrays",
+    () =>
+      z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("a"), tags: z.array(z.string()) }),
+        z.strictObject({ kind: z.literal("b"), ids: z.array(z.number()) }),
+      ]),
+    [() => ({ kind: "a", tags: ["x"], extra: 1 }), () => ({ ids: [1], kind: "b" })],
+    [() => ({ kind: "b", ids: [1], extra: 1 }), () => ({ kind: "c" })],
+  ],
+  [
+    // An absent key stays absent: the copy must not write one back.
+    "optional by-reference members, absent",
+    () => z.object({ tags: z.array(z.string()).optional(), n: z.number() }),
+    [() => ({ n: 1 }), () => ({ n: 1, tags: ["a"] }), () => ({ n: 1, tags: undefined })],
+    [() => ({ n: 1, tags: [1] })],
+  ],
+  [
+    // Zod hands back a default as it is, whatever the schema it stands in for.
+    "a default that is not the shape it stands in for",
+    () =>
+      z.object({
+        v: z.array(z.string()).default(() => "not an array" as never),
+        tags: z.array(z.string()),
+      }),
+    [() => ({ tags: ["a"] }), () => ({ v: ["x"], tags: [] })],
+    [() => ({ v: 1, tags: [] })],
+  ],
+  [
+    "a tuple of an array and a set",
+    () => z.tuple([z.array(z.string()), z.set(z.number())]),
+    [() => [["a"], new Set([1])]],
+    [() => [["a"], new Set(["x"])], () => [["a"]]],
   ],
 ];
 

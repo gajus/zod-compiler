@@ -501,11 +501,12 @@ Zod itself never calls those methods: a parent parses its children, and the func
 `User.optional()` at a call site or a generic `Paginated(User)` validate each `User` with compiled
 code — ~6x on a 20-item page — and ask Zod only for the issues of a value that fails.
 
-That holds where the compiled output is exactly what Zod would have built: primitives, objects that
-strip, arrays of them. A schema that returns a container by reference (an array of primitives, a strict
-object, a record; see [Behavioral Differences](#behavioral-differences-from-zod)), uses `.catch()` or
-is recursive stays on plain Zod when reached this way, so a parse that goes through Zod still returns
-Zod's output.
+A parse that goes through Zod still returns Zod's output. Where the compiled schema would return a
+container by reference (an array of primitives, a strict object, a record, a set; see
+[Behavioral Differences](#behavioral-differences-from-zod)), Zod's route gets a copy of just that
+container, so an item with a `tags` array is ~6x faster too. A schema that uses `.catch()` or
+`superRefine`, is recursive, holds an intersection or a delegated member, or keeps such a container
+under a plain union stays on plain Zod when reached this way.
 
 ## Schema Diagnostics
 
@@ -649,6 +650,7 @@ are passed the same way.
 | catalog product with image URLs (invalid)       | 196K   | 176K   | **14.9M**        | —     | —     | **85x**   |
 | catalog page (20 products)                      | 22K    | 24K    | **308K**         | —     | —     | **13x**   |
 | page of compiled items, page not compiled (20)  | —      | 163K   | **1.0M**         | —     | —     | 6.2x      |
+| same, items with a `tags` array (20)            | —      | 102K   | **631K**         | —     | —     | 6.2x      |
 | functional API: `z.safeParse(Schema, x)`        | —      | 2.6M   | **7.6M**         | —     | —     | 2.9x      |
 | object with transform (zero-capture)            | 1.1M   | 1.9M   | **7.6M**         | —     | —     | 4.0x      |
 | array 10 × transform (zero-capture)             | 123K   | 209K   | **4.3M**         | —     | —     | **21x**   |

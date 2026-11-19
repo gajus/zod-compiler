@@ -4,9 +4,12 @@ import {
   aotComposedItem,
   ComposedItemSchema,
   ComposedPageSchema,
+  ComposedTaggedPageSchema,
   pageOverCompiledItem,
+  pageOverCompiledTaggedItem,
   validComposedItem,
   validComposedPage,
+  validComposedTaggedPage,
 } from "../../fixtures/schemas/index.js";
 
 // Both pages are plain zod, built by the same generic factory. Only the item
@@ -18,6 +21,17 @@ describe("safeParse: generic page of a compiled item, page not compiled (20 item
   });
   bench("zod-compiler", () => {
     pageOverCompiledItem.safeParse(validComposedPage);
+  });
+});
+
+// The same, over an item with an array field: one zod's traversal is handed a
+// copy of rather than the caller's array.
+describe("safeParse: generic page of a compiled item with an array field, page not compiled (20 items)", () => {
+  bench("zod", () => {
+    ComposedTaggedPageSchema.safeParse(validComposedTaggedPage);
+  });
+  bench("zod-compiler", () => {
+    pageOverCompiledTaggedItem.safeParse(validComposedTaggedPage);
   });
 });
 

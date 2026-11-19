@@ -68,7 +68,7 @@ async function compileOne(
   id: string,
   mode: CodegenMode,
   moduleCache: Map<string, Promise<Record<string, unknown>>>,
-  compact: boolean | undefined,
+  options: { compact?: boolean | undefined; zodRun?: boolean | undefined } | undefined,
 ): Promise<CompiledHoistedSchema | null> {
   const analysis = analyzeHoistedExpression(schema.text);
   if (analysis === null) return null;
@@ -122,7 +122,8 @@ async function compileOne(
 
     const codegenResult = generateValidator(ir, schema.name, {
       mode,
-      compact,
+      compact: options?.compact,
+      zodRun: options?.zodRun,
       errorClass: zodErrorClassOf(value),
     });
     return {
@@ -156,20 +157,22 @@ function isZodSpecifier(specifier: string): boolean {
  * The same evaluation serves the module-scope schemas compiled in place (see
  * analyzeZodSchemas): each is an expression text and a name for its validator,
  * and its eligibility is the same question. `options.compact` is theirs —
- * `output: "compact"` as the exports get it.
+ * `output: "compact"` as the exports get it. `options.zodRun` is `false` under
+ * `output: "bag"`, whose IIFEs never put a validator in front of zod's
+ * `_zod.run`.
  */
 export async function compileHoistedSchemas(
   schemas: readonly HoistedSchema[],
   code: string,
   id: string,
   mode: CodegenMode,
-  options?: { compact?: boolean | undefined },
+  options?: { compact?: boolean | undefined; zodRun?: boolean | undefined },
 ): Promise<CompiledHoistedSchema[]> {
   const { details } = collectImportBindings(code);
   const moduleCache = new Map<string, Promise<Record<string, unknown>>>();
   const compiled: CompiledHoistedSchema[] = [];
   for (const schema of schemas) {
-    const result = await compileOne(schema, details, id, mode, moduleCache, options?.compact);
+    const result = await compileOne(schema, details, id, mode, moduleCache, options);
     if (result !== null) compiled.push(result);
   }
   return compiled;

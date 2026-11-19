@@ -390,7 +390,9 @@ export async function transformCodeWithMap(
   let hoistCompiledCount = 0;
   if (autoDiscover && hoistedSchemas !== null && hoistedSchemas.schemas.length > 0) {
     const hoistCompiled = await timePhase("hoist-compile", () =>
-      compileHoistedSchemas(hoistedSchemas.schemas, code, id, mode),
+      compileHoistedSchemas(hoistedSchemas.schemas, code, id, mode, {
+        zodRun: options.zodCompat !== false,
+      }),
     );
     const spliceEdits: Edit[] = [];
     for (const h of hoistCompiled) {
@@ -429,7 +431,10 @@ export async function transformCodeWithMap(
       distinct.set(`${label}\0${text}`, { name: label, text });
     }
     const compiled = await timePhase("hoist-compile", () =>
-      compileHoistedSchemas([...distinct.values()], code, id, mode, { compact: options.compact }),
+      compileHoistedSchemas([...distinct.values()], code, id, mode, {
+        compact: options.compact,
+        zodRun: options.zodCompat !== false,
+      }),
     );
     const infos = new Map(compiled.map((c) => [`${c.name}\0${c.text}`, c.info]));
     for (const schema of moduleScope) {
@@ -628,6 +633,7 @@ export async function transformCodeWithMap(
     compileSchemas(schemas, {
       mode,
       compact: options.compact,
+      zodRun: options.zodCompat !== false,
       onError(exportName, error) {
         failedCount++;
         // An unsupported zod fails every export of every file the same way:

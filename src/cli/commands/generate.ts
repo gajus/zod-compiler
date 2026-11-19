@@ -126,6 +126,7 @@ export async function generateFile(
   const { schemas: codegenResults, shared } = compileSchemas(schemas, {
     mode: "inline",
     compact: options?.compact,
+    zodRun: options?.zodCompat !== false,
   });
 
   const outputPath = resolveOutputPath(filePath, outputFlag);

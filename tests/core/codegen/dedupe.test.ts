@@ -61,6 +61,16 @@ function source(info: CompiledSchemaInfo): string {
   return info.codegenResult.code + info.codegenResult.functionDef;
 }
 
+/**
+ * The shared slow walks a file's module-scope code declares. That code holds
+ * pooled constants as well (the build pass's FAIL sentinel, which the copy zod's
+ * own traversal is handed needs even where nothing else builds), and those are
+ * not what dedupe is about.
+ */
+function sharedWalks(sharedCode: string): string[] {
+  return [...sharedCode.matchAll(/function (__zcSw_\d+)\(/g)].map((m) => m[1] as string);
+}
+
 describe("schema dedupe", () => {
   it("emits one shared walk and references it from every occurrence", () => {
     const Address = z.strictObject({
@@ -138,7 +148,7 @@ describe("schema dedupe", () => {
       ],
       { mode: "inline" },
     );
-    expect(shared.code).toBe("");
+    expect(sharedWalks(shared.code)).toEqual([]);
     for (const s of schemas) expect(refs(s)).toHaveLength(0);
   });
 
@@ -151,7 +161,7 @@ describe("schema dedupe", () => {
       ],
       { mode: "inline" },
     );
-    expect(shared.code).toBe("");
+    expect(sharedWalks(shared.code)).toEqual([]);
   });
 
   it("delegates a root walk when the root shape is itself shared", () => {

@@ -28,6 +28,7 @@ import type { SharedSchemaPlan } from "./dedupe.js";
 import { ZC_PROTO_SCRUB_DECL } from "./issue-decls.js";
 import { createFastGen, generateFast } from "./fast-path.js";
 import { createSlowGen, generateSlow } from "./slow-path.js";
+import { zodRunAnswer } from "./zod-run.js";
 
 export type { CodeGenResult } from "./context.js";
 
@@ -53,6 +54,12 @@ export interface GenerateValidatorOptions {
   onConstant?: ((constant: GeneratedConstant) => void) | undefined;
   /** Internal exact-initializer plan used by the file pipeline's final generation pass. */
   sharedConstantNames?: ReadonlyMap<string, string> | undefined;
+  /**
+   * `false` when the IIFE will not put the validator in front of zod's
+   * `_zod.run`: a method bag (`output: "bag"`) has no schema for zod to reach.
+   * Nothing is then generated for that route (see zod-run.ts). Defaults to true.
+   */
+  zodRun?: boolean | undefined;
   /**
    * The error class the schema's own methods fail with (`zodErrorClassOf` on
    * the root schema): classic's `ZodError`, or core's `$ZodError` for
@@ -274,6 +281,7 @@ export function generateValidator(
   ) {
     const delegate = emitRetainedMethod(ctx);
     ctx.usedHelpers.add("__zcFinZ");
+    const zodRun = zodRunFields(ir, ctx, null, fastFnName, options);
     return {
       code: ["/* zod-compiler */", ...ctx.preamble].join("\n"),
       functionDef: [
@@ -289,7 +297,7 @@ export function generateValidator(
       // installs fc directly (compact never weakens the guard).
       fastTotal: true,
       usesRetainedSchema: true,
-      ...zodRunField(ir),
+      ...zodRun,
     };
   }
 
@@ -307,6 +315,7 @@ export function generateValidator(
     const delegate = emitRetainedMethod(ctx);
     ctx.usedHelpers.add("__zcFinZ");
     const built = `__bd_${ctx.counter++}`;
+    const zodRun = zodRunFields(ir, ctx, buildFnName, null, options);
     return {
       code: ["/* zod-compiler */", ...ctx.preamble].join("\n"),
       functionDef: [
@@ -322,7 +331,7 @@ export function generateValidator(
       fastTotal: false,
       isFnName: buildIsFnName,
       usesRetainedSchema: true,
-      ...zodRunField(ir),
+      ...zodRun,
     };
   }
 
@@ -380,6 +389,7 @@ export function generateValidator(
       );
       deferred = `${finD}(${walkName},input)`;
     }
+    const zodRun = zodRunFields(ir, ctx, buildFnName, null, options);
     return {
       code: buildCode(),
       functionDef: [
@@ -398,7 +408,7 @@ export function generateValidator(
       // travels in `isFnName` instead.
       fastTotal: false,
       isFnName: buildIsFnName,
-      ...zodRunField(ir),
+      ...zodRun,
     };
   }
 
@@ -472,6 +482,7 @@ export function generateValidator(
         `}`,
       );
     }
+    const zodRun = zodRunFields(ir, ctx, null, fastFnName, options);
     return {
       code: buildCode(),
       functionDef: functionDefParts.join("\n"),
@@ -487,7 +498,7 @@ export function generateValidator(
       // generateIIFE installs fc directly as the zero-allocation `.is()`.
       fastTotal: true,
       isFnName: fastFnName,
-      ...zodRunField(ir),
+      ...zodRun,
     };
   }
 
@@ -538,16 +549,33 @@ export function generateValidator(
 }
 
 /**
- * The `zodRun` field of a result, for the validators that may answer for zod's
- * own `_zod.run`. Spread into the returns that are a compiled verdict AND a
- * compiled output — the by-reference fast path and the build pass, compact or
+ * The `zodRun` fields of a result, for the validators that may answer for
+ * zod's own `_zod.run`. Spread into the returns that are a compiled verdict AND
+ * a compiled output — the by-reference fast path and the build pass, compact or
  * not. The rest leave it out: a validator that hands its whole schema to zod
  * would be answering zod with zod (and re-entering itself), and the eager walk
  * is where every construct the build pass declined ends up.
+ *
+ * Called before the result's code is assembled, because it may add a function
+ * to the preamble: zod's traversal must get zod's own shape back, so the
+ * containers the validator returns by reference are copied for it (see
+ * zod-run.ts). The validator's build answers where it has one, which also
+ * saves the result object `safeParse` wraps around it. `predicate` is the
+ * exact fast check a validator with no build accepts its input with.
  */
-function zodRunField(ir: SchemaIR): { zodRun?: "sync" | "async" } {
+function zodRunFields(
+  ir: SchemaIR,
+  ctx: CodeGenContext,
+  build: string | null,
+  predicate: string | null,
+  options: GenerateValidatorOptions | undefined,
+): Pick<CodeGenResult, "zodRun" | "zodRunBuild"> {
+  if (options?.zodRun === false) return {};
   const support = zodRunSupport(ir);
-  return support === null ? {} : { zodRun: support };
+  if (support === null) return {};
+  const answer = zodRunAnswer(ir, ctx, build, predicate);
+  if (answer === null) return {};
+  return answer === "validator" ? { zodRun: support } : { zodRun: support, zodRunBuild: answer };
 }
 
 /**

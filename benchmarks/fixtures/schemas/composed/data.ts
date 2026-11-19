@@ -1,4 +1,4 @@
-import type { ComposedItem } from "./zod.js";
+import type { ComposedItem, ComposedTaggedItem } from "./zod.js";
 
 function makeItem(index: number): ComposedItem {
   return {
@@ -15,6 +15,19 @@ export const validComposedItem = makeItem(0);
 
 export const validComposedPage = {
   items: Array.from({ length: 20 }, (_unused, index) => makeItem(index)),
+  total: 20,
+  nextCursor: null,
+};
+
+export const validComposedTaggedPage: {
+  items: ComposedTaggedItem[];
+  total: number;
+  nextCursor: null;
+} = {
+  items: Array.from({ length: 20 }, (_unused, index) => ({
+    ...makeItem(index),
+    tags: ["new", `cohort-${index % 4}`],
+  })),
   total: 20,
   nextCursor: null,
 };

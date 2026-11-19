@@ -43,6 +43,12 @@ export interface CompileSchemasOptions {
    * through the `__zs` binding rather than through `__rf[]`.
    */
   compact?: boolean | undefined;
+  /**
+   * `false` for a method bag (`output: "bag"`), whose IIFE never puts the
+   * validator in front of zod's `_zod.run`, so nothing is generated for that
+   * route. Defaults to true.
+   */
+  zodRun?: boolean | undefined;
   /** When provided, per-schema failures call this and continue. Otherwise the first error throws. */
   onError?: (exportName: string, error: Error) => void;
 }
@@ -203,6 +209,7 @@ export function compileSchemas(
         mode: options.mode,
         sharedSchemas: plan,
         compact: options.compact,
+        zodRun: options.zodRun,
         errorClass: e.errorClass,
         onConstant(constant) {
           constants.set(constant.name, constant);
@@ -241,6 +248,7 @@ export function compileSchemas(
         mode: options.mode,
         sharedSchemas: plan,
         compact: options.compact,
+        zodRun: options.zodRun,
         errorClass: entry.errorClass,
         sharedConstantNames,
       });

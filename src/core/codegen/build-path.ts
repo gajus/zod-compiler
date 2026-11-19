@@ -125,7 +125,7 @@ interface BuildGen {
  * Resolving the ref against its target closes the cycle, and iterating to a
  * fixpoint settles the mutual dependency between the two.
  */
-function rebuildSet(root: SchemaIR, includeProtoScrub = true): ReadonlySet<SchemaIR> {
+export function rebuildSet(root: SchemaIR, includeProtoScrub = true): ReadonlySet<SchemaIR> {
   const targets = new Map<number, SchemaIR>([[0, root]]);
   const nodes: SchemaIR[] = [];
   const seen = new Set<SchemaIR>();
@@ -264,21 +264,22 @@ export function fastResultIsInput(ir: SchemaIR): boolean {
  * site, a library holding only the schema. So the validator may take them only
  * where what it yields is INDISTINGUISHABLE from what zod builds, which rules
  * out every schema one of the documented differences can reach
- * (tests/known-divergences.test.ts):
+ * (tests/known-divergences.test.ts).
  *
- *  - a container handed back by reference. Zod rebuilds every object, array,
- *    tuple, record, set and map; the compiled walks rebuild only what they must
- *    (see rebuildSet). An aliased container is more than an identity quirk on
- *    this route — zod's own wrappers act on a child's output in place
- *    (`.readonly()` freezes it), which would land on the caller's input. So
- *    every container in the schema has to be one the build pass allocates: a
- *    stripping object, or an array or tuple some member rewrites. (That covers
- *    the frozen COPY `.readonly()` makes of a pass-through array as well: the
- *    array under it is not rebuilt, and a `slice()` keeps a sparse input's
- *    holes where zod writes `undefined`.) A strict or loose object, a record, a
- *    set, a map and an intersection are declined outright — rebuilt or not,
- *    each has a difference of its own (key order, symbol keys, inherited keys)
- *    or is not modelled closely enough to promise there is none;
+ * A container handed back by reference is the difference most schemas hold,
+ * and it is not refused here: zod rebuilds every object, array, tuple, record,
+ * set and map, so on this route the validator's result is followed by a copy
+ * of each container it returned by reference (see zod-run.ts). An aliased
+ * container would be more than an identity quirk on this route: zod's own
+ * wrappers act on a child's output in place (`.readonly()` freezes it), which
+ * would land on the caller's input. Where that copy cannot be made exactly
+ * (a container under a plain union, a record over a declared key set, and the
+ * other cases zod-run.ts lists), the route stays zod's.
+ *
+ * Refused here:
+ *
+ *  - an intersection, whose output is zod's MERGE of two separately parsed
+ *    copies;
  *  - `.catch()`, whose callback sees finalized issues where zod's sees raw ones,
  *    and `superRefine`, whose callback holds a payload of the compiler's making;
  *  - a recursive schema. Zod closes reference cycles in the DATA with state
@@ -299,7 +300,6 @@ export function fastResultIsInput(ir: SchemaIR): boolean {
  * ("async" — either kind of parse).
  */
 export function zodRunSupport(ir: SchemaIR): "sync" | "async" | null {
-  const rebuilds = rebuildSet(ir);
   const seen = new Set<SchemaIR>();
   let callsUserCode = false;
   const exact = (node: SchemaIR): boolean => {
@@ -315,18 +315,8 @@ export function zodRunSupport(ir: SchemaIR): "sync" | "async" | null {
       case "recursiveRef":
       case "recursionTarget":
       case "catch":
-      case "record":
-      case "set":
-      case "map":
       case "intersection":
         return false;
-      case "object":
-        if (node.stripUnknownKeys !== true) return false;
-        break;
-      case "array":
-      case "tuple":
-        if (!rebuilds.has(node)) return false;
-        break;
       case "effect":
       case "custom":
         callsUserCode = true;
@@ -410,7 +400,7 @@ export function nestedNeedsProtoScrub(ir: SchemaIR): boolean {
   return walk(ir);
 }
 
-function children(ir: SchemaIR): readonly SchemaIR[] {
+export function children(ir: SchemaIR): readonly SchemaIR[] {
   switch (ir.type) {
     case "object":
       return ir.catchall
@@ -495,7 +485,7 @@ export function generateBuild(ir: SchemaIR, ctx: CodeGenContext): string | null 
  * build function, and the pool's other members are lookup tables and value
  * lists, which are only ever read from.
  */
-function emitFailSentinel(ctx: CodeGenContext): string {
+export function emitFailSentinel(ctx: CodeGenContext): string {
   ctx.buildFailName ??= emitPooledConstant(ctx, "Bf", "bf", "{}");
   return ctx.buildFailName;
 }
@@ -567,7 +557,7 @@ function build(ir: SchemaIR, input: string, caller: BuildGen): Built | null {
  * under it rebuilds, so the scrubbed input already is the rebuild. It does not
  * apply to a container a callback is handed, which must be a copy of its own.
  */
-function passesThroughWithScrub(ir: SchemaIR, rebuilds: ReadonlySet<SchemaIR>): boolean {
+export function passesThroughWithScrub(ir: SchemaIR, rebuilds: ReadonlySet<SchemaIR>): boolean {
   return !isFresh(ir) && needsProtoScrub(ir) && !children(ir).some((child) => rebuilds.has(child));
 }
 
@@ -1003,7 +993,7 @@ function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {
 }
 
 /** One property's place in a rebuilt object: its key, the local holding its value, and whether zod always emits it. */
-interface OutputSlot {
+export interface OutputSlot {
   always: boolean;
   keyStr: string;
   value: string;
@@ -1044,7 +1034,7 @@ const PRESENCE_LITERAL_PAIR_WIDTH = 16;
  * third conditional one — and a trailing run of conditional keys, which was
  * never the problem: nothing comes after them.
  */
-function assembleObject(slots: readonly OutputSlot[], out: string, input: string): string {
+export function assembleObject(slots: readonly OutputSlot[], out: string, input: string): string {
   const conditional = slots.flatMap((slot, index) => (slot.always ? [] : [index]));
   const lastAlways = slots.reduce((last, slot, index) => (slot.always ? index : last), -1);
   // Resolving a key with nothing but conditional keys behind it buys no

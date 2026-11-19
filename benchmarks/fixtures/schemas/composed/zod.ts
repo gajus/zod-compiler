@@ -28,3 +28,15 @@ export function paginated<T extends z.ZodType>(item: T) {
 }
 
 export const ComposedPageSchema = paginated(ComposedItemSchema);
+
+// The same page over an item holding an array of primitives, as most real items
+// do. The compiled item validates `tags` in place and hands it back by
+// reference, which zod's traversal must not be given, so what answers it there
+// is the item's build followed by a copy of `tags` (see zod-run.ts).
+export const ComposedTaggedItemSchema = ComposedItemSchema.extend({
+  tags: z.array(z.string().min(1)).max(10),
+});
+
+export type ComposedTaggedItem = z.infer<typeof ComposedTaggedItemSchema>;
+
+export const ComposedTaggedPageSchema = paginated(ComposedTaggedItemSchema);
