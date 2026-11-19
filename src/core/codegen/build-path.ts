@@ -103,6 +103,20 @@ interface BuildGen {
   /** Nodes of the root schema that rebuild (see rebuildSet). */
   rebuilds: ReadonlySet<SchemaIR>;
   /**
+   * The parameter that asks this build for zod's own copy of the value (see
+   * generateBuild's `dual`), declared by every function a dual build hosts and
+   * passed on to each one it calls. Null when the build has only the one
+   * output.
+   */
+  flag: string | null;
+  /**
+   * Building zod's copy outright (see generateCopyBuild): every container is in
+   * `rebuilds`, a record with an own symbol key is left to zod, and the
+   * containers only this mode builds (a loose or catchall object, a set, a map,
+   * a pipe) are built rather than declined.
+   */
+  everyContainer: boolean;
+  /**
    * Set on the gen for a dispatched union option (see buildDispatch): the
    * discriminator key. The switch that selected the option has already proved
    * the input is an object and matched this key's value, so `buildObject`
@@ -125,7 +139,11 @@ interface BuildGen {
  * Resolving the ref against its target closes the cycle, and iterating to a
  * fixpoint settles the mutual dependency between the two.
  */
-export function rebuildSet(root: SchemaIR, includeProtoScrub = true): ReadonlySet<SchemaIR> {
+function rebuildSet(
+  root: SchemaIR,
+  includeProtoScrub = true,
+  everyContainer = false,
+): ReadonlySet<SchemaIR> {
   const targets = new Map<number, SchemaIR>([[0, root]]);
   const nodes: SchemaIR[] = [];
   const seen = new Set<SchemaIR>();
@@ -149,6 +167,8 @@ export function rebuildSet(root: SchemaIR, includeProtoScrub = true): ReadonlySe
         // A container a user callback is handed holds zod's copy, never the
         // caller's (see the `fresh` flag on the container IR nodes).
         isFresh(node) ||
+        // zod's own copy: every container built (see generateCopyBuild).
+        (everyContainer && isContainer(node)) ||
         // A freezing readonly's output is `Object.freeze(inner)` — a value the
         // caller never handed us, so it must be BUILT rather than passed
         // through. Marking it here is also what makes `rebuildsOutput` true and
@@ -268,13 +288,14 @@ export function fastResultIsInput(ir: SchemaIR): boolean {
  *
  * A container handed back by reference is the difference most schemas hold,
  * and it is not refused here: zod rebuilds every object, array, tuple, record,
- * set and map, so on this route the validator's result is followed by a copy
- * of each container it returned by reference (see zod-run.ts). An aliased
- * container would be more than an identity quirk on this route: zod's own
- * wrappers act on a child's output in place (`.readonly()` freezes it), which
- * would land on the caller's input. Where that copy cannot be made exactly
- * (a container under a plain union, a record over a declared key set, and the
- * other cases zod-run.ts lists), the route stays zod's.
+ * set and map, so on this route the validator answers with zod's own copy,
+ * each such container built from one read of the input (see generateBuild's
+ * `dual` and generateCopyBuild). An aliased container would be more than an
+ * identity quirk on this route: zod's own wrappers act on a child's output in
+ * place (`.readonly()` freezes it), which would land on the caller's input.
+ * Where no copy build can match zod (a record over a constrained key, a tuple
+ * with a rest element or optional items, an object with absent-key rules),
+ * the route stays zod's.
  *
  * Refused here:
  *
@@ -400,7 +421,7 @@ export function nestedNeedsProtoScrub(ir: SchemaIR): boolean {
   return walk(ir);
 }
 
-export function children(ir: SchemaIR): readonly SchemaIR[] {
+function children(ir: SchemaIR): readonly SchemaIR[] {
   switch (ir.type) {
     case "object":
       return ir.catchall
@@ -440,8 +461,20 @@ export function children(ir: SchemaIR): readonly SchemaIR[] {
  * Host the whole schema as `function NAME(input){…}` returning the built value
  * or the FAIL sentinel. Returns the function name, or null when the schema is
  * not expressible as a single build pass.
+ *
+ * `dual` builds a function that also answers zod's own traversal: called with
+ * a truthy second argument (RUN_FLAG), it hands back zod's own copy of the
+ * value. Each container it would return by reference is then built instead,
+ * by a copy build of that subtree that validates and copies in the same read
+ * (see passthrough), and a record with an own symbol key is left to zod (see
+ * buildRecord). A site no copy build can serve marks the route unavailable
+ * (`ctx.zodRunBlocked`).
  */
-export function generateBuild(ir: SchemaIR, ctx: CodeGenContext): string | null {
+export function generateBuild(
+  ir: SchemaIR,
+  ctx: CodeGenContext,
+  options?: { dual?: boolean },
+): string | null {
   const rebuilds = rebuildSet(ir);
   if (!rebuilds.has(ir) || mutatesBeyondStrip(ir)) return null;
   // When the ONLY reason the root rebuilds is its own `__proto__` scrub, decline
@@ -454,6 +487,7 @@ export function generateBuild(ir: SchemaIR, ctx: CodeGenContext): string | null 
   if (needsProtoScrub(ir) && !rebuildSet(ir, false).has(ir)) return null;
   const fail = emitFailSentinel(ctx);
   const scope: FastScope = { temps: [], used: 0 };
+  const flag = options?.dual === true ? RUN_FLAG : null;
   // The root is recursion target 0, so a self-reference is a call to this very
   // function: named before its body, as buildRecursionTarget names the others.
   // Without the entry a self-recursive root — a `z.lazy()` tree, the getter
@@ -461,15 +495,153 @@ export function generateBuild(ir: SchemaIR, ctx: CodeGenContext): string | null 
   const name = emitTemp(ctx, "vb");
   const recNames = (ctx.buildRecNames ??= new Map<number, string>());
   recNames.set(0, name);
-  const built = build(ir, "input", { ctx, extractable: false, fail, rebuilds, scope });
+  const built = build(ir, "input", {
+    ctx,
+    extractable: false,
+    fail,
+    rebuilds,
+    scope,
+    flag,
+    everyContainer: false,
+  });
   if (built === null) {
     recNames.delete(0);
     return null;
   }
   ctx.preamble.push(
-    `function ${name}(input){${declareFastTemps(scope)}${built.code}return ${built.value};}`,
+    `function ${name}(input${flagParam(flag)}){${declareFastTemps(scope)}${built.code}return ${built.value};}`,
   );
   return name;
+}
+
+/**
+ * The parameter a dual build's functions take (see generateBuild). Every
+ * hosted function declares its own of this name, so the code inside reads the
+ * same identifier at every level.
+ */
+const RUN_FLAG = "__zf";
+
+/** `,__zf` in a dual build's parameter lists, "" otherwise. */
+function flagParam(flag: string | null): string {
+  return flag === null ? "" : `,${flag}`;
+}
+
+/**
+ * Host a build of `ir` that returns zod's own copy of an input the schema
+ * accepts: every container rebuilt as zod builds it, every value read once.
+ * Returns value-or-FAIL like any build, so a dual build calls it where it
+ * would hand a container back by reference, and a schema validated in place
+ * answers zod's traversal with it outright.
+ *
+ * Null where the build pass cannot reproduce zod's copy: a record over a
+ * constrained key, a tuple with a rest element or optional items, an object
+ * with absent-key rules, anything recursive, delegated or intersected. The
+ * preamble is rolled back then, so a failed attempt leaves nothing behind.
+ */
+export function generateCopyBuild(
+  ir: SchemaIR,
+  ctx: CodeGenContext,
+  discSkipKey?: string,
+): string | null {
+  if (mutatesBeyondStrip(ir)) return null;
+  const snapshot = {
+    preamble: ctx.preamble.length,
+    regexCache: new Map(ctx.regexCache),
+    effectFnCache: ctx.effectFnCache && new Map(ctx.effectFnCache),
+    valueCache: ctx.valueCache && new Map(ctx.valueCache),
+    usedHelpers: new Set(ctx.usedHelpers),
+    // The sentinel may be declared by this very attempt, and its declaration is
+    // rolled back with the rest.
+    buildFailName: ctx.buildFailName,
+  };
+  const fail = emitFailSentinel(ctx);
+  const param = emitTemp(ctx, "bp");
+  const scope: FastScope = { temps: [], used: 0 };
+  const built = build(ir, param, {
+    ctx,
+    extractable: false,
+    fail,
+    rebuilds: rebuildSet(ir, true, true),
+    scope,
+    flag: null,
+    everyContainer: true,
+    discSkipKey,
+  });
+  if (built === null) {
+    ctx.preamble.length = snapshot.preamble;
+    ctx.regexCache = snapshot.regexCache;
+    if (snapshot.effectFnCache === undefined) delete ctx.effectFnCache;
+    else ctx.effectFnCache = snapshot.effectFnCache;
+    if (snapshot.valueCache === undefined) delete ctx.valueCache;
+    else ctx.valueCache = snapshot.valueCache;
+    ctx.usedHelpers.clear();
+    for (const helper of snapshot.usedHelpers) ctx.usedHelpers.add(helper);
+    if (snapshot.buildFailName === undefined) delete ctx.buildFailName;
+    else ctx.buildFailName = snapshot.buildFailName;
+    return null;
+  }
+  const name = emitTemp(ctx, "vc");
+  ctx.preamble.push(
+    `function ${name}(${param}){${declareFastTemps(scope)}${built.code}return ${built.value};}`,
+  );
+  return name;
+}
+
+/**
+ * Does a dual build of this schema need its second mode at all? Only where its
+ * one output differs from zod's own copy: some container returned by
+ * reference, or a record anywhere, whose symbol keys the walks skip. A schema
+ * whose every container is built already answers zod's traversal as it is.
+ *
+ * A record or loose object in the rebuild set only for its `__proto__` scrub
+ * counts as returned by reference: the scrub copies when the key is there, and
+ * returns the input otherwise.
+ */
+export function handsBackContainers(ir: SchemaIR): boolean {
+  const rebuilds = rebuildSet(ir);
+  const seen = new Set<SchemaIR>();
+  const walk = (node: SchemaIR): boolean => {
+    if (seen.has(node)) return false;
+    seen.add(node);
+    if (node.type === "record") return true;
+    if (isContainer(node) && (!rebuilds.has(node) || passesThroughWithScrub(node, rebuilds))) {
+      return true;
+    }
+    return children(node).some(walk);
+  };
+  return walk(ir);
+}
+
+/** Node types zod parses into a container of its own making. */
+function isContainer(ir: SchemaIR): boolean {
+  switch (ir.type) {
+    case "object":
+    case "array":
+    case "tuple":
+    case "record":
+    case "set":
+    case "map":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Can this subtree's value hold a container zod builds? A leaf that passes a
+ * reference through (`z.any()`, `z.custom()`, a `Date`) does not count: zod
+ * passes the same reference. A recursive member does, since its target is not
+ * visible from here.
+ */
+function holdsContainer(root: SchemaIR): boolean {
+  const seen = new Set<SchemaIR>();
+  const walk = (node: SchemaIR): boolean => {
+    if (seen.has(node)) return false;
+    seen.add(node);
+    if (isContainer(node) || node.type === "recursiveRef") return true;
+    return children(node).some(walk);
+  };
+  return walk(root);
 }
 
 /**
@@ -485,7 +657,7 @@ export function generateBuild(ir: SchemaIR, ctx: CodeGenContext): string | null 
  * build function, and the pool's other members are lookup tables and value
  * lists, which are only ever read from.
  */
-export function emitFailSentinel(ctx: CodeGenContext): string {
+function emitFailSentinel(ctx: CodeGenContext): string {
   ctx.buildFailName ??= emitPooledConstant(ctx, "Bf", "bf", "{}");
   return ctx.buildFailName;
 }
@@ -511,6 +683,12 @@ function build(ir: SchemaIR, input: string, caller: BuildGen): Built | null {
     ir.type !== "zodDelegate"
       ? { ...caller, discSkipKey: undefined }
       : caller;
+  // zod's traversal is never handed a recursive schema (see zodRunSupport), and
+  // a back-edge would call the validator's own build, which hands containers
+  // back by reference.
+  if (g.everyContainer && (ir.type === "recursiveRef" || ir.type === "recursionTarget")) {
+    return null;
+  }
   // Resolved before the passthrough shortcut below. A back-edge carries no
   // children, so `rebuildsOutput` reads false for it — and passing it through by
   // reference would leave every nested recursive value unstripped while the
@@ -528,7 +706,7 @@ function build(ir: SchemaIR, input: string, caller: BuildGen): Built | null {
     const hosted = hostBuild(ir, g);
     if (hosted !== null) {
       const slot = local(g, "bh");
-      const code = `${slot}=${hosted}(${input});if(${slot}===${g.fail})return ${g.fail};`;
+      const code = `${slot}=${hosted}(${input}${flagParam(g.flag)});if(${slot}===${g.fail})return ${g.fail};`;
       g.scope.used += code.length;
       return { code, value: slot };
     }
@@ -541,8 +719,11 @@ function build(ir: SchemaIR, input: string, caller: BuildGen): Built | null {
   // rebuild. Taken BEFORE the builders so a plain record keeps handing its
   // input back by reference (buildRecord would copy into a fresh `{}`, which is
   // a different documented behaviour: see the output-identity divergence). Not
-  // for a container a callback is handed, which must be a copy of its own.
-  if (passesThroughWithScrub(ir, g.rebuilds)) return passthrough(ir, input, g);
+  // for a container a callback is handed, which must be a copy of its own, nor
+  // in zod's own copy.
+  if (!g.everyContainer && passesThroughWithScrub(ir, g.rebuilds)) {
+    return passthrough(ir, input, g);
+  }
 
   const before = g.scope.used;
   const out = buildInline(ir, input, { ...g, extractable: true });
@@ -557,7 +738,7 @@ function build(ir: SchemaIR, input: string, caller: BuildGen): Built | null {
  * under it rebuilds, so the scrubbed input already is the rebuild. It does not
  * apply to a container a callback is handed, which must be a copy of its own.
  */
-export function passesThroughWithScrub(ir: SchemaIR, rebuilds: ReadonlySet<SchemaIR>): boolean {
+function passesThroughWithScrub(ir: SchemaIR, rebuilds: ReadonlySet<SchemaIR>): boolean {
   return !isFresh(ir) && needsProtoScrub(ir) && !children(ir).some((child) => rebuilds.has(child));
 }
 
@@ -629,7 +810,7 @@ function hostBuild(ir: SchemaIR, g: BuildGen, discSkipKey?: string): string | nu
   if (inner === null) return null;
   const name = emitTemp(g.ctx, "vb");
   g.ctx.preamble.push(
-    `function ${name}(${param}){${declareFastTemps(scope)}${inner.code}return ${inner.value};}`,
+    `function ${name}(${param}${flagParam(g.flag)}){${declareFastTemps(scope)}${inner.code}return ${inner.value};}`,
   );
   return name;
 }
@@ -676,6 +857,14 @@ function buildInline(ir: SchemaIR, input: string, g: BuildGen): Built | null {
       return buildUnion(ir, input, g);
     case "discriminatedUnion":
       return buildDiscriminatedUnion(ir, input, g);
+    // A set, a map and a pipe the validator walks in place: zod's own copy
+    // builds them (see generateCopyBuild), the validator's build declines them.
+    case "set":
+      return g.everyContainer ? buildSet(ir, input, g) : null;
+    case "map":
+      return g.everyContainer ? buildMap(ir, input, g) : null;
+    case "pipe":
+      return g.everyContainer ? buildPipe(ir, input, g) : null;
     default:
       // A rebuilding intersection, map or set: expressible in principle, but
       // each needs its own output-shaping rules, so they keep the eager walk
@@ -705,7 +894,7 @@ function buildRecursionTarget(
       return null;
     }
     g.ctx.preamble.push(
-      `function ${name}(${param}){${declareFastTemps(scope)}${inner.code}return ${inner.value};}`,
+      `function ${name}(${param}${flagParam(g.flag)}){${declareFastTemps(scope)}${inner.code}return ${inner.value};}`,
     );
   }
   return buildRecursiveCall(ir.refId, input, g);
@@ -717,7 +906,7 @@ function buildRecursiveCall(refId: number, input: string, g: BuildGen): Built | 
   if (name === undefined) return null;
   const slot = local(g, "bh");
   return {
-    code: `${slot}=${name}(${input});if(${slot}===${g.fail})return ${g.fail};`,
+    code: `${slot}=${name}(${input}${flagParam(g.flag)});if(${slot}===${g.fail})return ${g.fail};`,
     value: slot,
   };
 }
@@ -762,9 +951,10 @@ function buildUnion(ir: SchemaIR & { type: "union" }, input: string, g: BuildGen
   if (hosted.length === 0) return null;
 
   const out = local(g, "bu");
-  let code = `${out}=${hosted[0] as string}(${input});`;
+  const args = `${input}${flagParam(g.flag)}`;
+  let code = `${out}=${hosted[0] as string}(${args});`;
   for (const fn of hosted.slice(1)) {
-    code += `if(${out}===${g.fail}){${out}=${fn}(${input});}`;
+    code += `if(${out}===${g.fail}){${out}=${fn}(${args});}`;
   }
   code += `if(${out}===${g.fail})return ${g.fail};`;
   return { code, value: out };
@@ -844,7 +1034,7 @@ function buildDispatch(
       fn = hosted;
       hostedByOption.set(index, fn);
     }
-    arms += `case ${literalToJs(value)}:${out}=${fn}(${input});break;`;
+    arms += `case ${literalToJs(value)}:${out}=${fn}(${input}${flagParam(g.flag)});break;`;
   }
   if (arms === "") return null;
 
@@ -866,11 +1056,27 @@ function hostPassthrough(ir: SchemaIR, g: BuildGen, discSkipKey?: string): strin
   const scope: FastScope = { temps: [], used: 0 };
   const expr = generateFast(ir, createFastGen(param, g.ctx, true, scope, discSkipKey));
   if (expr === null) return null;
+  const copy = zodCopy(ir, g, discSkipKey);
   const name = emitTemp(g.ctx, "vp");
+  const checked = expr === "true" ? param : `(${expr})?${param}:${g.fail}`;
   g.ctx.preamble.push(
-    `function ${name}(${param}){${declareFastTemps(scope)}return ${expr === "true" ? param : `(${expr})?${param}:${g.fail}`};}`,
+    `function ${name}(${param}${flagParam(g.flag)}){${declareFastTemps(scope)}return ${copy === null ? checked : `${g.flag}?${copy}(${param}):${checked}`};}`,
   );
   return name;
+}
+
+/**
+ * The copy build a dual build's second mode calls in place of handing this
+ * passed-through subtree back by reference (see generateBuild), or null where
+ * it needs none: the build is not dual, or nothing in the subtree is a
+ * container zod builds. A subtree no copy build can serve leaves the first
+ * mode intact and marks zod's route unavailable for the whole schema.
+ */
+function zodCopy(ir: SchemaIR, g: BuildGen, discSkipKey?: string): string | null {
+  if (g.flag === null || !holdsContainer(ir)) return null;
+  const copy = generateCopyBuild(ir, g.ctx, discSkipKey);
+  if (copy === null) g.ctx.zodRunBlocked = true;
+  return copy;
 }
 
 /**
@@ -884,10 +1090,25 @@ function passthrough(ir: SchemaIR, input: string, g: BuildGen): Built | null {
   const expr = generateFast(ir, scoped);
   if (expr === null) return null;
   const guard = expr === "true" ? "" : `if(!(${expr}))return ${g.fail};`;
-  if (!needsProtoScrub(ir)) return { code: guard, value: input };
+  const scrubbed = needsProtoScrub(ir)
+    ? `${emitRuntimeHelper(g.ctx, "__zcPs", ZC_PROTO_SCRUB_DECL)}(${input})`
+    : input;
+  // A dual build's second mode: zod's own copy, validated and copied by one
+  // read of the value. Running the fast check and copying afterwards would
+  // read it twice, and a getter could hand the copy a value the check never
+  // saw.
+  const copy = zodCopy(ir, g, g.discSkipKey);
+  if (copy !== null) {
+    const slot = local(g, "bz");
+    const checked = expr === "true" ? scrubbed : `(${expr})?${scrubbed}:${g.fail}`;
+    return {
+      code: `${slot}=${g.flag}?${copy}(${input}):${checked};if(${slot}===${g.fail})return ${g.fail};`,
+      value: slot,
+    };
+  }
+  if (scrubbed === input) return { code: guard, value: input };
   const slot = local(g, "bs");
-  const scrub = emitRuntimeHelper(g.ctx, "__zcPs", ZC_PROTO_SCRUB_DECL);
-  return { code: `${guard}${slot}=${scrub}(${input});`, value: slot };
+  return { code: `${guard}${slot}=${scrubbed};`, value: slot };
 }
 
 /**
@@ -920,8 +1141,10 @@ function buildReadonly(
 }
 
 function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {
-  if (ir.catchall !== undefined) return null;
-  if (ir.stripUnknownKeys !== true && ir.strict !== true) return null;
+  // A loose or catchall object keeps keys the shape does not declare. Only zod's
+  // own copy builds one (below); elsewhere it stays with the eager walk.
+  const keepsUnknown = ir.stripUnknownKeys !== true && ir.strict !== true;
+  if (keepsUnknown && !g.everyContainer) return null;
   // Both swallow an absent key's failure, which a single-pass build that fails
   // at the first bad check cannot model.
   if (ir.skipAbsentKeys !== undefined && ir.skipAbsentKeys.length > 0) return null;
@@ -983,6 +1206,21 @@ function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {
 
   const out = local(g, "bo");
   code += assembleObject(slots, out, input);
+  if (keepsUnknown) {
+    // zod's handleCatchall: every for-in key the shape does not declare,
+    // inherited ones included and `__proto__` skipped, appended in for-in order
+    // and run through the catchall when there is one.
+    const keyVar = local(g, "bk");
+    const known = keyMembershipTest(g.ctx, Object.keys(ir.properties), keyVar);
+    let body = `${out}[${keyVar}]=${input}[${keyVar}];`;
+    if (ir.catchall !== undefined) {
+      const slot = local(g, "bcv");
+      const caught = build(ir.catchall, slot, childGen);
+      if (caught === null) return null;
+      body = `${slot}=${input}[${keyVar}];${caught.code}${out}[${keyVar}]=${caught.value};`;
+    }
+    code += `for(${keyVar} in ${input}){if(!(${known})&&${keyVar}!=="__proto__"){${body}}}`;
+  }
   // Zod parses the properties into the payload first and skips the check chain
   // when that produced issues, so a bad property suppresses the refine — which
   // this pass gets for free, having already returned FAIL at that property.
@@ -993,7 +1231,7 @@ function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {
 }
 
 /** One property's place in a rebuilt object: its key, the local holding its value, and whether zod always emits it. */
-export interface OutputSlot {
+interface OutputSlot {
   always: boolean;
   keyStr: string;
   value: string;
@@ -1034,7 +1272,7 @@ const PRESENCE_LITERAL_PAIR_WIDTH = 16;
  * third conditional one — and a trailing run of conditional keys, which was
  * never the problem: nothing comes after them.
  */
-export function assembleObject(slots: readonly OutputSlot[], out: string, input: string): string {
+function assembleObject(slots: readonly OutputSlot[], out: string, input: string): string {
   const conditional = slots.flatMap((slot, index) => (slot.always ? [] : [index]));
   const lastAlways = slots.reduce((last, slot, index) => (slot.always ? index : last), -1);
   // Resolving a key with nothing but conditional keys behind it buys no
@@ -1175,12 +1413,85 @@ function buildRecord(ir: SchemaIR & { type: "record" }, input: string, g: BuildG
   // since `out[key]=value` for that key would not add a property at all but
   // REDEFINE the built object's prototype.
   const plain = emitRuntimeHelper(g.ctx, "__zcPlain", ZC_PLAIN_DECL);
+  // Zod walks `Reflect.ownKeys`, so it runs the key schema on a symbol key too,
+  // and a string key schema rejects one. This walk sees string keys only (the
+  // documented record difference), which zod's own copy may not, so that copy
+  // leaves an input with an own symbol to zod. (Reading the symbols calls no
+  // getter.)
+  const symbols = `Object.getOwnPropertySymbols(${input}).length!==0`;
+  const zodsOwn = g.everyContainer
+    ? `if(${symbols})return ${g.fail};`
+    : g.flag === null
+      ? ""
+      : `if(${g.flag}&&${symbols})return ${g.fail};`;
   const code =
     `if(!${plain}(${input}))return ${g.fail};` +
+    zodsOwn +
     `${out}={};` +
     `for(${keyVar} in ${input}){if(${keyVar}!=="__proto__"&&${hop}.call(${input},${keyVar})){` +
     `${valVar}=${input}[${keyVar}];${inner.code}${out}[${keyVar}]=${inner.value};}}`;
   return { code, value: out };
+}
+
+/**
+ * zod's copy of a Set: a new Set holding each element's parsed value, in the
+ * input's iteration order. Size checks are predicates over `size`, so they run
+ * first, as array length checks do.
+ */
+function buildSet(ir: SchemaIR & { type: "set" }, input: string, g: BuildGen): Built | null {
+  let sizes = "";
+  for (const check of ir.checks ?? []) {
+    switch (check.kind) {
+      case "min_size":
+        sizes += `if(${input}.size<${check.minimum})return ${g.fail};`;
+        break;
+      case "max_size":
+        sizes += `if(${input}.size>${check.maximum})return ${g.fail};`;
+        break;
+      case "size_equals":
+        sizes += `if(${input}.size!==${check.size})return ${g.fail};`;
+        break;
+      default:
+        return null;
+    }
+  }
+  const out = local(g, "bst");
+  const element = local(g, "bse");
+  const inner = build(ir.valueType, element, g);
+  if (inner === null) return null;
+  return {
+    code:
+      `if(!(${input} instanceof Set))return ${g.fail};${sizes}${out}=new Set();` +
+      `for(${element} of ${input}){${inner.code}${out}.add(${inner.value});}`,
+    value: out,
+  };
+}
+
+/** zod's copy of a Map: each entry's key and value parsed, in that order, into a new Map. */
+function buildMap(ir: SchemaIR & { type: "map" }, input: string, g: BuildGen): Built | null {
+  const out = local(g, "bm");
+  const entry = local(g, "bme");
+  const keyVar = local(g, "bmk");
+  const valueVar = local(g, "bmv");
+  const key = build(ir.keyType, keyVar, g);
+  const value = build(ir.valueType, valueVar, g);
+  if (key === null || value === null) return null;
+  return {
+    code:
+      `if(!(${input} instanceof Map))return ${g.fail};${out}=new Map();` +
+      `for(${entry} of ${input}){${keyVar}=${entry}[0];${valueVar}=${entry}[1];` +
+      `${key.code}${value.code}${out}.set(${key.value},${value.value});}`,
+    value: out,
+  };
+}
+
+/** zod's pipe: `out` parses what `in` produced. */
+function buildPipe(ir: SchemaIR & { type: "pipe" }, input: string, g: BuildGen): Built | null {
+  const first = build(ir.in, input, g);
+  if (first === null) return null;
+  const second = build(ir.out, first.value, g);
+  if (second === null) return null;
+  return { code: first.code + second.code, value: second.value };
 }
 
 /**

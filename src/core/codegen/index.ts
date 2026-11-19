@@ -10,6 +10,8 @@ import type {
 import {
   fastResultIsInput,
   generateBuild,
+  generateCopyBuild,
+  handsBackContainers,
   nestedNeedsProtoScrub,
   zodRunSupport,
   rebuildsOutput,
@@ -28,7 +30,6 @@ import type { SharedSchemaPlan } from "./dedupe.js";
 import { ZC_PROTO_SCRUB_DECL } from "./issue-decls.js";
 import { createFastGen, generateFast } from "./fast-path.js";
 import { createSlowGen, generateSlow } from "./slow-path.js";
-import { zodRunAnswer } from "./zod-run.js";
 
 export type { CodeGenResult } from "./context.js";
 
@@ -57,7 +58,7 @@ export interface GenerateValidatorOptions {
   /**
    * `false` when the IIFE will not put the validator in front of zod's
    * `_zod.run`: a method bag (`output: "bag"`) has no schema for zod to reach.
-   * Nothing is then generated for that route (see zod-run.ts). Defaults to true.
+   * Nothing is then generated for that route (see zodRunFields). Defaults to true.
    */
   zodRun?: boolean | undefined;
   /**
@@ -225,7 +226,19 @@ export function generateValidator(
   // on the first failure (see build-path). Null unless every mutation in the
   // schema is modelled — so this emits nothing for the mutation-free schemas
   // the compact branch takes.
-  const buildFnName = generateBuild(ir, ctx);
+  // A validator that may answer zod's own traversal (see zodRunSupport) has to
+  // hand it zod's copy of the value. Where its build would return some
+  // container by reference, the build is generated DUAL: the same function,
+  // asked by a second argument for that copy (see generateBuild).
+  //
+  // Not in compact mode, which exists to save bytes: there a schema answers
+  // zod's traversal only where its one output is zod's copy already.
+  const runSupport = options?.zodRun === false ? null : zodRunSupport(ir);
+  const copiesForZod = runSupport !== null && handsBackContainers(ir);
+  if (copiesForZod && options?.compact === true) ctx.zodRunBlocked = true;
+  const buildFnName = generateBuild(ir, ctx, {
+    dual: copiesForZod && options?.compact !== true,
+  });
 
   // A zodDelegate with a rebuilding inner exists only to accelerate that
   // build. If an unmodelled descendant made the all-or-nothing build decline,
@@ -281,7 +294,7 @@ export function generateValidator(
   ) {
     const delegate = emitRetainedMethod(ctx);
     ctx.usedHelpers.add("__zcFinZ");
-    const zodRun = zodRunFields(ir, ctx, null, fastFnName, options);
+    const zodRun = zodRunFields(ir, ctx, runSupport, null);
     return {
       code: ["/* zod-compiler */", ...ctx.preamble].join("\n"),
       functionDef: [
@@ -315,7 +328,7 @@ export function generateValidator(
     const delegate = emitRetainedMethod(ctx);
     ctx.usedHelpers.add("__zcFinZ");
     const built = `__bd_${ctx.counter++}`;
-    const zodRun = zodRunFields(ir, ctx, buildFnName, null, options);
+    const zodRun = zodRunFields(ir, ctx, runSupport, buildFnName);
     return {
       code: ["/* zod-compiler */", ...ctx.preamble].join("\n"),
       functionDef: [
@@ -389,7 +402,7 @@ export function generateValidator(
       );
       deferred = `${finD}(${walkName},input)`;
     }
-    const zodRun = zodRunFields(ir, ctx, buildFnName, null, options);
+    const zodRun = zodRunFields(ir, ctx, runSupport, buildFnName);
     return {
       code: buildCode(),
       functionDef: [
@@ -482,7 +495,7 @@ export function generateValidator(
         `}`,
       );
     }
-    const zodRun = zodRunFields(ir, ctx, null, fastFnName, options);
+    const zodRun = zodRunFields(ir, ctx, runSupport, null);
     return {
       code: buildCode(),
       functionDef: functionDefParts.join("\n"),
@@ -557,25 +570,29 @@ export function generateValidator(
  * is where every construct the build pass declined ends up.
  *
  * Called before the result's code is assembled, because it may add a function
- * to the preamble: zod's traversal must get zod's own shape back, so the
- * containers the validator returns by reference are copied for it (see
- * zod-run.ts). The validator's build answers where it has one, which also
- * saves the result object `safeParse` wraps around it. `predicate` is the
- * exact fast check a validator with no build accepts its input with.
+ * to the preamble. Zod's traversal must get zod's own copy of the value back,
+ * every container built as zod builds it. A validator with a build answers
+ * with that build, generated dual where its one output would not be that copy
+ * (see generateBuild), which also saves the result object `safeParse` wraps
+ * around it. A validator that checks its input in place answers with a copy
+ * build of the whole schema where the input holds a container, and as itself
+ * where it holds none.
  */
 function zodRunFields(
   ir: SchemaIR,
   ctx: CodeGenContext,
+  support: "sync" | "async" | null,
   build: string | null,
-  predicate: string | null,
-  options: GenerateValidatorOptions | undefined,
 ): Pick<CodeGenResult, "zodRun" | "zodRunBuild"> {
-  if (options?.zodRun === false) return {};
-  const support = zodRunSupport(ir);
-  if (support === null) return {};
-  const answer = zodRunAnswer(ir, ctx, build, predicate);
-  if (answer === null) return {};
-  return answer === "validator" ? { zodRun: support } : { zodRun: support, zodRunBuild: answer };
+  if (support === null || ctx.zodRunBlocked === true) return {};
+  const fail = ctx.buildFailName;
+  if (build !== null && fail !== undefined) {
+    return { zodRun: support, zodRunBuild: { build, fail } };
+  }
+  if (!handsBackContainers(ir)) return { zodRun: support };
+  const copy = generateCopyBuild(ir, ctx);
+  if (copy === null || ctx.buildFailName === undefined) return {};
+  return { zodRun: support, zodRunBuild: { build: copy, fail: ctx.buildFailName } };
 }
 
 /**

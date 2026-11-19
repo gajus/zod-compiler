@@ -148,7 +148,7 @@ describe("zod run — which schemas qualify", () => {
       () => z.intersection(z.object({ a: z.string() }), z.object({ b: z.number() })),
     ],
     // Containers the validator hands back by reference: zod's traversal is
-    // handed a copy of each, made as zod makes it (see zod-run.ts).
+    // handed zod's copy of each, built from one read (see generateBuild's `dual`).
     ["an array of primitives", () => z.array(z.string())],
     ["an object holding one", () => z.object({ tags: z.array(z.string()) })],
     ["a tuple of primitives", () => z.tuple([z.string(), z.number()])],
@@ -175,6 +175,9 @@ describe("zod run — which schemas qualify", () => {
         ]),
     ],
     ["a pipe of arrays", () => z.array(z.string()).pipe(z.array(z.string().min(1)))],
+    // zod's copy is built by the same probing a union's build does: the first
+    // option that builds is the one zod's union takes.
+    ["an array under a plain union", () => z.union([z.string(), z.array(z.string())])],
   ];
 
   const SYNC: [string, () => z.ZodType][] = [
@@ -185,6 +188,9 @@ describe("zod run — which schemas qualify", () => {
     ["a preprocess", () => z.preprocess((v) => String(v), z.string())],
     ["z.custom()", () => z.object({ f: z.custom<string>((v) => typeof v === "string") })],
     ["z.instanceof()", () => z.instanceof(Date)],
+    // The build leaves a record with an own symbol key to zod before the
+    // callback ever runs, as zod's own record walk rejects it first.
+    ["a record under a transform", () => z.record(z.string(), z.number()).transform((r) => r)],
   ];
 
   const NEVER: [string, () => z.ZodType][] = [
@@ -218,14 +224,11 @@ describe("zod run — which schemas qualify", () => {
    * exact, so the generator leaves them to zod after all.
    */
   const UNCOPYABLE: [string, () => z.ZodType][] = [
-    // Which option zod's union chose is not in the output; only a dispatch on
-    // a discriminator says.
-    ["an array under a plain union", () => z.union([z.string(), z.array(z.string())])],
-    // The callback already ran on a record whose symbol keys zod would have
-    // rejected first.
-    ["a record under a transform", () => z.record(z.string(), z.number()).transform((r) => r)],
     // Zod walks a declared key set in its declared order, not the input's.
     ["a record over a declared key set", () => z.partialRecord(z.enum(["a", "b"]), z.number())],
+    // A trailing optional item ends zod's copy where the input ends, which no
+    // build models.
+    ["a tuple with an optional item", () => z.tuple([z.string(), z.number().optional()])],
   ];
 
   for (const [label, make] of ASYNC) {
@@ -523,7 +526,7 @@ const CHILDREN: ChildCase[] = [
     [() => ({ a: 1, b: "x" }), () => []],
   ],
   // Containers the validator hands back by reference, which zod's traversal is
-  // handed copies of (see zod-run.ts).
+  // handed zod's copies of (see generateBuild's `dual`).
   [
     "an array of primitives, a sparse one included",
     () => z.array(z.string().optional()).max(5),
@@ -615,6 +618,108 @@ const CHILDREN: ChildCase[] = [
     [() => [["a"], new Set([1])]],
     [() => [["a"], new Set(["x"])], () => [["a"]]],
   ],
+  [
+    "a plain union of containers, each option tried in turn",
+    () => z.union([z.array(z.number()), z.strictObject({ a: z.array(z.string()) })]),
+    [() => [1, 2], () => ({ a: ["x"] })],
+    [() => ["x"], () => ({ a: [1] }), () => ({ a: [], b: 1 })],
+  ],
+  [
+    "a pipe whose second schema rejects what the first accepts",
+    () => z.array(z.string()).pipe(z.array(z.string().min(2))),
+    [() => ["ab", "cd"]],
+    [() => ["ab", "c"], () => [1]],
+  ],
+  [
+    // Zod's copy of a Map holds a copy of each key it parsed, not the key itself.
+    "a map keyed by objects",
+    () => z.map(z.strictObject({ id: z.number() }), z.array(z.string())),
+    [() => new Map([[{ id: 1 }, ["a"]]])],
+    [() => new Map([[{ id: "1" }, ["a"]]]), () => new Map([[{ id: 1 }, [1]]])],
+  ],
+  [
+    "a set with a size check",
+    () => z.object({ s: z.set(z.number()).min(2).max(3), n: z.number() }),
+    [() => ({ s: new Set([1, 2]), n: 1 })],
+    [() => ({ s: new Set([1]), n: 1 }), () => ({ s: new Set([1, 2, 3, 4]), n: 1 })],
+  ],
+  [
+    // Wide enough that the build hosts the nested object in a function of its
+    // own, which has to be asked for zod's copy as well.
+    "an array in an object the build hosts on its own",
+    () =>
+      z.object({
+        id: z.number(),
+        deep: z.object({
+          ...Object.fromEntries(
+            Array.from({ length: 400 }, (_unused, index) => [`f${index}`, z.string().min(1)]),
+          ),
+          tags: z.array(z.string()),
+        }),
+      }),
+    [
+      () => ({
+        id: 1,
+        deep: {
+          ...Object.fromEntries(
+            Array.from({ length: 400 }, (_unused, index) => [`f${index}`, "x"]),
+          ),
+          tags: ["t"],
+        },
+      }),
+    ],
+    [() => ({ id: 1, deep: { tags: ["t"] } })],
+  ],
+  // A refine edits the value it is handed, which is the value the parse
+  // returns: zod's copy has to be what the callback edited, holding records
+  // whose symbol keys were checked on the way in, not on the way out.
+  [
+    "a refine that grows an array of records",
+    () =>
+      z.array(z.record(z.string(), z.number())).refine((list) => {
+        list.push({ added: 2 });
+        return true;
+      }),
+    [() => [{ a: 1 }]],
+    [() => [{ a: "x" }], () => [{ [RECORD_SYMBOL]: 1 }]],
+  ],
+  [
+    "a refine that fills in an absent record",
+    () =>
+      z.object({ r: z.record(z.string(), z.number()).optional() }).refine((value) => {
+        value.r = { x: 1 };
+        return true;
+      }),
+    [() => ({}), () => ({ r: { a: 1 } })],
+    [() => ({ r: { a: "x" } })],
+  ],
+  [
+    "a refine that deletes a record",
+    () =>
+      z.object({ r: z.record(z.string(), z.number()), n: z.number() }).refine((value) => {
+        delete (value as { r?: unknown }).r;
+        return true;
+      }),
+    [() => ({ r: { a: 1 }, n: 1 })],
+    [() => ({ r: { a: "x" }, n: 1 })],
+  ],
+  [
+    "a refine that reorders options, only one holding a record",
+    () =>
+      z
+        .array(
+          z.discriminatedUnion("k", [
+            z.object({ k: z.literal("a"), r: z.record(z.string(), z.number()) }),
+            z.object({ k: z.literal("b") }),
+          ]),
+        )
+        .refine((list) => {
+          list.reverse();
+          return true;
+        }),
+    [() => [{ k: "a", r: { x: 1 } }, { k: "b" }]],
+    [() => [{ k: "a", r: { x: "1" } }]],
+  ],
 ];
 
 /** A parent built around the child, and the input that carries a child value to it. */
@@ -656,6 +761,106 @@ const ROUTES: Route[] = [
   ],
   ["an intersection", (child) => z.intersection(child, z.any()), (value) => value],
 ];
+
+/**
+ * An input whose properties are getters that log every read and can answer
+ * differently from one read to the next (`script`, the values in read order;
+ * the last one repeats).
+ */
+function scripted(
+  fixed: Record<string, unknown>,
+  script: Record<string, unknown[]>,
+): { value: object; reads: string[] } {
+  const reads: string[] = [];
+  const value: Record<string, unknown> = { ...fixed };
+  for (const [key, answers] of Object.entries(script)) {
+    let next = 0;
+    Object.defineProperty(value, key, {
+      enumerable: true,
+      get() {
+        reads.push(key);
+        const answer = answers[Math.min(next, answers.length - 1)];
+        next++;
+        return answer;
+      },
+    });
+  }
+  return { value, reads };
+}
+
+describe("zod run — the caller's input is read once, as zod reads it", () => {
+  // Validating and then copying would read every value twice, and a getter
+  // that answers differently the second time would put a value the check
+  // never saw into zod's output. Each case compares the result AND the reads.
+  const cases: [string, () => z.ZodType, () => { value: object; reads: string[] }][] = [
+    [
+      "a strict object, validated in place",
+      () => z.strictObject({ name: z.string(), tags: z.array(z.string()) }),
+      () => scripted({ tags: ["t"] }, { name: ["ok", 42] }),
+    ],
+    [
+      "an array a stripping object hands back",
+      () => z.object({ name: z.string(), tags: z.array(z.string()) }),
+      () => scripted({ name: "n" }, { tags: [["t"], [42]] }),
+    ],
+    [
+      "a frozen copy of an array",
+      () => z.object({ tags: z.array(z.string()).readonly() }),
+      () => scripted({}, { tags: [["t"], [42]] }),
+    ],
+    [
+      "a discriminator that changes its answer",
+      () =>
+        z.discriminatedUnion("kind", [
+          z.object({ kind: z.literal("a"), list: z.array(z.number()) }),
+          z.object({ kind: z.literal("b") }),
+        ]),
+      () => scripted({ list: [1] }, { kind: ["a", "a", "b"] }),
+    ],
+  ];
+  const routes: [string, (child: z.ZodType) => z.ZodType][] = [
+    ["the functional API", (child) => child],
+    ["an object member", (child) => z.object({ v: child })],
+  ];
+  const VARIANTS: [string, InstallOptions | undefined][] = [
+    ["inline", undefined],
+    ["lean", { mode: "lean" }],
+    ["compact", { compact: true }],
+  ];
+  for (const [label, make, input] of cases) {
+    for (const [variant, options] of VARIANTS) {
+      it(`${label} (${variant})`, async () => {
+        const compiled = installOnto(make(), options);
+        // Compact mode saves the bytes of zod's copy and leaves these to zod.
+        expect(servesZod(compiled)).toBe(options?.compact !== true);
+        for (const [routeLabel, route] of routes) {
+          const wrap =
+            routeLabel === "an object member"
+              ? (value: object) => ({ v: value })
+              : (value: object) => value;
+          const theirs = input();
+          const ours = input();
+          const zodResult = z.safeParse(route(make()), wrap(theirs.value));
+          const ourResult = z.safeParse(route(compiled), wrap(ours.value));
+          expect(
+            shapeOf(ourResult.success ? ourResult.data : ourResult.error.issues),
+            routeLabel,
+          ).toBe(shapeOf(zodResult.success ? zodResult.data : zodResult.error.issues));
+          expect(ours.reads, `${routeLabel}: reads`).toEqual(theirs.reads);
+          // The same on an async parse, which a schema with no user code serves too.
+          const zodAsync = input();
+          const ourAsync = input();
+          const zodSettled = await z.safeParseAsync(route(make()), wrap(zodAsync.value));
+          const ourSettled = await z.safeParseAsync(route(compiled), wrap(ourAsync.value));
+          expect(shapeOf(ourSettled.success ? ourSettled.data : ourSettled.error.issues)).toBe(
+            shapeOf(zodSettled.success ? zodSettled.data : zodSettled.error.issues),
+          );
+          expect(ourAsync.reads, `${routeLabel}: async reads`).toEqual(zodAsync.reads);
+        }
+      });
+    }
+  }
+});
 
 describe("zod run — every route returns what zod returns", () => {
   const VARIANTS: [string, InstallOptions | undefined][] = [

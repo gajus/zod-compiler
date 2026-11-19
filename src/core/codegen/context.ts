@@ -102,12 +102,12 @@ export interface CodeGenResult {
    */
   zodRun?: "sync" | "async";
   /**
-   * The build function that answers zod's `_zod.run` in place of the
-   * validator, and the FAIL sentinel it returns on rejection (see
-   * ZOD_RUN_DECL). Either the validator's own build, when that returns no
-   * container by reference, or a second one that rebuilds every container.
-   * Absent when the validator answers, which is the case for a schema with no
-   * build.
+   * The function that answers zod's `_zod.run` in place of the validator, and
+   * the FAIL sentinel it returns on rejection (see ZOD_RUN_DECL): the
+   * validator's own build, called as `build(value, 1)` so a dual build hands
+   * back zod's copy, or a copy build of the whole schema for a validator that
+   * checks its input in place. Absent when the validator itself answers, which
+   * is the case for a schema with no container to copy.
    */
   zodRunBuild?: { build: string; fail: string };
   /**
@@ -178,6 +178,11 @@ export interface CodeGenContext {
   sharedConstantNames?: ReadonlyMap<string, string> | undefined;
   /** Name of the build path's FAIL sentinel, declared once per validator. */
   buildFailName?: string;
+  /**
+   * A dual build met a container no copy build can serve (see generateBuild),
+   * so the validator may not answer zod's own traversal after all.
+   */
+  zodRunBlocked?: boolean;
   /** Hosted build-function name per recursion target refId (0: the root's own), so back-edges resolve. */
   buildRecNames?: Map<number, string>;
   /** Memo for estimateFastCost (size-gated fast-check extraction). Lazily created. */
