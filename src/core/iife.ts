@@ -341,21 +341,91 @@ export const FINZ_DECL = "function __zcFinZ(z,r,i){return new __ZcFailZ(z,r,i);}
  * — the success exits are untouched — and `safeParse` is left alone because
  * zod's carries no frames either.
  *
- * `__zcSt` is module-local (generated code never imports it) and rides along in
- * this declaration, after `__zcMkv` so that an `export ` prefix still lands on
- * the factory, rather than being a closure `__zcMkv` would allocate per schema.
- * An engine without `Error.captureStackTrace` is one where zod never suppressed
- * the capture in the first place, so there the error already has its frames.
+ * `__zcSt` is module-local (generated code never imports it) rather than a
+ * closure `__zcMkv` would allocate per schema. An engine without
+ * `Error.captureStackTrace` is one where zod never suppressed the capture in
+ * the first place, so there the error already has its frames.
+ *
+ * `p` and `v` are the schema's OWN `parse` and `~standard.validate`, emitted by
+ * generateIIFE beside the validator (see {@link ENTRY_POINT_HELPER_DECLS}).
+ * The closures this factory builds for those two slots are created at one site
+ * for every schema in the bundle, so they share one feedback vector, and the
+ * `fc(input)` / `fn(input)` calls inside them see as many callees as there are
+ * schemas: megamorphic, never inlined, and the SafeParseResult between `fn` and
+ * its unwrapping really allocated. A benchmark compiling one schema cannot show
+ * it; with forty in the module that is a flat 3–5 ns on every call — `parse()`
+ * on a three-key stripping object 10.6 ns against 6.0 with a function of its
+ * own, `validate` 11.4 against 6.9 — still a fifth of the call at 24 keys.
+ *
+ * It is paid for per schema rather than per bundle: ~225 B of source (~10 B
+ * gzipped, the text being the same from one schema to the next), ~0.85 KiB of
+ * heap at load (5.5 against 4.6 KiB in a 120-schema bundle) and ~2.5 µs of
+ * module init.
+ *
+ * The factory's own closures remain as the fallback for a caller that passes
+ * neither — generated code from before the two arguments existed, importing a
+ * runtime module newer than itself — and are no longer allocated otherwise.
+ * `v.a` is how the schema's `validate` reaches the ORIGINAL `safeParseAsync` on
+ * its throw path — the function this factory captured before installing over
+ * it — without the IIFE having to capture a second copy.
  */
-export const MK_VALIDATOR_DECL =
-  "function __zcMkv(fn,schema,fc,is){var w=schema||{};var zpa=w.parseAsync,zspa=w.safeParseAsync;" +
-  "w.parse=fc?function parse(input){if(fc(input))return input;var r=fn(input);if(r.success)return r.data;throw __zcSt(r.error,parse);}:function parse(input){var r=fn(input);if(r.success)return r.data;throw __zcSt(r.error,parse);};" +
+export const MK_VALIDATOR_FACTORY_DECL =
+  "function __zcMkv(fn,schema,fc,is,p,v){var w=schema||{};var zpa=w.parseAsync,zspa=w.safeParseAsync;" +
+  "w.parse=p||(fc?function parse(input){if(fc(input))return input;var r=fn(input);if(r.success)return r.data;throw __zcSt(r.error,parse);}:function parse(input){var r=fn(input);if(r.success)return r.data;throw __zcSt(r.error,parse);});" +
   "w.safeParse=fn;w.safeParseAsync=function(input){try{return Promise.resolve(fn(input));}catch(e){if(zspa)return zspa(input);throw e;}};" +
   "w.parseAsync=fc?function parseAsync(input){try{if(fc(input))return Promise.resolve(input);var r=fn(input);if(r.success)return Promise.resolve(r.data);return Promise.reject(__zcSt(r.error,parseAsync));}catch(e){if(zpa)return zpa(input);throw e;}}:function parseAsync(input){try{var r=fn(input);if(r.success)return Promise.resolve(r.data);return Promise.reject(__zcSt(r.error,parseAsync));}catch(e){if(zpa)return zpa(input);throw e;}};" +
   "w.is=is||function(input){return fn(input).success;};" +
-  'Object.defineProperty(w,"~standard",{configurable:true,value:{version:1,vendor:"zod",validate:function(input){var r;try{if(fc&&fc(input))return{value:input};r=fn(input);}catch(e){if(zspa)return zspa(input).then(function(q){return q.success?{value:q.data}:{issues:q.error.issues};});throw e;}return r.success?{value:r.data}:{issues:r.error.issues};}}});' +
-  "return w;}" +
+  "if(v)v.a=zspa;" +
+  'Object.defineProperty(w,"~standard",{configurable:true,value:{version:1,vendor:"zod",validate:v||function(input){var r;try{if(fc&&fc(input))return{value:input};r=fn(input);}catch(e){if(zspa)return zspa(input).then(function(q){return q.success?{value:q.data}:{issues:q.error.issues};});throw e;}return r.success?{value:r.data}:{issues:r.error.issues};}}});' +
+  "return w;}";
+
+/** Module-local companion of the factory: restores an error's stack frames (see above). */
+export const STACK_RESTORE_DECL =
   'function __zcSt(e,c){var t=Error.captureStackTrace;if(typeof t==="function")t(e,c);return e;}';
+
+/**
+ * What a schema's own `parse` / `validate` (see generateIIFE) call for
+ * everything that is not their success exit, so each stays a few dozen bytes.
+ *
+ * `__zcPu` unwraps a SafeParseResult the way `parse()` must: the data, or the
+ * error thrown with its caller's frames restored (`c` is the `parse` that is
+ * raising it — the callee zod hands `captureStackTrace`).
+ *
+ * `__zcVr` maps a SafeParseResult onto a Standard Schema result.
+ *
+ * `__zcVc` is `~standard.validate`'s throw path: retry through the schema's
+ * original `safeParseAsync`, exactly as zod's own validate does and as the
+ * factory's fallback closure does, or rethrow where there is none (`output:
+ * "bag"`). `v` is the validate function itself, which the factory tagged with
+ * that original (`v.a`).
+ *
+ * Imported by generated code in lean mode, so all three are runtime-module
+ * exports; none closes over anything but `__zcSt`, which ships beside them.
+ */
+export const ENTRY_POINT_HELPER_DECLS: Readonly<Record<string, string>> = {
+  __zcPu: "function __zcPu(r,c){if(r.success)return r.data;throw __zcSt(r.error,c);}",
+  __zcVr: "function __zcVr(r){return r.success?{value:r.data}:{issues:r.error.issues};}",
+  __zcVc: "function __zcVc(e,i,v){var a=v.a;if(a)return a(i).then(__zcVr);throw e;}",
+};
+
+/**
+ * Every runtime-module export an IIFE names no matter what its schema is: the
+ * factory, and the helpers its own `parse` / `validate` call. A lean-mode file
+ * that compiled anything imports them all.
+ */
+export const IIFE_HELPER_NAMES: readonly string[] = [
+  "__zcMkv",
+  ...Object.keys(ENTRY_POINT_HELPER_DECLS),
+];
+
+/**
+ * The factory with its companions, as ONE file-level declaration block: what an
+ * inline-mode emitter (the CLI, `jit()`, a transpile-only build) pastes. The
+ * runtime module exports the pieces individually instead (see virtual.ts).
+ * `__zcMkv` leads so the block can be recognized by its first function.
+ */
+export const MK_VALIDATOR_DECL =
+  MK_VALIDATOR_FACTORY_DECL + STACK_RESTORE_DECL + Object.values(ENTRY_POINT_HELPER_DECLS).join("");
 
 function extractFunctionName(functionDef: string): string {
   const match = /^function\s+(\w+)\s*\(/.exec(functionDef);
@@ -417,6 +487,25 @@ export function generateIIFE(
   // partial/none falls back to safeParse().success inside __zcMkv. A rebuilding
   // schema has no by-reference `fc` but still names its predicate separately.
   const isArg = codegenResult.isFnName ?? (codegenResult.fastTotal ? fcArg : "null");
+  // The schema's own `parse` and `~standard.validate`. Their callees are the
+  // validator's functions by NAME, so each call site is monomorphic and V8 can
+  // inline through it — which the closures `__zcMkv` would otherwise build
+  // cannot be, shared as they are by every schema (see MK_VALIDATOR_FACTORY_DECL).
+  // Same shape as those closures: the by-reference shortcut where a passing
+  // fast check proves `data === input`, the validator otherwise.
+  const fast = codegenResult.fastFnName;
+  const parseFn =
+    fast === null
+      ? `function __zp(input){return __zcPu(${fnName}(input),__zp);}`
+      : `function __zp(input){return ${fast}(input)?input:__zcPu(${fnName}(input),__zp);}`;
+  // The result is mapped INSIDE the try, as zod's own validate maps it: reading
+  // `.error` is what builds the issues, and an error map that throws there has
+  // to take the same async retry a throwing check does (zod rejects; mapping
+  // outside the try threw synchronously instead).
+  const validated = `__zcVr(${fnName}(input))`;
+  const validateFn =
+    `function __zv(input){try{return ${fast === null ? validated : `${fast}(input)?{value:input}:${validated}`};}` +
+    "catch(e){return __zcVc(e,input,__zv);}}";
 
   return [
     options?.pure === false ? "(() => {" : "/* @__PURE__ */ (() => {",
@@ -430,7 +519,9 @@ export function generateIIFE(
       .split("\n")
       .filter((l) => l.trim() !== "" && l.trim() !== "/* zod-compiler */"),
     codegenResult.functionDef,
-    `return __zcMkv(${fnName},${schemaArg},${fcArg},${isArg});`,
+    parseFn,
+    validateFn,
+    `return __zcMkv(${fnName},${schemaArg},${fcArg},${isArg},__zp,__zv);`,
     "})()",
   ].join("\n");
 }

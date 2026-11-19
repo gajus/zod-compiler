@@ -15,6 +15,7 @@
 import { ISSUE_DECLS, RUNTIME_HELPER_DECLS, ZC_SR_RUN_DECL } from "../core/codegen/issue-decls.js";
 import { fastTestSource, WELL_KNOWN_REGEXES } from "../core/codegen/well-known-regex.js";
 import {
+  ENTRY_POINT_HELPER_DECLS,
   FAIL_CLASS_DECL,
   FAIL_CORE_CLASS_DECL,
   FAILZ_CLASS_DECL,
@@ -23,7 +24,8 @@ import {
   FIN_DEFERRED_CORE_DECL,
   FIN_DEFERRED_DECL,
   FINZ_DECL,
-  MK_VALIDATOR_DECL,
+  MK_VALIDATOR_FACTORY_DECL,
+  STACK_RESTORE_DECL,
   ZOD_CONFIG_IMPORT,
   ZOD_MSG_DECLARATION,
 } from "../core/iife.js";
@@ -74,7 +76,11 @@ function buildRuntimeSource(): string {
     FAIL_CORE_CLASS_DECL,
     // Module-local (never imported by generated code) — __zcFinZ constructs it.
     FAILZ_CLASS_DECL,
-    `export ${MK_VALIDATOR_DECL}`,
+    `export ${MK_VALIDATOR_FACTORY_DECL}`,
+    // Module-local (never imported by generated code) — the factory and the
+    // entry-point helpers below call it.
+    STACK_RESTORE_DECL,
+    ...Object.values(ENTRY_POINT_HELPER_DECLS).map((decl) => `export ${decl}`),
     `export ${FIN_DECL}`,
     `export ${FIN_DEFERRED_DECL}`,
     `export ${FIN_CORE_DECL}`,
@@ -142,6 +148,7 @@ export function loadVirtual(id: string): string | null {
 /** Names of all helpers exported by the virtual module. */
 export const ALL_HELPER_NAMES: readonly string[] = [
   "__zcMkv",
+  ...Object.keys(ENTRY_POINT_HELPER_DECLS),
   "__zcFin",
   "__zcFinD",
   "__zcFinC",

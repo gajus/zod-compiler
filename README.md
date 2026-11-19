@@ -663,6 +663,8 @@ Other optimizations:
 - Discriminated unions dispatch through a `switch`; plain tagged unions are auto-discriminated into one.
 - `z.custom()` / `z.instanceof()` compile to a direct predicate call.
 - Oversized check functions are split to stay within V8's optimizer budget.
+- Every schema gets its own `parse()` and Standard Schema `validate`, so they stay inlinable however many
+  schemas a bundle holds.
 
 Intersections, `custom` and schemas with a dynamic error map (`error: (issue) => …`, an i18n lookup)
 keep the original Zod schema to construct issues, so rejections match Zod exactly without slowing the

@@ -313,7 +313,7 @@ describe("rewriteSource()", () => {
     expect(result).toContain("(() => {");
     expect(result).toContain("safeParse_validateUser");
     expect(result).toMatch(
-      /__zcMkv\(safeParse_validateUser,UserSchema,(?:__fc_\d+|null),(?:__fc_\d+|null)\)/,
+      /__zcMkv\(safeParse_validateUser,UserSchema,(?:__fc_\d+|null),(?:__fc_\d+|null),__zp,__zv\)/,
     );
     expect(result).not.toContain("__w.schema=");
     expect(result).not.toContain("compile(UserSchema)");
@@ -393,7 +393,7 @@ describe("rewriteSource()", () => {
     const result = rewriteSource(code, schemas);
 
     expect(result).toMatch(
-      /__zcMkv\(safeParse_validateUser,MyUserSchema,(?:__fc_\d+|null),(?:__fc_\d+|null)\)/,
+      /__zcMkv\(safeParse_validateUser,MyUserSchema,(?:__fc_\d+|null),(?:__fc_\d+|null),__zp,__zv\)/,
     );
     expect(result).not.toContain("__w.schema=");
   });
@@ -411,7 +411,7 @@ describe("rewriteSource()", () => {
     expect(result).not.toContain("compile(z.object");
     // The schema arg should be passed to __zcMkv
     expect(result).toMatch(
-      /__zcMkv\(safeParse_validateUser,z\.object\(\{ name: z\.string\(\) \}\),(?:__fc_\d+|null),(?:__fc_\d+|null)\)/,
+      /__zcMkv\(safeParse_validateUser,z\.object\(\{ name: z\.string\(\) \}\),(?:__fc_\d+|null),(?:__fc_\d+|null),__zp,__zv\)/,
     );
   });
 
@@ -431,7 +431,7 @@ describe("rewriteSource()", () => {
     // Trailing comma should be stripped; schema arg passed to __zcMkv followed
     // by the fast-check arg (a doubled comma would mean the strip failed)
     expect(result).toMatch(
-      /__zcMkv\(safeParse_validateUser,z\.object\(\{ name: z\.string\(\) \}\),(?:__fc_\d+|null),(?:__fc_\d+|null)\)/,
+      /__zcMkv\(safeParse_validateUser,z\.object\(\{ name: z\.string\(\) \}\),(?:__fc_\d+|null),(?:__fc_\d+|null),__zp,__zv\)/,
     );
     expect(result).not.toContain(",,");
   });
@@ -898,7 +898,7 @@ describe("rewriteSourceAutoDiscover()", () => {
     const result = rewriteSourceAutoDiscover(code, schemas, { zodCompat: false });
 
     expect(result).toMatch(
-      /__zcMkv\(safeParse_UserSchema,null,(?:__fc_\d+|null),(?:__fc_\d+|null)\)/,
+      /__zcMkv\(safeParse_UserSchema,null,(?:__fc_\d+|null),(?:__fc_\d+|null),__zp,__zv\)/,
     );
     expect(result).not.toContain("Object.create");
   });
@@ -1242,7 +1242,7 @@ describe("rewriteSource() — zodCompat option", () => {
     const result = rewriteSource(code, schemas, { zodCompat: false });
 
     expect(result).toMatch(
-      /__zcMkv\(safeParse_validateUser,null,(?:__fc_\d+|null),(?:__fc_\d+|null)\)/,
+      /__zcMkv\(safeParse_validateUser,null,(?:__fc_\d+|null),(?:__fc_\d+|null),__zp,__zv\)/,
     );
     expect(result).not.toContain("Object.create");
   });
@@ -1257,7 +1257,7 @@ describe("rewriteSource() — zodCompat option", () => {
     const result = rewriteSource(code, schemas, { zodCompat: true });
 
     expect(result).toMatch(
-      /__zcMkv\(safeParse_validateUser,UserSchema,(?:__fc_\d+|null),(?:__fc_\d+|null)\)/,
+      /__zcMkv\(safeParse_validateUser,UserSchema,(?:__fc_\d+|null),(?:__fc_\d+|null),__zp,__zv\)/,
     );
   });
 });

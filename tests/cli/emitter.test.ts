@@ -27,7 +27,7 @@ describe("generateCompiledFileContent()", () => {
     expect(content).toContain("function safeParse_test(input)");
     // Uses __zcMkv factory for Zod compatibility (installs methods on the source schema)
     expect(content).toMatch(
-      /__zcMkv\(safeParse_test,\(\(__src_validateTest as any\)\.schema \?\? __src_validateTest\),(?:__fc_\d+|null),(?:__fc_\d+|null)\)/,
+      /__zcMkv\(safeParse_test,\(\(__src_validateTest as any\)\.schema \?\? __src_validateTest\),(?:__fc_\d+|null),(?:__fc_\d+|null),__zp,__zv\)/,
     );
     // Imports source schema (needed for zodCompat)
     expect(content).toContain('import { validateTest as __src_validateTest } from "./test"');
@@ -150,7 +150,11 @@ describe("generateCompiledFileContent()", () => {
     expect(content).toContain("var __zcMsg=function(iss){var c=__zodCompilerConfig()");
     expect(content).toContain("c.customError");
     expect(content).toContain("c.localeError");
-    expect(content).toContain("function __zcMkv(fn,schema,fc,is)");
+    expect(content).toContain("function __zcMkv(fn,schema,fc,is,p,v)");
+    // …with the helpers each schema's own parse()/validate call beside it.
+    expect(content).toContain("function __zcPu(r,c)");
+    expect(content).toContain("function __zcVr(r)");
+    expect(content).toContain("function __zcVc(e,i,v)");
     expect(content).toContain("function __zcFin(e,d)");
   });
 
@@ -248,7 +252,9 @@ describe("generateCompiledFileContent() — zodCompat: false", () => {
 
     expect(content).toContain('import { validateUser as __src_validateUser } from "./schemas"');
     expect(content).toContain("export const validateUser = /* @__PURE__ */");
-    expect(content).toMatch(/__zcMkv\(safeParse_test,null,(?:__fc_\d+|null),(?:__fc_\d+|null)\)/);
+    expect(content).toMatch(
+      /__zcMkv\(safeParse_test,null,(?:__fc_\d+|null),(?:__fc_\d+|null),__zp,__zv\)/,
+    );
   });
 });
 

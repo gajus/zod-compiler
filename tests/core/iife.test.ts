@@ -18,7 +18,11 @@ type MkvFn = (
   schema: object | null,
 ) => Record<string, unknown>;
 
-const __zcMkv = new Function(`${MK_VALIDATOR_DECL}; return __zcMkv;`)() as MkvFn;
+// The factory and the helpers a schema's own parse()/validate call, as one
+// evaluation of the declaration block an inline-mode file carries.
+const { __zcMkv, __zcPu, __zcVr, __zcVc } = new Function(
+  `${MK_VALIDATOR_DECL}; return { __zcMkv, __zcPu, __zcVr, __zcVc };`,
+)() as { __zcMkv: MkvFn; __zcPu: unknown; __zcVr: unknown; __zcVc: unknown };
 // __zcFin needs __zcMsg and __zcZodError in scope; both are passed per-execution
 type FinFn = (e: unknown[], d: unknown) => { success: boolean; data?: unknown; error?: unknown };
 function makeFinFn(msg: unknown, ZodError: unknown): FinFn {
@@ -60,13 +64,34 @@ describe("generateIIFE()", () => {
     expect(iife).toContain("/* @__PURE__ */");
   });
 
-  it("delegates parse() throw to __zcMkv factory", () => {
+  it("hands __zcMkv the schema's own parse() and validate, and leaves the throw to the runtime", () => {
     const info = makeInfo("validateNum", z.number());
     const iife = generateIIFE("NumSchema", info);
 
-    // throw/parse logic lives in __zcMkv now; IIFE just calls __zcMkv
-    expect(iife).toMatch(/return __zcMkv\(safeParse_validateNum,NumSchema,__fc_\d+,__fc_\d+\);/);
-    expect(iife).not.toContain("throw r.error");
+    expect(iife).toMatch(
+      /return __zcMkv\(safeParse_validateNum,NumSchema,(__fc_\d+),\1,__zp,__zv\);/,
+    );
+    // The by-reference shortcut, then the validator unwrapped by __zcPu — which
+    // is where the throw (and the stack restoration) lives, not in the IIFE.
+    expect(iife).toMatch(
+      /function __zp\(input\)\{return (__fc_\d+)\(input\)\?input:__zcPu\(safeParse_validateNum\(input\),__zp\);\}/,
+    );
+    expect(iife).toMatch(
+      /function __zv\(input\)\{try\{return (__fc_\d+)\(input\)\?\{value:input\}:__zcVr\(safeParse_validateNum\(input\)\);\}catch\(e\)\{return __zcVc\(e,input,__zv\);\}\}/,
+    );
+    expect(iife).not.toContain("throw ");
+  });
+
+  it("emits no by-reference shortcut for a schema that rebuilds its output", () => {
+    // A stripping object has no `fc`: parse() and validate go straight to the validator.
+    const iife = generateIIFE("UserSchema", makeInfo("validateUser", simpleSchema));
+
+    expect(iife).toContain(
+      "function __zp(input){return __zcPu(safeParse_validateUser(input),__zp);}",
+    );
+    expect(iife).toContain(
+      "function __zv(input){try{return __zcVr(safeParse_validateUser(input));}catch(e){return __zcVc(e,input,__zv);}}",
+    );
   });
 
   it("includes __rf when schema has fallbacks (captured-variable transform)", () => {
@@ -165,7 +190,9 @@ describe("generateIIFE()", () => {
 
     // A stripping object rebuilds its output, so there is no by-reference
     // parse shortcut (fc is null) — but `.is()` still gets the exact predicate.
-    expect(iife).toMatch(/return __zcMkv\(safeParse_validateUser,UserSchema,null,__fc_\d+\);/);
+    expect(iife).toMatch(
+      /return __zcMkv\(safeParse_validateUser,UserSchema,null,__fc_\d+,__zp,__zv\);/,
+    );
     expect(iife).not.toContain("var __w=");
     expect(iife).not.toContain("__w.schema=");
   });
@@ -176,7 +203,9 @@ describe("generateIIFE()", () => {
       const iife = generateIIFE("UserSchema", info, { zodCompat: false });
 
       expect(iife).toContain("/* @__PURE__ */");
-      expect(iife).toMatch(/return __zcMkv\(safeParse_validateUser,null,null,__fc_\d+\);/);
+      expect(iife).toMatch(
+        /return __zcMkv\(safeParse_validateUser,null,null,__fc_\d+,__zp,__zv\);/,
+      );
       expect(iife).not.toContain("Object.create");
       expect(iife).not.toContain("var __w=");
     });
@@ -231,10 +260,13 @@ describe("generateIIFE() — runtime execution", () => {
       "__zcMsg",
       "__zcZodError",
       "__zcMkv",
+      "__zcPu",
+      "__zcVr",
+      "__zcVc",
       "__zcFin",
       `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\nreturn ${iife};`,
     );
-    return fn({}, zcMsg, ZodRealError, __zcMkv, __zcFin) as {
+    return fn({}, zcMsg, ZodRealError, __zcMkv, __zcPu, __zcVr, __zcVc, __zcFin) as {
       parse: (input: unknown) => unknown;
       safeParse: (input: unknown) => {
         success: boolean;
@@ -358,7 +390,7 @@ describe("generateIIFE() — runtime execution", () => {
       // its output, so it has no by-reference `fc` (3rd arg null) while the
       // predicate stays exact: stripping reshapes the payload, not the verdict.
       const iife = generateIIFE("Schema", info);
-      const isName = /,null,(__fc_\d+)\)/.exec(iife)?.[1];
+      const isName = /,null,(__fc_\d+),__zp,__zv\)/.exec(iife)?.[1];
       expect(isName, "total schema should pass its predicate as the is arg").toBeTruthy();
       expect(validator.is({ name: "Alice", age: 30 })).toBe(true);
       expect(validator.is({ name: "Alice" })).toBe(false);
@@ -375,7 +407,7 @@ describe("generateIIFE() — runtime execution", () => {
       ];
       for (const [name, schema] of cases) {
         const info = makeInfo(name, schema);
-        expect(generateIIFE("Schema", info), name).toMatch(/,null,__fc_\d+\)/);
+        expect(generateIIFE("Schema", info), name).toMatch(/,null,__fc_\d+,__zp,__zv\)/);
         const validator = executeIIFE(info);
         for (const input of [
           { a: "x", n: 1 },
@@ -401,7 +433,7 @@ describe("generateIIFE() — runtime execution", () => {
       // pinned end to end in tests/build-parse-and-is.test.ts.
       const schema = z.object({ page: z.number().default(1), name: z.string() });
       const iife = generateIIFE("Schema", makeInfoWithFallback("withDefault", schema));
-      expect(iife).toMatch(/__zcMkv\(safeParse_withDefault,__zs,null,__fc_\d+\)/);
+      expect(iife).toMatch(/__zcMkv\(safeParse_withDefault,__zs,null,__fc_\d+,__zp,__zv\)/);
     });
 
     it("works for schemas with no fast path (mutating effect)", () => {
@@ -460,10 +492,13 @@ describe("generateIIFE() — shared schema instance (CSE/dedup + identifier sche
       "__zcMsg",
       "__zcZodError",
       "__zcMkv",
+      "__zcPu",
+      "__zcVr",
+      "__zcVc",
       "__zcFin",
       `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\nreturn ${iife};`,
     );
-    return fn(schema, zcMsg, ZodRealError, __zcMkv, __zcFin) as {
+    return fn(schema, zcMsg, ZodRealError, __zcMkv, __zcPu, __zcVr, __zcVc, __zcFin) as {
       safeParse: (input: unknown) => {
         success: boolean;
         data?: unknown;

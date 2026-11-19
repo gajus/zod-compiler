@@ -673,8 +673,8 @@ describe("jit — every installed method agrees with Zod, not just safeParse", (
       ["a by-reference object", () => z.strictObject({ a: z.string() }), { a: 1 }, { eager: true }],
       [
         "a schema delegated to Zod whole",
-        () => z.array(z.number()).readonly(),
-        ["x"],
+        () => z.set(z.number()).readonly(),
+        new Set(["x"]),
         { eager: true },
       ],
       [
