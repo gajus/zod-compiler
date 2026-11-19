@@ -53,6 +53,7 @@ import {
   emitTemp,
   escapeString,
   hasMutation,
+  isFresh,
   keyMembershipTest,
   literalToJs,
   needsProtoScrub,
@@ -145,6 +146,9 @@ function rebuildSet(root: SchemaIR, includeProtoScrub = true): ReadonlySet<Schem
       const target = node.type === "recursiveRef" ? targets.get(node.refId ?? 0) : undefined;
       const rebuild =
         (node.type === "object" && node.stripUnknownKeys === true) ||
+        // A container a user callback is handed holds zod's copy, never the
+        // caller's (see the `fresh` flag on the container IR nodes).
+        isFresh(node) ||
         // A freezing readonly's output is `Object.freeze(inner)` — a value the
         // caller never handed us, so it must be BUILT rather than passed
         // through. Marking it here is also what makes `rebuildsOutput` true and
@@ -546,15 +550,25 @@ function build(ir: SchemaIR, input: string, caller: BuildGen): Built | null {
   // nothing under it rebuilds — a validated passthrough plus that scrub IS the
   // rebuild. Taken BEFORE the builders so a plain record keeps handing its
   // input back by reference (buildRecord would copy into a fresh `{}`, which is
-  // a different documented behaviour: see the output-identity divergence).
-  if (needsProtoScrub(ir) && !children(ir).some((child) => g.rebuilds.has(child))) {
-    return passthrough(ir, input, g);
-  }
+  // a different documented behaviour: see the output-identity divergence). Not
+  // for a container a callback is handed, which must be a copy of its own.
+  if (passesThroughWithScrub(ir, g.rebuilds)) return passthrough(ir, input, g);
 
   const before = g.scope.used;
   const out = buildInline(ir, input, { ...g, extractable: true });
   if (out !== null) g.scope.used = before + out.code.length;
   return out;
+}
+
+/**
+ * Does the build pass validate this REBUILDING node in place and hand back its
+ * input — scrubbed of an own `__proto__` — rather than build it? That is the
+ * case for a record or loose object that rebuilds only for the scrub: nothing
+ * under it rebuilds, so the scrubbed input already is the rebuild. It does not
+ * apply to a container a callback is handed, which must be a copy of its own.
+ */
+function passesThroughWithScrub(ir: SchemaIR, rebuilds: ReadonlySet<SchemaIR>): boolean {
+  return !isFresh(ir) && needsProtoScrub(ir) && !children(ir).some((child) => rebuilds.has(child));
 }
 
 /**

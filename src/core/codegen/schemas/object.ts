@@ -8,6 +8,7 @@ import {
   extendStaticPath,
   fastMember,
   hasMutation,
+  isFresh,
   keyMembershipTest,
   outputAlwaysDefined,
 } from "../context.js";
@@ -49,10 +50,12 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
   // PASS-THROUGH hands the input back by reference when nothing rewrites
   // anything; identity, key order and inherited keys then ride along with it,
   // which is the documented container-identity divergence (see
-  // known-divergences.test.ts).
+  // known-divergences.test.ts). A callback is never handed that: an object it
+  // receives is rebuilt whatever its mode (see the `fresh` flag).
   const strip = ir.stripUnknownKeys === true;
   const rebuild =
     strip ||
+    isFresh(ir) ||
     (ir.catchall !== undefined && hasMutation(ir.catchall)) ||
     Object.values(ir.properties).some(hasMutation);
   const objVar = g.temp("o");

@@ -199,6 +199,12 @@ export interface RecursionState {
   readonly targets: Map<unknown, number>;
   /** Next refId to hand out (starts at 1; 0 is reserved for the root). */
   next: number;
+  /**
+   * Recursion targets (refId, 0 for the root) that a callback's argument
+   * reaches through a back-edge, so their containers must be marked fresh once
+   * the target's extraction completes (see extract/fresh.ts).
+   */
+  freshTargets?: Set<number>;
 }
 
 // ─── Extractor context ──────────────────────────────────────────────────────

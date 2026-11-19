@@ -1,4 +1,6 @@
 import type { SchemaIR } from "../types.js";
+import { makeFallback } from "./fallback.js";
+import { markFresh } from "./fresh.js";
 import { dispatch } from "./registry.js";
 import type { RecursionState, RefEntry } from "./types.js";
 import { assertSupportedZod } from "./zod-version.js";
@@ -25,5 +27,12 @@ export function extractSchema(zodSchema: unknown, refs?: RefEntry[]): SchemaIR {
     targets: new Map<unknown, number>(),
     next: 1,
   };
-  return dispatch(zodSchema, "", refs, new Set<unknown>(), rec);
+  const ir = dispatch(zodSchema, "", refs, new Set<unknown>(), rec);
+  // A callback reaches the root through a back-edge (refId 0), so the root's
+  // containers are part of its argument. The root is the one target dispatch
+  // never wraps, so it is marked here (see extract/fresh.ts).
+  if (rec.freshTargets?.has(0) === true && !markFresh(ir, rec)) {
+    return makeFallback("unsupported", zodSchema, refs, "");
+  }
+  return ir;
 }

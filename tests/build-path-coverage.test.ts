@@ -113,7 +113,6 @@ describe("build path — the predicate it hands `.is()`", () => {
 
   it.each([
     ["array size check", z.array(item).min(1)],
-    ["object-level refine", z.object({ a: z.number(), b: z.number() }).refine((v) => v.a < v.b)],
     ["nested array size check", z.object({ items: z.array(item).min(1) })],
     // A substituted default: the rebuilding schema's expression is generated in
     // acceptance mode, where `.default()` accepts the absent value it stands
@@ -133,6 +132,10 @@ describe("build path — the predicate it hands `.is()`", () => {
     // statically fast-ineligible.
     ["an overwrite", z.object({ q: z.string().trim() })],
     ["a transform", z.object({ a: z.string().transform((s) => s.length) })],
+    // A container a callback is handed has no fast check: the check would run
+    // the refine on the caller's object, unstripped and without its defaults,
+    // where zod runs it on the object it built.
+    ["object-level refine", z.object({ a: z.number(), b: z.number() }).refine((v) => v.a < v.b)],
   ])("has no predicate to hand over for %s", (_label, schema) => {
     expect(isGuardOf(schema)).toBe("safeParse");
   });

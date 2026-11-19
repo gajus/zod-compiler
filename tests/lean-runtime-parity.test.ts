@@ -193,6 +193,13 @@ const CASES: [label: string, schema: z.ZodType, inputs: unknown[]][] = [
   ],
   ["z.custom predicate", z.custom<string>((v) => typeof v === "string"), [1]],
   ["z.instanceof", z.instanceof(Date), [1]],
+  // __zcAc: the array a transform is handed, copied as zod builds it. The
+  // `.catch()` keeps the schema on the eager walk, which is where it copies.
+  [
+    "an array a transform is handed",
+    z.array(z.number().catch(0)).transform((value) => value.length),
+    [[1, "x"], "not an array"],
+  ],
 
   // ── mixed: several issue kinds in one parse, order and all messages ──────
   [

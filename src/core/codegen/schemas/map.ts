@@ -1,6 +1,12 @@
 import type { MapIR, SchemaIR } from "../../types.js";
 import type { FastGen, SlowGen } from "../context.js";
-import { declareFastTemps, emitRuntimeHelper, fastMember, hasMutation } from "../context.js";
+import {
+  declareFastTemps,
+  emitRuntimeHelper,
+  fastMember,
+  hasMutation,
+  isFresh,
+} from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType } from "../emit-issue.js";
 import { propertyKeyTest, ZC_FZ_DECL, ZC_PFX_DECL } from "../issue-decls.js";
@@ -46,10 +52,11 @@ export function slowMap(ir: SchemaIR & { type: "map" }, g: SlowGen): string {
   let before = "";
   let collect = "";
   let after = "";
-  if (hasMutation(ir.keyType) || hasMutation(ir.valueType)) {
+  if (isFresh(ir) || hasMutation(ir.keyType) || hasMutation(ir.valueType)) {
     // A mutating key or value (coerce, .trim(), url) reads back what it wrote,
     // so each keeps one local for both, and every entry is rebuilt into a fresh
-    // Map (mirrors Zod).
+    // Map (mirrors Zod). So is a Map a callback is handed (see the `fresh`
+    // flag), which must be zod's Map rather than the caller's.
     const rebuiltVar = g.temp("map_n");
     keyCode =
       `var ${keyOut}=${keyVar};` +

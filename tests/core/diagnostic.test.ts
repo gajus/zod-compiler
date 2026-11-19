@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
+import { z } from "zod";
 import { diagnoseSchema } from "#src/core/diagnostic.js";
+import { extractSchema } from "#src/core/extract/index.js";
 import type { SchemaIR } from "#src/core/types.js";
 
 // ─── Fast Path Eligibility (via diagnoseSchema) ────────────────────────────
@@ -97,6 +99,25 @@ describe("fastPathEligible", () => {
     };
     expect(diagnoseSchema(ir).fastPathEligible).toBe(true);
     expect(diagnoseSchema(ir).fastPathBlocker).toBeUndefined();
+  });
+
+  it("ineligible for a container a callback receives, which is rebuilt instead", () => {
+    const refined = extractSchema(
+      z.array(z.number()).refine((list) => list.length > 0),
+      [],
+    );
+    expect(diagnoseSchema(refined).fastPathBlocker).toBe("callback input (array)");
+    const transformed = extractSchema(
+      z.strictObject({ tags: z.array(z.string()) }).transform((value) => value.tags),
+      [],
+    );
+    expect(diagnoseSchema(transformed).fastPathBlocker).toBe("effect");
+    // A refine on a string is handed a primitive: nothing to rebuild.
+    const leaf = extractSchema(
+      z.string().refine((value) => value !== ""),
+      [],
+    );
+    expect(diagnoseSchema(leaf).fastPathEligible).toBe(true);
   });
 
   it("ineligible for nested blocker in array", () => {

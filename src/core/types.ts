@@ -355,7 +355,29 @@ export interface EnumIR {
 
 // ─── Schema IR: Containers ─────────────────────────────────────────────────
 
-export interface ObjectIR {
+/**
+ * Carried by every container node: object, array, tuple, record, set, map.
+ *
+ * `fresh` marks a container a user callback is handed, whether it is the
+ * callback's whole argument (the node a `.refine()` / `.superRefine()` sits on,
+ * the input of a `.transform()`) or nested inside it. Marked during extraction
+ * (see extract/fresh.ts).
+ *
+ * zod parses every container into a value of its own making, so a callback
+ * always holds zod's copy and never the caller's data. The compiled walks hand
+ * a container that nothing rewrites back BY REFERENCE (the documented
+ * container-identity difference), and that made the callback's argument the
+ * caller's own: `.transform(a => a.sort())` sorted the caller's array, and a
+ * refine that pushed onto a nested array grew the caller's. A fresh container
+ * is rebuilt as zod builds it, in zod's key order and with holes read as
+ * `undefined`, on every path that produces a value. It has no fast check,
+ * because a fast check would call the callback on the raw input.
+ */
+interface ContainerFreshness {
+  fresh?: true;
+}
+
+export interface ObjectIR extends ContainerFreshness {
   type: "object";
   properties: Record<string, SchemaIR>;
   /**
@@ -422,13 +444,13 @@ export interface ObjectIR {
   nonoptionalKeys?: string[];
 }
 
-export interface ArrayIR {
+export interface ArrayIR extends ContainerFreshness {
   type: "array";
   element: SchemaIR;
   checks: CheckOrEffectIR[];
 }
 
-export interface TupleIR {
+export interface TupleIR extends ContainerFreshness {
   type: "tuple";
   items: SchemaIR[];
   rest: SchemaIR | null;
@@ -480,7 +502,7 @@ export interface TupleIR {
   optionalIn?: number[];
 }
 
-export interface RecordIR {
+export interface RecordIR extends ContainerFreshness {
   type: "record";
   keyType: SchemaIR;
   valueType: SchemaIR;
@@ -493,13 +515,13 @@ export interface RecordIR {
   enumerableKeys?: true;
 }
 
-export interface SetIR {
+export interface SetIR extends ContainerFreshness {
   type: "set";
   valueType: SchemaIR;
   checks?: SetCheckIR[];
 }
 
-export interface MapIR {
+export interface MapIR extends ContainerFreshness {
   type: "map";
   keyType: SchemaIR;
   valueType: SchemaIR;

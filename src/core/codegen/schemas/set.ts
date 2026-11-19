@@ -1,6 +1,6 @@
 import type { SchemaIR, SetIR } from "../../types.js";
 import type { FastGen, SlowGen } from "../context.js";
-import { checkPriority, declareFastTemps, hasMutation } from "../context.js";
+import { checkPriority, declareFastTemps, hasMutation, isFresh } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType, tooBig, tooSmall } from "../emit-issue.js";
 import { whenGatedSizeChecks } from "./sizeable.js";
@@ -24,7 +24,9 @@ export function slowSet(ir: SchemaIR & { type: "set" }, g: SlowGen): string {
   // handleArrayResult prefixes the index). Two bad elements therefore report at
   // the same path — that is zod's output, and an index we invented instead made
   // every set-element issue point somewhere zod never points.
-  if (hasMutation(ir.valueType)) {
+  // A Set a callback is handed is rebuilt too (see the `fresh` flag), so the
+  // callback holds zod's Set rather than the caller's.
+  if (isFresh(ir) || hasMutation(ir.valueType)) {
     const rebuiltVar = g.temp("set_n");
     code += emit`
       var ${rebuiltVar}=new Set();

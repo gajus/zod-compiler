@@ -9,7 +9,7 @@
 
 import type { SchemaIR } from "../types.js";
 import type { CodeGenContext, FastGen, FastGenerator, FastScope } from "./context.js";
-import { declareFastTemps, emitRegex, emitTemp } from "./context.js";
+import { declareFastTemps, emitRegex, emitTemp, isFresh } from "./context.js";
 import {
   CALL_COST,
   EXTRACT_CAP,
@@ -187,6 +187,12 @@ export function createFastGen(
 export function generateFast(ir: SchemaIR, g: FastGen): string | null {
   const gen = fastRegistry[ir.type];
   if (gen === null) return null;
+  // A container a callback is handed: the check would call that callback on the
+  // caller's own value, where zod calls it on the copy it built. That is a
+  // different verdict whenever the copy differs (a stripped key, a substituted
+  // default), and it hands the callback data to edit. The walks that build
+  // the copy decide it instead.
+  if (isFresh(ir)) return null;
 
   if (g.extractable && HOISTABLE.has(ir.type)) {
     const cache = fastSizeCache(g.ctx);

@@ -34,6 +34,7 @@ import { extractUnion } from "./extractors/union.js";
 import { extractUnknown } from "./extractors/unknown.js";
 import { extractVoid } from "./extractors/void.js";
 import { makeFallback } from "./fallback.js";
+import { callbackSubject, markFresh } from "./fresh.js";
 import { makeRecursiveRef } from "./recursion.js";
 import type {
   Extractor,
@@ -204,6 +205,20 @@ export function dispatch(
       return makeFallback("refine", zodSchema, refs, path);
     }
 
+    // A callback on this node runs on a value zod built. Mark the containers in
+    // that value so every compiled walk builds them too, rather than handing the
+    // callback the caller's own (see extract/fresh.ts). Done before the
+    // extractors above this node run, so they see the rebuild.
+    const subject = callbackSubject(ir);
+    if (subject !== null && !markFresh(subject, recursion)) {
+      return makeFallback(
+        ir.type === "effect" ? "transform" : ir.type === "pipe" ? "unsupported" : "refine",
+        zodSchema,
+        refs,
+        path,
+      );
+    }
+
     // Schema-level custom error (z.string({ error: "..." })): bake static
     // messages as the node's default issue message. A dynamic error map can't
     // be baked, so the node's issues go to zod instead (below).
@@ -247,6 +262,11 @@ export function dispatch(
     // wrapped.
     const refId = recursion.targets.get(zodSchema);
     if (refId !== undefined) {
+      // A callback below reaches this target through a back-edge, so the
+      // target's containers are part of the callback's argument too.
+      if (recursion.freshTargets?.has(refId) === true && !markFresh(ir, recursion)) {
+        return makeFallback("unsupported", zodSchema, refs, path);
+      }
       return { type: "recursionTarget", refId, inner: ir };
     }
     return ir;

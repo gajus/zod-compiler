@@ -54,6 +54,12 @@ function detectFastPathBlocker(ir: SchemaIR): string | null {
   if ("coerce" in ir && ir.coerce) {
     return `coerce (${ir.type})`;
   }
+  // A container a `.refine()`, `.superRefine()` or `.transform()` receives is
+  // rebuilt as zod builds it, so the callback gets zod's copy rather than the
+  // caller's; a fast check would run the callback on the input itself.
+  if ("fresh" in ir && ir.fresh === true) {
+    return `callback input (${ir.type})`;
+  }
   // Value-mutating string checks make the schema slow-path only: overwrite
   // effects (.trim()/.toLowerCase()) rewrite the value and url checks trim it,
   // while the fast path returns input unchanged.

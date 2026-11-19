@@ -80,18 +80,23 @@ function freezeIsNoop(ir: SchemaIR): boolean {
 function freezeTargetIsFresh(ir: SchemaIR): boolean {
   switch (ir.type) {
     // `stripUnknownKeys` marks a genuine z.object() with no catchall — exactly
-    // the objects both walks rebuild rather than validate in place.
+    // the objects both walks rebuild rather than validate in place. So does
+    // `fresh`: a container a callback is handed is rebuilt on every path.
     case "object":
-      return ir.stripUnknownKeys === true;
+      return ir.stripUnknownKeys === true || ir.fresh === true;
     // `hasMutation` on a member is the eager walk's own test for copying up
     // front (slowArray, slowTuple). The build pass agrees wherever it runs at
     // all: every member rewrite it models puts the container in the rebuild
     // set, and one it does not model (`.catch()`, a delegate) declines the
     // whole pass, leaving the eager walk.
     case "array":
-      return hasMutation(ir.element);
+      return ir.fresh === true || hasMutation(ir.element);
     case "tuple":
-      return ir.items.some(hasMutation) || (ir.rest !== null && hasMutation(ir.rest));
+      return (
+        ir.fresh === true ||
+        ir.items.some(hasMutation) ||
+        (ir.rest !== null && hasMutation(ir.rest))
+      );
     // An inner readonly that freezes produced a value of its own to do it on;
     // otherwise freezing twice is idempotent and the answer is its inner's.
     case "readonly":

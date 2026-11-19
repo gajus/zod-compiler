@@ -603,6 +603,12 @@ Schema-level `error` and `z.config()` maps are unaffected; for a per-call map us
 
 `z.object()` strips unknown keys exactly as Zod does, so its output is always a fresh object.
 
+None of this reaches a callback. Every container in the value a `.transform()`, `.refine()` or
+`.superRefine()` receives, or that a `.pipe()` hands on, is built the way Zod builds it. A callback
+that sorts, pushes or deletes edits only that copy, and the copy is what the parse returns. Values
+Zod itself passes by reference (a `z.any()` or `z.unknown()` member, a loose object's unknown keys)
+are passed the same way.
+
 ## Benchmark
 
 5-way comparison: **Zod v3** vs **Zod v4** vs **zod-compiler** vs **[Typia](https://typia.io/)** vs **[AJV](https://ajv.js.org/)**

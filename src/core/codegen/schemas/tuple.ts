@@ -2,10 +2,12 @@ import type { SchemaIR, TupleIR } from "../../types.js";
 import type { FastGen, SlowGen } from "../context.js";
 import {
   declareFastTemps,
+  emitRuntimeHelper,
   extendPath,
   extendStaticPathIndex,
   fastMember,
   hasMutation,
+  isFresh,
   outputAlwaysDefined,
   tupleRewritesShortInput,
   visitMember,
@@ -13,6 +15,7 @@ import {
 import { orderByRuntimeCost } from "../fast-size.js";
 import { emit } from "../emit.js";
 import { invalidType, tooBig, tooSmall } from "../emit-issue.js";
+import { ZC_ARRAY_COPY_DECL } from "../issue-decls.js";
 
 /**
  * What an ABSENT slot (index at or past the input's length) does to the output,
@@ -94,8 +97,13 @@ export function slowTuple(ir: SchemaIR & { type: "tuple" }, g: SlowGen): string 
       ${ir.rest === null ? "" : `var ${itemIssues}=[];`}`;
 
   let itemsCode = "";
-  const mutates = ir.items.some(hasMutation) || (ir.rest !== null && hasMutation(ir.rest));
-  if (mutates) {
+  // A tuple a callback is handed is copied as zod builds it (see the `fresh`
+  // flag): every slot an own element, a hole read as `undefined`.
+  const fresh = isFresh(ir);
+  const mutates = fresh || ir.items.some(hasMutation) || (ir.rest !== null && hasMutation(ir.rest));
+  if (fresh) {
+    itemsCode += `${x}=${emitRuntimeHelper(g.ctx, "__zcAc", ZC_ARRAY_COPY_DECL)}(${x});`;
+  } else if (mutates) {
     itemsCode += `${x}=${x}.slice();`;
   }
 

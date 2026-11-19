@@ -5,6 +5,7 @@ import {
   emitRuntimeHelper,
   extendPath,
   hasMutation,
+  isFresh,
   visitMember,
 } from "../context.js";
 import { emit } from "../emit.js";
@@ -49,7 +50,9 @@ export function slowRecord(ir: SchemaIR & { type: "record" }, g: SlowGen): strin
   // (see visitMember).
   const rec = g.temp("rc");
   code += `var ${rec}=${emitRuntimeHelper(g.ctx, "__zcPs", ZC_PROTO_SCRUB_DECL)}(${g.input});`;
-  if (hasMutation(ir.valueType)) {
+  // A record a callback is handed is copied too (see the `fresh` flag): it
+  // must hold zod's copy, not the caller's object.
+  if (isFresh(ir) || hasMutation(ir.valueType)) {
     code += `if(${rec}===${g.input}){${rec}={...${g.input}};}`;
   }
 

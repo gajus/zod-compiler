@@ -1084,7 +1084,20 @@ export function needsProtoScrub(ir: SchemaIR): boolean {
   return true;
 }
 
+/**
+ * Is this a container a user callback is handed, which every walk that
+ * produces a value must rebuild as zod does (see the `fresh` flag on the
+ * container IR nodes)?
+ */
+export function isFresh(ir: SchemaIR): boolean {
+  return (ir as { fresh?: true }).fresh === true;
+}
+
 export function hasMutation(ir: SchemaIR): boolean {
+  // A container a callback is handed is rebuilt, so its output is never its
+  // input: parents copy before it writes back, and the schema never takes a
+  // by-reference shortcut.
+  if (isFresh(ir)) return true;
   switch (ir.type) {
     case "string":
       // url checks trim (and optionally normalize) the value; overwrite

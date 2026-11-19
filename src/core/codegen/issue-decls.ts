@@ -284,6 +284,17 @@ export const ZC_PROTO_SCRUB_DECL =
   'var c={...o};delete c["__proto__"];return c;}';
 
 /**
+ * A copy of an array as zod's array and tuple parses build one: a plain array
+ * with one own element per index, a hole read as `undefined`. `slice()` keeps
+ * the holes, and `Array.from` goes through the iterator, which an input can
+ * replace. The eager walk takes this copy of a container a callback is handed
+ * (see the `fresh` flag on the container IR nodes) before any member writes
+ * back.
+ */
+export const ZC_ARRAY_COPY_DECL =
+  "function __zcAc(a){for(var n=a.length,c=new Array(n),i=0;i<n;i++)c[i]=a[i];return c;}";
+
+/**
  * Code points in a string — zod's `util.codePointLength`, verbatim. A surrogate
  * pair counts once and a lone surrogate as itself. The regex probe is the fast
  * exit for a string with no astral characters, and the hand-rolled loop avoids
@@ -570,6 +581,7 @@ export const RUNTIME_HELPER_DECLS: Readonly<Record<string, string>> = {
   __zcEmail: ZC_EMAIL_DECL,
   __zcUrl: ZC_URL_DECL,
   __zcPs: ZC_PROTO_SCRUB_DECL,
+  __zcAc: ZC_ARRAY_COPY_DECL,
   __zcPlain: ZC_PLAIN_DECL,
   __zcPfx: ZC_PFX_DECL,
   __zcPa: ZC_PATH_APPEND_DECL,

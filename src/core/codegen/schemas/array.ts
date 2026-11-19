@@ -6,11 +6,12 @@ import {
   emitRuntimeHelper,
   extendPath,
   hasMutation,
+  isFresh,
   visitMember,
 } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType, tooBig, tooSmall } from "../emit-issue.js";
-import { ZC_AB_DECL } from "../issue-decls.js";
+import { ZC_AB_DECL, ZC_ARRAY_COPY_DECL } from "../issue-decls.js";
 import { fastRefineTest, refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
 import { whenGatedSizeChecks } from "./sizeable.js";
 
@@ -31,7 +32,11 @@ export function slowArray(ir: SchemaIR & { type: "array" }, g: SlowGen): string 
   // element hands back a replacement (see visitMember).
   const arr = g.temp("ar");
   code += `var ${arr}=${g.input};`;
-  if (hasMutation(ir.element)) {
+  if (isFresh(ir)) {
+    // A callback is handed this array, so it gets zod's copy: every index an
+    // own element, a hole read as `undefined` (see ZC_ARRAY_COPY_DECL).
+    code += `${arr}=${emitRuntimeHelper(g.ctx, "__zcAc", ZC_ARRAY_COPY_DECL)}(${arr});`;
+  } else if (hasMutation(ir.element)) {
     code += `${arr}=${arr}.slice();`;
   }
 
