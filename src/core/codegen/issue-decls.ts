@@ -467,6 +467,18 @@ export const ZC_CUSTOM_OK_DECL =
 export const ZC_ASYNC_DECL = "function __zcAsy(){throw new __zcCore.$ZodAsyncError();}";
 
 /**
+ * Zod's registry symbol for "this parse has fallen back to the runtime", as an
+ * expression. Zod's own `z.compile` wrappers set it on the parse context when
+ * their fast path fails and skip that fast path wherever they find it set; the
+ * compiled `_zod.run` does both as well (see ZOD_RUN_DECL in iife.ts), and the
+ * validators set it on every parse they ask of zod themselves (`__zcRd`,
+ * `__ZcFailZ`). Shared with zod rather than private so that the two kinds of
+ * wrapper keep each other's bound — a user callback runs at most twice on
+ * invalid input — when one is nested in the other.
+ */
+export const ZOD_FALLBACK_FLAG = 'Symbol.for("zod.compile.fallback")';
+
+/**
  * Run a retained zod schema for a delegated sub-schema and return its RAW
  * payload — `_zod.run` on a fresh `{value, issues: []}`, the exact call zod's
  * own `safeParse` makes — rather than the finalized `SafeParseResult`.
@@ -484,14 +496,21 @@ export const ZC_ASYNC_DECL = "function __zcAsy(){throw new __zcCore.$ZodAsyncErr
  * top-level finalizer then deletes it, as zod's does.
  *
  * `_zod.run` is also immune to the aliasing hazard `__rfp_N` guards against:
- * `__zcMkv` installs the compiled methods as own `parse`/`safeParse` slots and
- * never touches `_zod`, so a retained entry that IS the compiled schema still
- * runs zod's implementation here. A Promise result is zod's `$ZodAsyncError`,
- * as in `_safeParse`.
+ * `__zcMkv` installs the compiled methods as own `parse`/`safeParse` slots, so
+ * a retained entry that IS the compiled schema still runs zod's implementation
+ * here. `_zod.run` itself may by now be a compiled wrapper (`__zcZr`) — on the
+ * retained schema or on one nested in it — and the context is marked so that
+ * every such wrapper stands aside ({@link ZOD_FALLBACK_FLAG}): this call exists
+ * to get ZOD's answer, usually for input the validator has just rejected, and
+ * a wrapper on the schema being compiled would otherwise run that validator a
+ * second time from inside its own error path. The symbol is looked up once and
+ * kept in `__zcFk`, declared AFTER the function so that an `export ` prefix
+ * still lands on the helper. A Promise result is zod's `$ZodAsyncError`, as in
+ * `_safeParse`.
  */
 export const ZC_RUN_DELEGATE_DECL =
-  "function __zcRd(z,v,c){var r=z.run({value:v,issues:[]},c);" +
-  "if(r instanceof Promise)throw new __zcCore.$ZodAsyncError();return r;}";
+  `function __zcRd(z,v,c){c[__zcFk||(__zcFk=${ZOD_FALLBACK_FLAG})]=true;var r=z.run({value:v,issues:[]},c);` +
+  "if(r instanceof Promise)throw new __zcCore.$ZodAsyncError();return r;}var __zcFk;";
 
 /**
  * Finalize a delegate's raw issues onto the validator's list. Each goes

@@ -26,6 +26,8 @@ import {
   FINZ_DECL,
   MK_VALIDATOR_FACTORY_DECL,
   STACK_RESTORE_DECL,
+  ZOD_RUN_DECL,
+  ZOD_RUN_HELPER,
   ZOD_CONFIG_IMPORT,
   ZOD_MSG_DECLARATION,
 } from "../core/iife.js";
@@ -81,6 +83,7 @@ function buildRuntimeSource(): string {
     // entry-point helpers below call it.
     STACK_RESTORE_DECL,
     ...Object.values(ENTRY_POINT_HELPER_DECLS).map((decl) => `export ${decl}`),
+    `export ${ZOD_RUN_DECL}`,
     `export ${FIN_DECL}`,
     `export ${FIN_DEFERRED_DECL}`,
     `export ${FIN_CORE_DECL}`,
@@ -149,6 +152,7 @@ export function loadVirtual(id: string): string | null {
 export const ALL_HELPER_NAMES: readonly string[] = [
   "__zcMkv",
   ...Object.keys(ENTRY_POINT_HELPER_DECLS),
+  ZOD_RUN_HELPER,
   "__zcFin",
   "__zcFinD",
   "__zcFinC",

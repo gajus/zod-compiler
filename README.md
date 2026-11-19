@@ -479,8 +479,17 @@ useForm({ resolver: zodResolver(SignupSchema) });
 The same applies to any [Standard Schema](https://standardschema.dev) consumer: `~standard.validate`
 routes through the compiled validator.
 
-Compiled methods live on the schema object, so Zod's functional API (`z.safeParse(Schema, x)`) and a
-compiled schema composed into an uncompiled parent stay on plain Zod.
+Zod itself never calls those methods: a parent parses its children, and the functional API
+(`z.safeParse(Schema, x)`, the only one `zod/mini` has) parses the root, through `_zod.run`. Compiled
+schemas answer there too, so `z.array(User)` built inside a function, `User.optional()` at a call site
+or a generic `Paginated(User)` validate each `User` with compiled code — ~7x on a 20-item page — and
+ask Zod only for the issues of a value that fails.
+
+That holds where the compiled output is exactly what Zod would have built: primitives, objects that
+strip, arrays of them. A schema that returns a container by reference (an array of primitives, a strict
+object, a record; see [Behavioral Differences](#behavioral-differences-from-zod)), uses `.catch()` or
+is recursive stays on plain Zod when reached this way, so a parse that goes through Zod still returns
+Zod's output.
 
 ## Schema Diagnostics
 
@@ -574,7 +583,7 @@ Three things differ by design:
 | Per-call parse params     | `safeParse(x, { error, reportInput })` honoured | Ignored; global `z.config()` maps still apply                                                                                       |
 
 Schema-level `error` and `z.config()` maps are unaffected; for a per-call map use
-`z.safeParse(Schema, x, params)`.
+`z.safeParse(Schema, x, params)`, whose issues are always Zod's own.
 
 `z.object()` strips unknown keys exactly as Zod does, so its output is always a fresh object.
 

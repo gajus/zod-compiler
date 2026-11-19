@@ -19,7 +19,7 @@ import {
   FINZ_DECL,
   generateIIFE,
   iifeDerefsSchema,
-  IIFE_HELPER_NAMES,
+  iifeHelperNames,
   MK_VALIDATOR_DECL,
   usesCoreErrors,
   ZOD_CONFIG_IMPORT,
@@ -364,13 +364,15 @@ export async function transformCodeWithMap(
       for (const helper of h.info.codegenResult.usedHelpers) {
         hoistHelpers.add(helper);
       }
+      for (const helper of iifeHelperNames(h.info, { zodCompat: options.zodCompat })) {
+        hoistHelpers.add(helper);
+      }
       if (verbose) {
         log(`  ✓ ${h.name} (hoisted schema compiled)`);
       }
     }
     staged.apply(spliceEdits);
     if (hoistCompiledCount > 0) {
-      for (const helper of IIFE_HELPER_NAMES) hoistHelpers.add(helper);
       if (!usesCoreErrors(hoistHelpers)) hoistHelpers.add("__zcFin");
     }
   }
@@ -537,7 +539,11 @@ export async function transformCodeWithMap(
   // that does call __zcFin lists it already. Helpers used by compiled hoisted
   // schemas ride along in the same injection.
   const usedHelpers = aggregateUsedHelpers(compiled);
-  for (const helper of IIFE_HELPER_NAMES) usedHelpers.add(helper);
+  for (const schema of compiled) {
+    for (const helper of iifeHelperNames(schema, { zodCompat: options.zodCompat })) {
+      usedHelpers.add(helper);
+    }
+  }
   for (const helper of hoistHelpers) {
     usedHelpers.add(helper);
   }

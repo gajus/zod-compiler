@@ -13,7 +13,7 @@
  *     path.
  */
 import { describe, expect, it, vi } from "vite-plus/test";
-import { ZodRealError, z } from "zod";
+import { core, ZodRealError, z } from "zod";
 import { generateValidator } from "#src/core/codegen/index.js";
 import { extractSchema, type RefEntry } from "#src/core/extract/index.js";
 import {
@@ -297,13 +297,14 @@ function buildCompact(schema: unknown, name = "x"): CompiledLike {
   const iife = generateIIFE("__schema", info, { zodCompat: true });
   const factory = new Function(
     "__zodCompilerConfig",
+    "__zcCore",
     "__zcZodError",
     "__schema",
     `${ZOD_MSG_DECLARATION}\n` +
       `${FAIL_CLASS_DECL}${MK_VALIDATOR_DECL}${FIN_DECL}${FIN_DEFERRED_DECL}${FAILZ_CLASS_DECL}${FINZ_DECL}\n` +
       `return ${iife};`,
   );
-  return factory(z.config, ZodRealError, schema) as CompiledLike;
+  return factory(z.config, core, ZodRealError, schema) as CompiledLike;
 }
 
 describe("compact mode — runtime behavior", () => {
@@ -365,13 +366,14 @@ describe("compact mode — runtime behavior", () => {
     const iife = generateIIFE("makeSchema()", info, { zodCompat: true });
     const factory = new Function(
       "__zodCompilerConfig",
+      "__zcCore",
       "__zcZodError",
       "makeSchema",
       `${ZOD_MSG_DECLARATION}\n` +
         `${FAIL_CLASS_DECL}${MK_VALIDATOR_DECL}${FIN_DECL}${FIN_DEFERRED_DECL}${FAILZ_CLASS_DECL}${FINZ_DECL}\n` +
         `return ${iife};`,
     );
-    const compiled = factory(z.config, ZodRealError, () => {
+    const compiled = factory(z.config, core, ZodRealError, () => {
       schemaEvaluations++;
       return schema;
     }) as CompiledLike;

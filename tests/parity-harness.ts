@@ -19,11 +19,13 @@ import {
   FIN_DEFERRED_CORE_DECL,
   FIN_DEFERRED_DECL,
   FINZ_DECL,
+  generateIIFE,
+  MK_VALIDATOR_DECL,
   ZOD_CONFIG_IMPORT,
   ZOD_MSG_DECLARATION,
 } from "#src/core/iife.js";
 import { compileSchemas } from "#src/core/pipeline.js";
-import type { DiscoveredSchema, SafeParseResult } from "#src/core/types.js";
+import type { CodegenMode, DiscoveredSchema, SafeParseResult } from "#src/core/types.js";
 import { RESOLVED_RUNTIME_ID, loadVirtual } from "#src/unplugin/virtual.js";
 
 /**
@@ -178,6 +180,73 @@ function evaluateLean(
     ZodRealError,
     refEntries.map((e) => e.schema),
   ) as (input: unknown) => SafeParseResult<unknown>;
+}
+
+/** What an inline-mode file declares ahead of its IIFEs (the CLI emitter, `jit()`). */
+const INLINE_MODULE_RUNTIME = [
+  ZOD_MSG_DECLARATION,
+  FAIL_CLASS_DECL,
+  FAIL_CORE_CLASS_DECL,
+  MK_VALIDATOR_DECL,
+  FIN_DECL,
+  FIN_DEFERRED_DECL,
+  FIN_CORE_DECL,
+  FIN_DEFERRED_CORE_DECL,
+  FAILZ_CLASS_DECL,
+  FINZ_DECL,
+].join("\n");
+
+export interface InstallOptions {
+  /** "inline" (the default) or "lean", evaluated over the real runtime module. */
+  mode?: CodegenMode;
+  /** `false` for `output: "bag"`: each IIFE returns a method bag instead of the schema. */
+  zodCompat?: boolean;
+  /** `output: "compact"`. */
+  compact?: boolean;
+}
+
+/**
+ * The WHOLE production install, not just the validator: evaluate one module
+ * holding an IIFE per schema — `generateIIFE`'s output, over the declarations an
+ * inline-mode file carries or the runtime module a lean-mode one imports — so
+ * that `__zcMkv` puts the compiled methods on each schema and everything else an
+ * IIFE does to it happens too. One `__zcMkv` is shared by all of them, as in a
+ * bundle. Returns what each IIFE returned: the schema itself, or a method bag
+ * under `zodCompat: false`.
+ */
+export function installLikeProduction(
+  schemas: readonly unknown[],
+  options?: InstallOptions,
+): unknown[] {
+  const mode = options?.mode ?? "inline";
+  const { schemas: compiled, shared } = compileSchemas(
+    schemas.map((schema, index) => ({ exportName: `S${index}`, schema })),
+    { mode, compact: options?.compact },
+  );
+  expect(compiled).toHaveLength(schemas.length);
+  const iifes = compiled.map((info, index) =>
+    generateIIFE(`__schemas[${index}]`, info, { zodCompat: options?.zodCompat }),
+  );
+  const runtime =
+    mode === "lean"
+      ? (loadVirtual(RESOLVED_RUNTIME_ID) ?? "")
+          .replace(ZOD_CONFIG_IMPORT, "")
+          .replaceAll(/^export /gm, "")
+      : INLINE_MODULE_RUNTIME;
+  const factory = new Function(
+    "__zodCompilerConfig",
+    "__zcCore",
+    "__zcZodError",
+    "__schemas",
+    `"use strict";${runtime}\n${shared.code}\nreturn [${iifes.join(",\n")}];`,
+  );
+  return factory(z.config, core, ZodRealError, schemas) as unknown[];
+}
+
+/** {@link installLikeProduction} for one schema, handed back for chaining. */
+export function installOnto<T>(schema: T, options?: InstallOptions): T {
+  installLikeProduction([schema], options);
+  return schema;
 }
 
 /** JSON.stringify that survives BigInt, symbols, and other non-serializable inputs. */

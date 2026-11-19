@@ -251,6 +251,92 @@ export function fastResultIsInput(ir: SchemaIR): boolean {
 }
 
 /**
+ * May this schema's validator answer for zod's own `_zod.run` — the call a
+ * PARENT zod schema makes on a child, and the one `z.safeParse(schema, x)`
+ * makes on the root (see ZOD_RUN_DECL in iife.ts)?
+ *
+ * Those routes have always produced zod's own output, to callers that never
+ * asked for a compiled one: an uncompiled parent, a schema derived at a call
+ * site, a library holding only the schema. So the validator may take them only
+ * where what it yields is INDISTINGUISHABLE from what zod builds, which rules
+ * out every schema one of the documented differences can reach
+ * (tests/known-divergences.test.ts):
+ *
+ *  - a container handed back by reference. Zod rebuilds every object, array,
+ *    tuple, record, set and map; the compiled walks rebuild only what they must
+ *    (see rebuildSet). An aliased container is more than an identity quirk on
+ *    this route — zod's own wrappers act on a child's output in place
+ *    (`.readonly()` freezes it), which would land on the caller's input. So
+ *    every container in the schema has to be one the build pass allocates: a
+ *    stripping object, or an array or tuple some member rewrites. (That covers
+ *    the frozen COPY `.readonly()` makes of a pass-through array as well: the
+ *    array under it is not rebuilt, and a `slice()` keeps a sparse input's
+ *    holes where zod writes `undefined`.) A strict or loose object, a record, a
+ *    set, a map and an intersection are declined outright — rebuilt or not,
+ *    each has a difference of its own (key order, symbol keys, inherited keys)
+ *    or is not modelled closely enough to promise there is none;
+ *  - `.catch()`, whose callback sees finalized issues where zod's sees raw ones,
+ *    and `superRefine`, whose callback holds a payload of the compiler's making;
+ *  - a recursive schema. Zod closes reference cycles in the DATA with state
+ *    keyed on the parse context (its memoizer), which a generated validator
+ *    never receives — the same reason zod's own `z.compile` refuses them;
+ *  - a delegated sub-schema (`fallback`): the validator would be calling zod
+ *    back, on a context of its own, from inside zod's traversal.
+ *
+ * A leaf is always fine, including the ones that pass a reference through
+ * (`z.any()`, `z.custom()`, a `Date`): zod passes the same reference.
+ *
+ * The answer also says WHEN. A validator that calls user code which may turn
+ * out to be asynchronous — a refinement, a transform, a `z.custom()` predicate
+ * — raises `$ZodAsyncError` on a returned promise, as zod's synchronous parse
+ * does, so it can only answer a synchronous parse ("sync"): on an async one zod
+ * awaits that promise, and trying the validator first would call the callback
+ * twice on valid input. One with no such call cannot differ between the two
+ * ("async" — either kind of parse).
+ */
+export function zodRunSupport(ir: SchemaIR): "sync" | "async" | null {
+  const rebuilds = rebuildSet(ir);
+  const seen = new Set<SchemaIR>();
+  let callsUserCode = false;
+  const exact = (node: SchemaIR): boolean => {
+    if (seen.has(node)) return true;
+    seen.add(node);
+    const checks = (node as { checks?: readonly { kind: string }[] }).checks;
+    if (checks !== undefined) {
+      if (superRefines(checks)) return false;
+      if (checks.some((check) => check.kind === "refine_effect")) callsUserCode = true;
+    }
+    switch (node.type) {
+      case "fallback":
+      case "recursiveRef":
+      case "recursionTarget":
+      case "catch":
+      case "record":
+      case "set":
+      case "map":
+      case "intersection":
+        return false;
+      case "object":
+        if (node.stripUnknownKeys !== true) return false;
+        break;
+      case "array":
+      case "tuple":
+        if (!rebuilds.has(node)) return false;
+        break;
+      case "effect":
+      case "custom":
+        callsUserCode = true;
+        break;
+      default:
+        break;
+    }
+    return children(node).every(exact);
+  };
+  if (!exact(ir)) return null;
+  return callsUserCode ? "sync" : "async";
+}
+
+/**
  * True when the subtree mutates for any reason the build pass cannot reproduce —
  * `.catch()`, `superRefine`. Those rewrite values in ways this pass
  * (which validates, coerces, decodes string booleans, substitutes declared

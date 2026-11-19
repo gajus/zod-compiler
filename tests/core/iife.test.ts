@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ZodRealError, z } from "zod";
+import { core, ZodRealError, z } from "zod";
 import { generateValidator } from "#src/core/codegen/index.js";
 import type { RefEntry } from "#src/core/extract/index.js";
 import { extractSchema } from "#src/core/extract/index.js";
@@ -13,16 +13,20 @@ import {
 import type { CompiledSchemaInfo } from "#src/core/pipeline.js";
 import { zcMsg } from "../parity-harness.js";
 
-type MkvFn = (
-  fn: (input: unknown) => { success: true; data: unknown } | { success: false; error: unknown },
-  schema: object | null,
-) => Record<string, unknown>;
-
-// The factory and the helpers a schema's own parse()/validate call, as one
-// evaluation of the declaration block an inline-mode file carries.
-const { __zcMkv, __zcPu, __zcVr, __zcVc } = new Function(
-  `${MK_VALIDATOR_DECL}; return { __zcMkv, __zcPu, __zcVr, __zcVc };`,
-)() as { __zcMkv: MkvFn; __zcPu: unknown; __zcVr: unknown; __zcVc: unknown };
+/**
+ * What an IIFE under test installs itself on when the test is not about the
+ * schema: a bare object standing in for it, with the one zod internal the IIFE
+ * may reach for (`__zcZr` wraps `_zod.run`).
+ */
+function standInSchema(): object {
+  return {
+    _zod: {
+      run(): never {
+        throw new Error("the stand-in schema has no zod runtime");
+      },
+    },
+  };
+}
 // __zcFin needs __zcMsg and __zcZodError in scope; both are passed per-execution
 type FinFn = (e: unknown[], d: unknown) => { success: boolean; data?: unknown; error?: unknown };
 function makeFinFn(msg: unknown, ZodError: unknown): FinFn {
@@ -68,8 +72,10 @@ describe("generateIIFE()", () => {
     const info = makeInfo("validateNum", z.number());
     const iife = generateIIFE("NumSchema", info);
 
+    // Wrapped in `__zcZr`: a number's validator may answer for zod's own
+    // `_zod.run` too, on async parses included (the trailing 1).
     expect(iife).toMatch(
-      /return __zcMkv\(safeParse_validateNum,NumSchema,(__fc_\d+),\1,__zp,__zv\);/,
+      /return __zcZr\(__zcMkv\(safeParse_validateNum,NumSchema,(__fc_\d+),\1,__zp,__zv\),safeParse_validateNum,1\);/,
     );
     // The by-reference shortcut, then the validator unwrapped by __zcPu — which
     // is where the throw (and the stack restoration) lives, not in the IIFE.
@@ -190,9 +196,7 @@ describe("generateIIFE()", () => {
 
     // A stripping object rebuilds its output, so there is no by-reference
     // parse shortcut (fc is null) — but `.is()` still gets the exact predicate.
-    expect(iife).toMatch(
-      /return __zcMkv\(safeParse_validateUser,UserSchema,null,__fc_\d+,__zp,__zv\);/,
-    );
+    expect(iife).toMatch(/__zcMkv\(safeParse_validateUser,UserSchema,null,__fc_\d+,__zp,__zv\)/);
     expect(iife).not.toContain("var __w=");
     expect(iife).not.toContain("__w.schema=");
   });
@@ -259,14 +263,11 @@ describe("generateIIFE() — runtime execution", () => {
       "Schema",
       "__zcMsg",
       "__zcZodError",
-      "__zcMkv",
-      "__zcPu",
-      "__zcVr",
-      "__zcVc",
+      "__zcCore",
       "__zcFin",
-      `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\nreturn ${iife};`,
+      `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}${MK_VALIDATOR_DECL}\nreturn ${iife};`,
     );
-    return fn({}, zcMsg, ZodRealError, __zcMkv, __zcPu, __zcVr, __zcVc, __zcFin) as {
+    return fn(standInSchema(), zcMsg, ZodRealError, core, __zcFin) as {
       parse: (input: unknown) => unknown;
       safeParse: (input: unknown) => {
         success: boolean;
@@ -491,14 +492,11 @@ describe("generateIIFE() — shared schema instance (CSE/dedup + identifier sche
       "Schema",
       "__zcMsg",
       "__zcZodError",
-      "__zcMkv",
-      "__zcPu",
-      "__zcVr",
-      "__zcVc",
+      "__zcCore",
       "__zcFin",
-      `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}\nreturn ${iife};`,
+      `${FAIL_CLASS_DECL}${FIN_DEFERRED_DECL}${MK_VALIDATOR_DECL}\nreturn ${iife};`,
     );
-    return fn(schema, zcMsg, ZodRealError, __zcMkv, __zcPu, __zcVr, __zcVc, __zcFin) as {
+    return fn(schema, zcMsg, ZodRealError, core, __zcFin) as {
       safeParse: (input: unknown) => {
         success: boolean;
         data?: unknown;

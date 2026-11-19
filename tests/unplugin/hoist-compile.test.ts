@@ -28,7 +28,12 @@ async function execute(code: string): Promise<Record<string, unknown>> {
   const file = path.join(dir, "out.ts");
   // Resolve zod from the repo (the temp dir has no node_modules).
   const zodDir = path.dirname(require.resolve("zod/package.json"));
-  const rewritten = code.replace(/from "zod"/g, `from ${JSON.stringify(zodDir)}`);
+  // …including the `zod/v4/core` subpath the runtime helpers read (`__zcCore`).
+  const rewritten = code.replace(
+    /from "zod(\/[^"]*)?"/g,
+    (_match, subpath: string | undefined) =>
+      `from ${JSON.stringify(subpath === undefined ? zodDir : require.resolve(`zod${subpath}`))}`,
+  );
   writeFileSync(file, rewritten);
   return loadSourceFile(file);
 }
@@ -97,7 +102,7 @@ describe("transformCode() — hoisted schema compilation", () => {
     expect(result).not.toBeNull();
     const out = result as string;
     expect(out).toMatch(/const _zh_[0-9a-f]{8} = \/\* @__PURE__ \*\/ \(\(\) => \{/);
-    expect(out).toContain("return __zcMkv(");
+    expect(out).toMatch(/return (?:__zcZr\()?__zcMkv\(/);
     expect(out).toMatch(/fakeSql\.type\(\s*_zh_[0-9a-f]{8},?\s*\)/);
 
     // Execute the transformed module: the compiled validator must behave

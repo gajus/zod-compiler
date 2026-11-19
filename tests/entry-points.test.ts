@@ -16,21 +16,10 @@
  * that passes neither.
  */
 import { describe, expect, it } from "vite-plus/test";
-import { config as zodConfig, core as zodCore, ZodRealError, z } from "zod";
-import {
-  FAIL_CLASS_DECL,
-  FAILZ_CLASS_DECL,
-  FIN_DECL,
-  FIN_DEFERRED_DECL,
-  FINZ_DECL,
-  generateIIFE,
-  MK_VALIDATOR_DECL,
-  ZOD_CONFIG_IMPORT,
-  ZOD_MSG_DECLARATION,
-} from "#src/core/iife.js";
-import { compileSchemas } from "#src/core/pipeline.js";
+import { z } from "zod";
+import { MK_VALIDATOR_DECL } from "#src/core/iife.js";
 import type { CodegenMode } from "#src/core/types.js";
-import { loadVirtual, RESOLVED_RUNTIME_ID } from "#src/unplugin/virtual.js";
+import { installLikeProduction, installOnto } from "./parity-harness.js";
 
 type StandardResult = { issues?: { message: string }[]; value?: unknown };
 interface Installed {
@@ -44,59 +33,17 @@ interface Installed {
   };
 }
 
-/** What an inline-mode file declares ahead of its IIFEs (the CLI emitter, `jit()`). */
-const INLINE_RUNTIME = [
-  ZOD_MSG_DECLARATION,
-  FAIL_CLASS_DECL,
-  MK_VALIDATOR_DECL,
-  FIN_DECL,
-  FIN_DEFERRED_DECL,
-  FAILZ_CLASS_DECL,
-  FINZ_DECL,
-].join("\n");
-
-/** The runtime module a lean-mode file imports from, as a function-body head. */
-const LEAN_RUNTIME = (loadVirtual(RESOLVED_RUNTIME_ID) ?? "")
-  .replace(ZOD_CONFIG_IMPORT, "")
-  .replaceAll(/^export /gm, "");
-
-/**
- * Evaluate ONE module holding an IIFE per schema, as a bundle or a
- * `.compiled.ts` does: a single `__zcMkv` shared by all of them. Returns what
- * each IIFE returned — the schema itself, or a method bag with `zodCompat: false`.
- */
+/** One module holding an IIFE per schema; what each IIFE returned. */
 function installModule(
   schemas: readonly z.ZodType[],
-  options?: { mode?: CodegenMode; zodCompat?: boolean; targets?: readonly unknown[] },
+  options?: { mode?: CodegenMode; zodCompat?: boolean },
 ): Installed[] {
-  const mode = options?.mode ?? "inline";
-  const { schemas: compiled, shared } = compileSchemas(
-    schemas.map((schema, index) => ({ exportName: `S${index}`, schema })),
-    { mode },
-  );
-  expect(compiled).toHaveLength(schemas.length);
-  const iifes = compiled.map((info, index) =>
-    generateIIFE(`__schemas[${index}]`, info, { zodCompat: options?.zodCompat }),
-  );
-  const body = [
-    mode === "lean" ? LEAN_RUNTIME : INLINE_RUNTIME,
-    shared.code,
-    `return [${iifes.join(",\n")}];`,
-  ].join("\n");
-  const factory = new Function(
-    "__zodCompilerConfig",
-    "__zcCore",
-    "__zcZodError",
-    "__schemas",
-    `"use strict";${body}`,
-  );
-  return factory(zodConfig, zodCore, ZodRealError, options?.targets ?? schemas) as Installed[];
+  return installLikeProduction(schemas, options) as Installed[];
 }
 
 /** Compile one schema in place and hand it back as the compiled surface. */
 function install<T extends z.ZodType>(schema: T, mode?: CodegenMode): T & Installed {
-  installModule([schema], mode === undefined ? undefined : { mode });
-  return schema as T & Installed;
+  return installOnto(schema, mode === undefined ? undefined : { mode }) as T & Installed;
 }
 
 const MODES: CodegenMode[] = ["inline", "lean"];

@@ -11,6 +11,7 @@ import {
   fastResultIsInput,
   generateBuild,
   nestedNeedsProtoScrub,
+  zodRunSupport,
   rebuildsOutput,
 } from "./build-path.js";
 import {
@@ -288,6 +289,7 @@ export function generateValidator(
       // installs fc directly (compact never weakens the guard).
       fastTotal: true,
       usesRetainedSchema: true,
+      ...zodRunField(ir),
     };
   }
 
@@ -320,6 +322,7 @@ export function generateValidator(
       fastTotal: false,
       isFnName: buildIsFnName,
       usesRetainedSchema: true,
+      ...zodRunField(ir),
     };
   }
 
@@ -395,6 +398,7 @@ export function generateValidator(
       // travels in `isFnName` instead.
       fastTotal: false,
       isFnName: buildIsFnName,
+      ...zodRunField(ir),
     };
   }
 
@@ -483,6 +487,7 @@ export function generateValidator(
       // generateIIFE installs fc directly as the zero-allocation `.is()`.
       fastTotal: true,
       isFnName: fastFnName,
+      ...zodRunField(ir),
     };
   }
 
@@ -530,6 +535,19 @@ export function generateValidator(
     // safeParse(input).success.
     fastTotal: false,
   };
+}
+
+/**
+ * The `zodRun` field of a result, for the validators that may answer for zod's
+ * own `_zod.run`. Spread into the returns that are a compiled verdict AND a
+ * compiled output — the by-reference fast path and the build pass, compact or
+ * not. The rest leave it out: a validator that hands its whole schema to zod
+ * would be answering zod with zod (and re-entering itself), and the eager walk
+ * is where every construct the build pass declined ends up.
+ */
+function zodRunField(ir: SchemaIR): { zodRun?: "sync" | "async" } {
+  const support = zodRunSupport(ir);
+  return support === null ? {} : { zodRun: support };
 }
 
 /**

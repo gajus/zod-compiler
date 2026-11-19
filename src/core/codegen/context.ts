@@ -94,6 +94,14 @@ export interface CodeGenResult {
    */
   isFnName?: string | null;
   /**
+   * Set when this validator may answer for zod's own `_zod.run` (see
+   * `zodRunSupport`): on a synchronous parse only ("sync"), or on an async one
+   * as well ("async"). generateIIFE installs it there through `__zcZr`. Absent
+   * for a validator that delegates its whole schema to zod, that runs the eager
+   * walk, or whose output zod would not have built.
+   */
+  zodRun?: "sync" | "async";
+  /**
    * Compact mode only: this validator reads {@link RETAINED_SCHEMA_VAR}
    * directly, so `generateIIFE` must bind it even when the schema has no
    * fallback refs of its own. Absent for every non-compact (fully compiled)

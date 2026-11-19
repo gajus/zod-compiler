@@ -4,6 +4,7 @@
  */
 
 import { FINALIZERS, RETAINED_SCHEMA_VAR } from "./codegen/context.js";
+import { ZOD_FALLBACK_FLAG } from "./codegen/issue-decls.js";
 import type { CompiledSchemaInfo } from "./pipeline.js";
 
 /**
@@ -214,11 +215,18 @@ export function usesCoreErrors(helpers: ReadonlySet<string>): boolean {
  * The getter returns zod's OWN ZodError verbatim (no locale fill / input strip /
  * re-wrap — zod already finalized it), so a delegated failure is exactly what
  * the unaltered schema would have produced.
+ *
+ * The parse is handed `{[ZOD_FALLBACK_FLAG]: true}` as its params, which zod
+ * copies onto the parse context: the schema's `_zod.run` may be the compiled
+ * wrapper (`__zcZr`), and this input is one the validator has already rejected
+ * — the mark sends it, and every compiled schema nested below, straight to
+ * zod's runtime instead of through the validator again.
  */
 export const FAILZ_CLASS_DECL =
   "function __ZcFailZ(z,r,i){this.success=false;this._z=z;this._r=r;this._i=i;this._c=undefined;}" +
   'Object.defineProperty(__ZcFailZ.prototype,"error",{configurable:true,get:function(){' +
-  "return this._c||(this._c=this._z.call(this._r,this._i).error);}});";
+  `if(this._c)return this._c;var p={};p[${ZOD_FALLBACK_FLAG}]=true;` +
+  "return this._c=this._z.call(this._r,this._i,p).error;}});";
 
 /** Compact-mode finalizer: retain a pristine safeParse, its receiver, and input lazily. */
 export const FINZ_DECL = "function __zcFinZ(z,r,i){return new __ZcFailZ(z,r,i);}";
@@ -408,15 +416,99 @@ export const ENTRY_POINT_HELPER_DECLS: Readonly<Record<string, string>> = {
   __zcVc: "function __zcVc(e,i,v){var a=v.a;if(a)return a(i).then(__zcVr);throw e;}",
 };
 
+/** Name of the helper that installs a compiled `_zod.run` (see {@link ZOD_RUN_DECL}). */
+export const ZOD_RUN_HELPER = "__zcZr";
+
+/**
+ * Install the compiled validator in front of the schema's `_zod.run`.
+ *
+ * `__zcMkv` puts the compiled methods on the schema object, and zod never calls
+ * those: a parent schema parses a child through `child._zod.run`, and the
+ * functional API (`z.safeParse(schema, x)`, which is all `zod/mini` code and
+ * `@hookform/resolvers` use) goes straight to the root's. So a compiled schema
+ * composed into a parent that is not itself compiled — built in a function, by
+ * a generic factory, by `.optional()` at a call site — ran entirely on zod:
+ * `Paginated(User)` over twenty items measured 5.7 µs against 0.83 with this in
+ * place (2.0 when the last item is invalid), `z.safeParse(User, x)` 283 ns
+ * against 38, and the same page through `safeParseAsync` 12.1 µs against 1.0.
+ *
+ * The wrapper tries the validator and takes its result only on SUCCESS; every
+ * failure is handed to zod's own `run`, on the same payload and context, so
+ * issues — and anything that shapes them: a per-call error map, `reportInput`,
+ * a parent's path prefix — are zod's untouched. That also makes the shortcut
+ * one-directional: it can only ever accept, and what it may accept is limited
+ * at build time to validators whose output zod would have built itself (see
+ * `zodRunSupport`). generateIIFE emits the call for no others.
+ *
+ * It steps aside, as zod's own `z.compile` wrapper does, for
+ *
+ *  - an encode (`direction: "backward"`) and its check-less canary pass
+ *    (`skipChecks`): the validator only knows the forward direction;
+ *  - an async parse, unless `a` says the validator calls no user code that
+ *    could return a promise (see `zodRunSupport`);
+ *  - a parse already marked as fallen back ({@link ZOD_FALLBACK_FLAG}). The
+ *    mark is set here on a failure, so that the compiled schemas nested in this
+ *    one do not each retry what zod is about to redo — which is what keeps a
+ *    user callback to two calls on invalid input, the validator's and zod's.
+ *    It is taken off again once zod has answered synchronously: by then the
+ *    subtree it protected is finished, and what follows is somebody else's
+ *    value — the next member of a `z.union()`, which may well accept the input
+ *    the first one refused, or the next element of an array. (Zod's own wrapper
+ *    leaves the mark on for the rest of the parse; an answer still pending — a
+ *    promise — is left marked here too, since its subtree is not finished.)
+ *  - a value that is a memoized back-edge: a node of a reference cycle zod's
+ *    runtime is still building, which only it can close;
+ *  - a call with no context at all, which zod's own traversal never makes.
+ *
+ * The original is captured once, unwrapped past any wrapper that follows zod's
+ * `__originalRun` convention (its `zod/compile` shim, an earlier `__zcZr` on a
+ * schema two exports alias), and published the same way for whatever wraps
+ * next. One case reads it late instead: a schema with no checks has `run` and
+ * `parse` as the SAME function, and zod's memoizer swaps that function for the
+ * bare parser on a container's first parse, expecting nobody to have kept the
+ * old one — which a capture here would. Reading `_zod.parse` at call time
+ * follows the swap.
+ */
+export const ZOD_RUN_DECL =
+  `function ${ZOD_RUN_HELPER}(w,fn,a){var z=w._zod,l=z.run,o=l.__originalRun||l,p=o===z.parse,` +
+  `k=${ZOD_FALLBACK_FLAG},b=__zcCore.isBackEdge;` +
+  'function run(q,c){if(c&&(a||c.async===false)&&c.direction!=="backward"&&!c.skipChecks&&!c[k]&&!(b&&b(c,q.value))){' +
+  "var r=fn(q.value);if(r.success){q.value=r.data;return q;}" +
+  "c[k]=true;r=p?z.parse(q,c):o(q,c);if(!(r instanceof Promise))c[k]=false;return r;}" +
+  "return p?z.parse(q,c):o(q,c);}" +
+  "run.__originalRun=o;z.run=run;return w;}";
+
 /**
  * Every runtime-module export an IIFE names no matter what its schema is: the
  * factory, and the helpers its own `parse` / `validate` call. A lean-mode file
  * that compiled anything imports them all.
  */
-export const IIFE_HELPER_NAMES: readonly string[] = [
-  "__zcMkv",
-  ...Object.keys(ENTRY_POINT_HELPER_DECLS),
-];
+const IIFE_HELPER_NAMES: readonly string[] = ["__zcMkv", ...Object.keys(ENTRY_POINT_HELPER_DECLS)];
+
+/**
+ * The runtime-module exports {@link generateIIFE} names for this schema, beyond
+ * the ones its validator's own code does (`codegenResult.usedHelpers`): what a
+ * lean-mode file has to import for the IIFE itself. Takes the same options as
+ * generateIIFE, because whether the compiled `_zod.run` is installed depends on
+ * there being a schema to install it on.
+ */
+export function iifeHelperNames(
+  schema: CompiledSchemaInfo,
+  options?: { zodCompat?: boolean | undefined },
+): readonly string[] {
+  return installsZodRun(schema, options)
+    ? [...IIFE_HELPER_NAMES, ZOD_RUN_HELPER]
+    : IIFE_HELPER_NAMES;
+}
+
+/** Does the IIFE for this schema install a compiled `_zod.run` (see {@link ZOD_RUN_DECL})? */
+function installsZodRun(
+  schema: CompiledSchemaInfo,
+  options?: { zodCompat?: boolean | undefined },
+): boolean {
+  // A method bag (`zodCompat: false`) has no schema for zod to reach.
+  return options?.zodCompat !== false && schema.codegenResult.zodRun !== undefined;
+}
 
 /**
  * The factory with its companions, as ONE file-level declaration block: what an
@@ -425,7 +517,10 @@ export const IIFE_HELPER_NAMES: readonly string[] = [
  * `__zcMkv` leads so the block can be recognized by its first function.
  */
 export const MK_VALIDATOR_DECL =
-  MK_VALIDATOR_FACTORY_DECL + STACK_RESTORE_DECL + Object.values(ENTRY_POINT_HELPER_DECLS).join("");
+  MK_VALIDATOR_FACTORY_DECL +
+  STACK_RESTORE_DECL +
+  Object.values(ENTRY_POINT_HELPER_DECLS).join("") +
+  ZOD_RUN_DECL;
 
 function extractFunctionName(functionDef: string): string {
   const match = /^function\s+(\w+)\s*\(/.exec(functionDef);
@@ -502,6 +597,13 @@ export function generateIIFE(
   // `.error` is what builds the issues, and an error map that throws there has
   // to take the same async retry a throwing check does (zod rejects; mapping
   // outside the try threw synchronously instead).
+  // The schema itself once `__zcMkv` has installed the methods on it — and,
+  // where the validator may answer for zod too, its `_zod.run` (see
+  // ZOD_RUN_DECL). A method bag has no schema for zod to reach.
+  const made = `__zcMkv(${fnName},${schemaArg},${fcArg},${isArg},__zp,__zv)`;
+  const installed = installsZodRun(schema, options)
+    ? `${ZOD_RUN_HELPER}(${made},${fnName},${codegenResult.zodRun === "async" ? 1 : 0})`
+    : made;
   const validated = `__zcVr(${fnName}(input))`;
   const validateFn =
     `function __zv(input){try{return ${fast === null ? validated : `${fast}(input)?{value:input}:${validated}`};}` +
@@ -521,7 +623,7 @@ export function generateIIFE(
     codegenResult.functionDef,
     parseFn,
     validateFn,
-    `return __zcMkv(${fnName},${schemaArg},${fcArg},${isArg},__zp,__zv);`,
+    `return ${installed};`,
     "})()",
   ].join("\n");
 }
