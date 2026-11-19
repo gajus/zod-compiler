@@ -288,7 +288,7 @@ async function getJiti(absPath: string): Promise<Jiti> {
   const { createJiti } = await import("jiti");
   const created = createJiti(pathToFileURL(absPath).href, {
     moduleCache: true,
-    ...transpileOptions(createJiti),
+    ...transpileOptions(createJiti, { tsSpecifiers: true }),
     ...(tsconfigPath ? { tsconfigPaths: tsconfigPath } : {}),
     jsx: true,
   });

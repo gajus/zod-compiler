@@ -37,6 +37,7 @@ import path from "node:path";
 import process from "node:process";
 import { threadId } from "node:worker_threads";
 import type { createJiti, JitiOptions, TransformOptions, TransformResult } from "jiti";
+import { importSites, resolveTsSpecifiers } from "./ts-specifiers.js";
 
 /** A cache directory is swept at most this often. */
 export const CACHE_GC_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -49,7 +50,7 @@ export const CACHE_MAX_TMP_AGE_MS = 60 * 60 * 1000;
 export const TRANSPILE_CACHE_SUBDIRECTORY = "jiti";
 const GC_MARKER = "_gc";
 /** Bump when an entry's layout changes; older entries then read as misses. */
-const FORMAT = 1;
+const FORMAT = 2;
 
 /**
  * The cache root the build plugin keeps its persistent state in unless told
@@ -256,6 +257,41 @@ function write(directory: string, file: string, content: string): void {
 
 type Transform = (options: TransformOptions) => TransformResult;
 
+/** A transpile, and the index kept beside it. */
+interface Transpiled {
+  result: TransformResult;
+  /**
+   * Where the output imports a relative JS-extension specifier (see
+   * `importSites` in ts-specifiers.ts), or undefined for a transpile that
+   * failed. Finding them takes a parse of the output, so they are found once,
+   * when Babel runs, and stored with it: every later execution of the module
+   * reads them back instead.
+   */
+  imports: readonly number[] | undefined;
+}
+
+function transpile(transform: Transform, options: TransformOptions): Transpiled {
+  const result = transform(options);
+  const failed = result.error !== undefined || result.code.includes("__JITI_ERROR__");
+  return { result, imports: failed ? undefined : importSites(result.code) };
+}
+
+/** An entry's index and code, given where its stamp ends; null when malformed. */
+function read(entry: string, from: number): Transpiled | null {
+  const close = entry.indexOf(" */\n", from);
+  if (close === -1) return null;
+  let imports: unknown;
+  try {
+    imports = JSON.parse(entry.slice(from, close));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(imports) || !imports.every((offset) => typeof offset === "number")) {
+    return null;
+  }
+  return { result: { code: entry.slice(close + 4) }, imports: imports as number[] };
+}
+
 /**
  * `transform`, answered from the cache when it holds this exact transpile.
  *
@@ -263,10 +299,10 @@ type Transform = (options: TransformOptions) => TransformResult;
  * did not parse comes back as an error marker to be thrown at evaluation, and
  * the next attempt should see the file again rather than the marker.
  */
-function cached(transform: Transform, options: TransformOptions): TransformResult {
+function cached(transform: Transform, options: TransformOptions): Transpiled {
   const directory = transpileCacheDirectory();
   const { filename } = options;
-  if (directory === null || filename === undefined) return transform(options);
+  if (directory === null || filename === undefined) return transpile(transform, options);
 
   const kind = variant(options);
   const name = path
@@ -274,7 +310,8 @@ function cached(transform: Transform, options: TransformOptions): TransformResul
     .replace(/[^\w.-]/g, "_")
     .slice(0, 48);
   const file = path.join(directory, `${name}.${sha1(`${filename}\0${kind}`).slice(0, 16)}.cjs`);
-  const stamp = `/* zod-compiler transpile ${sha1(`${FORMAT}\0${transpilerVersion()}\0${kind}\0${options.source}`)} */\n`;
+  // The entry's first line: this stamp, the import index, and a closing `*/`.
+  const stamp = `/* zod-compiler transpile ${sha1(`${FORMAT}\0${transpilerVersion()}\0${kind}\0${options.source}`)} `;
 
   let entry: string | undefined;
   try {
@@ -282,30 +319,59 @@ function cached(transform: Transform, options: TransformOptions): TransformResul
   } catch {
     // No entry, or none that can be read.
   }
-  if (entry?.startsWith(stamp)) return { code: entry.slice(stamp.length) };
-
-  const result = transform(options);
-  if (result.error === undefined && !result.code.includes("__JITI_ERROR__")) {
-    write(directory, file, stamp + result.code);
+  if (entry?.startsWith(stamp)) {
+    const kept = read(entry, stamp.length);
+    if (kept !== null) return kept;
   }
-  return result;
+
+  const fresh = transpile(transform, options);
+  if (fresh.imports !== undefined) {
+    write(directory, file, `${stamp}${JSON.stringify(fresh.imports)} */\n${fresh.result.code}`);
+  }
+  return fresh;
 }
 
-let babel: Transform | undefined;
+/** What a jiti instance does when given no options of ours, read off one. */
+let defaults:
+  | { babel: Transform | undefined; extensions: readonly string[] | undefined }
+  | undefined;
 
 /**
  * The options that put a jiti instance on this cache: its own switched off,
  * and its transform — the Babel one it installs when given none, read back
  * off a throwaway instance — fronted by {@link cached}.
  *
+ * With `tsSpecifiers`, for an instance that EXECUTES what it transpiles, each
+ * result also has its relative `./x.js` imports settled on the way out (see
+ * ts-specifiers.ts). After the cache, never into it: what a specifier resolves
+ * to is a fact about the directory at the time of the load, and the cache
+ * holds only what follows from the source.
+ *
  * Empty for a jiti that no longer exposes that transform, which leaves the
  * instance exactly as it was before this module existed.
  */
 export function transpileOptions(
   create: typeof createJiti,
+  behaviour: { tsSpecifiers?: boolean } = {},
 ): Pick<JitiOptions, "fsCache" | "transform"> {
-  babel ??= create(import.meta.url, { fsCache: false, moduleCache: false }).options.transform;
-  const transform = babel;
-  if (transform === undefined) return {};
-  return { fsCache: false, transform: (options) => cached(transform, options) };
+  if (defaults === undefined) {
+    const { options } = create(import.meta.url, { fsCache: false, moduleCache: false });
+    defaults = { babel: options.transform, extensions: options.extensions };
+  }
+  const { babel, extensions } = defaults;
+  if (babel === undefined) return {};
+  if (behaviour.tsSpecifiers !== true || extensions === undefined) {
+    return { fsCache: false, transform: (options) => cached(babel, options).result };
+  }
+  return {
+    fsCache: false,
+    transform(options) {
+      const { result, imports } = cached(babel, options);
+      if (imports === undefined || imports.length === 0 || options.filename === undefined) {
+        return result;
+      }
+      const code = resolveTsSpecifiers(result.code, imports, options.filename, extensions);
+      return code === result.code ? result : { ...result, code };
+    },
+  };
 }
