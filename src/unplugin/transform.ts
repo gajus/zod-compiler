@@ -420,8 +420,17 @@ export async function transformCodeWithMap(
   // them. Conservative — anything ambiguous stays a candidate. The filter
   // transpiles + parses the file, so its outcome is worth persisting even
   // when the eventual result is null.
+  //
+  // It reads the file AS WRITTEN, not `staged.current`. The stages above only
+  // add unexported `_zh_*` declarations and swap an in-function expression for
+  // one of their names, so the exports — all the filter classifies — are the
+  // same either way. The text is not: a hoisted schema that compiled has
+  // become a whole validator, and transpiling that to reach a verdict already
+  // fixed by the original cost 7.1 ms a file against 1.4 ms, a sixth of a cold
+  // build on a project where half the zod-importing files build their schemas
+  // inside functions.
   options.onSubstantialWork?.();
-  if (!(await timePhase("static-filter", () => mayExportSchemas(staged.current, id))))
+  if (!(await timePhase("static-filter", () => mayExportSchemas(code, id))))
     return finishHoistOnly();
 
   // Discover schemas by executing the file. Module executions are cached in
