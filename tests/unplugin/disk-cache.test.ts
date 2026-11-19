@@ -255,6 +255,24 @@ describe("DiskCache — format migration and GC", () => {
     });
   });
 
+  it("leaves the transpile cache standing when it wipes its own entries", () => {
+    const dir = path.join(tmpDir, "cache");
+    fs.mkdirSync(path.join(dir, "jiti"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "deadbeef.json"), JSON.stringify({ result: "x", deps: {} }));
+    // Kept beside the entries (see transpile-cache.ts) and stamped on its own
+    // terms: a layout change here says nothing about a transpile, and the
+    // transpiles are what makes refilling the wiped entries quick.
+    const transpile = path.join(dir, "jiti", "schema.ts.0123456789abcdef.cjs");
+    fs.writeFileSync(transpile, "/* zod-compiler transpile 00 */\nexports.a = 1;");
+
+    const cache = new DiskCache(dir, "opts");
+    expect(cache.load(cache.key("/x.ts", "x"))).toBeNull();
+
+    expect(fs.existsSync(path.join(dir, "deadbeef.json"))).toBe(false);
+    expect(fs.existsSync(transpile)).toBe(true);
+    expect(fs.existsSync(path.join(dir, "deps"))).toBe(true);
+  });
+
   it("GC removes expired entries and unreferenced depsets, keeps live ones", () => {
     const dir = path.join(tmpDir, "cache");
     const dep = writeDep("dep.ts", "export const x = 1;");

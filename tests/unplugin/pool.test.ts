@@ -415,6 +415,25 @@ describe("plugin with parallel enabled", () => {
     }
   });
 
+  it("transpiles where a serial build does, under the plugin's cache root", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "zc-pool-transpile-"));
+    try {
+      const file = fixture("transpile-root", schemaSource(6));
+
+      const parallel = makePlugin(1, cacheDir);
+      const fresh = await parallel.transform(fs.readFileSync(file, "utf8"), file);
+      expect(fresh?.code).toContain("__zcMkv");
+
+      // The worker did the transpiling, with its own copy of the module that
+      // holds the directory in force. Left unconfigured it would have used the
+      // default root — the project's node_modules, whatever `cache` said.
+      const kept = fs.readdirSync(path.join(cacheDir, "jiti"));
+      expect(kept.some((name) => name.startsWith(".tmp-pool-transpile-root.ts."))).toBe(true);
+    } finally {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
   it("records the same dependency set a serial build records", async () => {
     const depsetIds = new Map<boolean | number, string>();
     for (const parallel of [false, 2] as const) {

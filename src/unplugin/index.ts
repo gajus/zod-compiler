@@ -2,6 +2,7 @@ import process from "node:process";
 import { createUnplugin, type UnpluginContextMeta } from "unplugin";
 import type { CodegenMode } from "../core/codegen/context.js";
 import { getFirstPartyModulePaths, invalidateModuleCache } from "../loader.js";
+import { useTranspileCache } from "../transpile-cache.js";
 import { collectStaticDeps, resetDepGraphMemo } from "./dep-graph.js";
 import { DiskCache, resetDepValidationMemo } from "./disk-cache.js";
 import {
@@ -93,11 +94,16 @@ export const unplugin = createUnplugin(
     // Entries self-validate against dep content hashes, so watch invalidation
     // semantics carry across processes.
     const cacheOption = options?.cache ?? true;
+    // Also the root the sources discovery transpiles are cached under (see
+    // transpile-cache.ts), so the one directory a CI cache restores holds both
+    // halves of a cold build. `null` — `cache: false` — keeps those out of the
+    // project.
+    const cacheRoot = cacheOption === false ? null : DiskCache.resolveDir(cacheOption);
     // Opt-in worker pool. Null when disabled, or when the worker entry cannot
     // be located (the plugin has been bundled into a single file by a
     // consumer) — transforms then run in-process exactly as before.
     const poolSize = resolvePoolSize(options?.parallel);
-    const pool = TransformPool.create(poolSize);
+    const pool = TransformPool.create(poolSize, cacheRoot);
     /** Dedupes the in-process-fallback warning to one per build. */
     let warnedPoolFallback = false;
     if (poolSize > 0 && pool === null) {
@@ -127,10 +133,10 @@ export const unplugin = createUnplugin(
       return [...new Set([...local, ...remote])];
     };
     const diskCache =
-      cacheOption === false
+      cacheRoot === null
         ? null
         : new DiskCache(
-            DiskCache.resolveDir(cacheOption),
+            cacheRoot,
             JSON.stringify({
               mode,
               runtimeId,
@@ -250,8 +256,12 @@ export const unplugin = createUnplugin(
           let uncacheable = false;
           let fileStats: BuildStats | null = null;
 
-          const inProcess = async (): Promise<TransformOutput | null> =>
-            transformCodeWithMap(code, id, {
+          const inProcess = async (): Promise<TransformOutput | null> => {
+            // Stated per transform rather than once: the setting is
+            // process-wide, as the loader it configures is, and another plugin
+            // instance in this process may have run since.
+            useTranspileCache(cacheRoot);
+            return transformCodeWithMap(code, id, {
               ...transformOptions,
               onDiscovery() {
                 discoveryRan = true;
@@ -266,6 +276,7 @@ export const unplugin = createUnplugin(
                 fileStats = s;
               },
             });
+          };
 
           let output: TransformOutput | null;
           if (pool === null) {

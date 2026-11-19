@@ -8,6 +8,7 @@ import {
   type TsConfigResult,
 } from "get-tsconfig";
 import type { Jiti } from "jiti";
+import { transpileOptions } from "./transpile-cache.js";
 
 type Runtime = "node" | "bun" | "deno";
 
@@ -287,6 +288,7 @@ async function getJiti(absPath: string): Promise<Jiti> {
   const { createJiti } = await import("jiti");
   const created = createJiti(pathToFileURL(absPath).href, {
     moduleCache: true,
+    ...transpileOptions(createJiti),
     ...(tsconfigPath ? { tsconfigPaths: tsconfigPath } : {}),
     jsx: true,
   });

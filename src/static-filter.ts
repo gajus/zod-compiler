@@ -10,6 +10,7 @@ import type {
 } from "acorn";
 import { parse } from "acorn";
 import type { Jiti } from "jiti";
+import { transpileOptions } from "./transpile-cache.js";
 
 /**
  * Static pre-filter: decide whether a source file could export Zod schemas
@@ -36,8 +37,14 @@ type Classification = "safe" | "candidate";
 let transformerPromise: Promise<Jiti> | undefined;
 
 function getTransformer(): Promise<Jiti> {
+  // Transpiles are kept where the loader keeps its own (see transpile-cache.ts):
+  // left to itself this instance cached under `<cwd>/node_modules/.cache/jiti`,
+  // a directory nothing sweeps and no CI cache restores.
   transformerPromise ??= import("jiti").then(({ createJiti }) =>
-    createJiti(pathToFileURL(path.resolve("__zod-compiler-static-filter__.mjs")).href),
+    createJiti(
+      pathToFileURL(path.resolve("__zod-compiler-static-filter__.mjs")).href,
+      transpileOptions(createJiti),
+    ),
   );
   return transformerPromise;
 }

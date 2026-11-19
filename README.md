@@ -424,7 +424,12 @@ expensive one. Later runs hit the persistent cache.
   with:
     path: node_modules/.cache/zod-compiler
     key: zod-compiler-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+    restore-keys: zod-compiler-${{ runner.os }}-
 ```
+
+The directory also keeps the transpiled sources discovery executes (`jiti/`). Those outlive a
+dependency bump that invalidates the transform results, hence `restore-keys`: a stale cache still
+skips the transpile, 3.5 s → 1.8 s on a 400-file project.
 
 Scope discovery with `include`; set `ZOD_COMPILER_TIMING=1` for a per-phase breakdown. Files that
 never mention `zod` cost nothing.

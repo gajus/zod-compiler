@@ -64,6 +64,7 @@ import * as fs from "node:fs";
 import { availableParallelism } from "node:os";
 import { Worker } from "node:worker_threads";
 import type { CodegenMode } from "../core/codegen/context.js";
+import { transpileCacheRoot } from "../transpile-cache.js";
 import type { HoistOptions } from "./hoist.js";
 import type { TransformSourceMap } from "./transform.js";
 import type { BuildStats, TransformOptions } from "./types.js";
@@ -300,6 +301,14 @@ interface PendingTask {
 export class TransformPool {
   private readonly size: number;
   private readonly entry: { href: string; isTypeScript: boolean };
+  /**
+   * Where workers keep the sources they transpile (see transpile-cache.ts).
+   * The setting is module state, and a worker has its own copy of the module —
+   * left unset there, a worker would cache under the default root whatever the
+   * plugin's `cache` option said, and a `cache: false` build would write into
+   * the project the moment it went parallel.
+   */
+  private readonly cacheRoot: string | null | undefined;
   private readonly workers: PoolWorker[] = [];
   private readonly queue: PendingTask[] = [];
   /** In-flight requests by seq, so a worker exit can reject exactly its own. */
@@ -314,9 +323,14 @@ export class TransformPool {
   /** Set once the breaker trips: every later run() rejects without spawning. */
   private brokenPool = false;
 
-  private constructor(size: number, entry: { href: string; isTypeScript: boolean }) {
+  private constructor(
+    size: number,
+    entry: { href: string; isTypeScript: boolean },
+    cacheRoot: string | null | undefined,
+  ) {
     this.size = size;
     this.entry = entry;
+    this.cacheRoot = cacheRoot;
   }
 
   /**
@@ -324,11 +338,14 @@ export class TransformPool {
    * unavailable in this installation (the entry could not be located). Callers
    * treat null as "run in-process".
    */
-  static create(size: number): TransformPool | null {
+  static create(
+    size: number,
+    cacheRoot: string | null | undefined = transpileCacheRoot(),
+  ): TransformPool | null {
     if (size <= 0) return null;
     const entry = resolveWorkerEntry();
     if (entry === null) return null;
-    const pool = new TransformPool(size, entry);
+    const pool = new TransformPool(size, entry, cacheRoot);
     livePools.add(pool);
     return pool;
   }
@@ -444,6 +461,7 @@ export class TransformPool {
         entry: this.entry.href,
         isTypeScript: this.entry.isTypeScript,
         jitiSpecifier: jitiSpecifier(),
+        transpileCacheRoot: this.cacheRoot,
       },
     });
     const entry: PoolWorker = { worker, busy: null };

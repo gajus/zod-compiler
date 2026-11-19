@@ -15,8 +15,9 @@
  * thread reconstructs exactly the decisions it would have made.
  */
 
-import { parentPort } from "node:worker_threads";
+import { parentPort, workerData } from "node:worker_threads";
 import { getFirstPartyModulePaths, invalidateModuleCache } from "../loader.js";
+import { useTranspileCache } from "../transpile-cache.js";
 import type { PoolRequest, PoolResponse, PoolTransformResult } from "./pool.js";
 import { transformCodeWithMap } from "./transform.js";
 import type { BuildStats } from "./types.js";
@@ -25,6 +26,10 @@ const port = parentPort;
 if (port === null) {
   throw new Error("zod-compiler pool worker was started outside a worker thread");
 }
+
+// Transpile where the bundler thread does: this thread has its own copy of the
+// module that holds the setting, and it starts out unconfigured.
+useTranspileCache((workerData as { transpileCacheRoot?: string | null }).transpileCacheRoot);
 
 /**
  * Paths already reported to the pool. The executed-module list grows into the

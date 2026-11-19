@@ -232,6 +232,13 @@ export interface ZodCompilerPluginOptions {
    * `process.env`, `Date.now()`, …) is frozen until a watched source file
    * changes. Disable the cache for such setups.
    *
+   * The same directory holds, under `jiti/`, the transpiled form of every
+   * source file discovery executes — a pure function of the file's text, so
+   * it survives what invalidates the entries above and a restored directory
+   * is still worth having after a dependency bump. `false` turns off the
+   * transform cache only: transpiles then go to a per-user directory under
+   * the OS temp dir rather than into the project.
+   *
    * Pass a string to use a custom cache directory.
    * @default true (node_modules/.cache/zod-compiler)
    */

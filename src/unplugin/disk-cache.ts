@@ -45,18 +45,21 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+// One sweep discipline for everything under the cache root: the transpile
+// cache kept beside these entries is collected on the same terms.
+import {
+  CACHE_GC_INTERVAL_MS,
+  CACHE_MAX_ENTRY_AGE_MS,
+  CACHE_MAX_TMP_AGE_MS,
+  projectCacheRoot,
+  TRANSPILE_CACHE_SUBDIRECTORY,
+} from "../transpile-cache.js";
 
 /** Bump when the on-disk layout changes; mismatched directories are wiped. */
 const CACHE_FORMAT = 2;
 const META_FILE = "_meta.json";
 const GC_MARKER = "_gc";
 const DEPSET_DIR = "deps";
-/** GC at most once per day per cache directory. */
-const GC_INTERVAL_MS = 24 * 60 * 60 * 1000;
-/** Entries unread for this long are presumed orphaned by key churn. */
-const MAX_ENTRY_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-/** Stale atomic-write temp files (crashed processes) older than this are removed. */
-const MAX_TMP_AGE_MS = 60 * 60 * 1000;
 
 export interface CacheEntryStats {
   schemas: number;
@@ -290,9 +293,7 @@ export class DiskCache {
    */
   static resolveDir(cacheOption: string | true): string {
     if (typeof cacheOption === "string") return path.resolve(cacheOption);
-    const nm = path.join(process.cwd(), "node_modules");
-    if (fs.existsSync(nm)) return path.join(nm, ".cache", "zod-compiler");
-    return path.join(process.cwd(), ".zod-compiler-cache");
+    return projectCacheRoot() ?? path.join(process.cwd(), ".zod-compiler-cache");
   }
 
   key(id: string, code: string): string {
@@ -325,7 +326,7 @@ export class DiskCache {
         // missing or unreadable marker — treat as foreign format
       }
       if (format !== CACHE_FORMAT) {
-        fs.rmSync(this.dir, { recursive: true, force: true });
+        this.wipe();
         fs.mkdirSync(path.join(this.dir, DEPSET_DIR), { recursive: true });
         fs.writeFileSync(metaPath, JSON.stringify({ format: CACHE_FORMAT }));
       } else {
@@ -338,10 +339,31 @@ export class DiskCache {
   }
 
   /**
-   * Throttled sweep: entries older than MAX_ENTRY_AGE_MS (orphaned by key
-   * churn — content/version/options keys never repeat once inputs change)
+   * Empty the directory of everything this class wrote. The transpile cache
+   * kept beside the entries (transpile-cache.ts) is left standing: its entries
+   * carry their own stamp, a layout change here says nothing about them, and
+   * they are what makes rebuilding the wiped entries a matter of seconds less.
+   */
+  private wipe(): void {
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.dir);
+    } catch {
+      // Absent, or not a directory at all.
+      fs.rmSync(this.dir, { recursive: true, force: true });
+      return;
+    }
+    for (const name of names) {
+      if (name === TRANSPILE_CACHE_SUBDIRECTORY) continue;
+      fs.rmSync(path.join(this.dir, name), { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Throttled sweep: entries older than CACHE_MAX_ENTRY_AGE_MS (orphaned by
+   * key churn — content/version/options keys never repeat once inputs change)
    * and dep-set files no surviving entry references. Runs at most once per
-   * GC_INTERVAL_MS per directory; the marker is claimed BEFORE sweeping so
+   * CACHE_GC_INTERVAL_MS per directory; the marker is claimed BEFORE sweeping so
    * concurrent processes skip. Deleting a dep-set raced by a concurrent
    * entry write only costs that entry a future miss — save() re-creates
    * absent dep-set files.
@@ -350,7 +372,7 @@ export class DiskCache {
     const marker = path.join(this.dir, GC_MARKER);
     try {
       const stat = fs.statSync(marker, { throwIfNoEntry: false });
-      if (stat !== undefined && Date.now() - stat.mtimeMs < GC_INTERVAL_MS) return;
+      if (stat !== undefined && Date.now() - stat.mtimeMs < CACHE_GC_INTERVAL_MS) return;
       fs.writeFileSync(marker, "");
 
       const now = Date.now();
@@ -359,13 +381,14 @@ export class DiskCache {
         const p = path.join(this.dir, name);
         if (name.endsWith(".tmp")) {
           const st = fs.statSync(p, { throwIfNoEntry: false });
-          if (st !== undefined && now - st.mtimeMs > MAX_TMP_AGE_MS) fs.rmSync(p, { force: true });
+          if (st !== undefined && now - st.mtimeMs > CACHE_MAX_TMP_AGE_MS)
+            fs.rmSync(p, { force: true });
           continue;
         }
         if (!name.endsWith(".json") || name === META_FILE) continue;
         try {
           const st = fs.statSync(p);
-          if (now - st.mtimeMs > MAX_ENTRY_AGE_MS) {
+          if (now - st.mtimeMs > CACHE_MAX_ENTRY_AGE_MS) {
             fs.rmSync(p, { force: true });
             continue;
           }
