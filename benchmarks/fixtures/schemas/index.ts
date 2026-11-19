@@ -1,5 +1,6 @@
 export * from "./catalog/index.js";
 export * from "./collections/index.js";
+export * from "./composed/index.js";
 export * from "./deep-nesting/index.js";
 export * from "./effects/index.js";
 export * from "./objects/index.js";
