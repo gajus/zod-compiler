@@ -579,7 +579,7 @@ describe("zod run — every route returns what zod returns", () => {
     expect(() => z.parse(compiled, { name: "A" })).toThrow(z.ZodError);
   });
 
-  it("serves zod/mini's functional API, which is the only one it has", () => {
+  it("serves zod/mini's functional API, the style its code is written in", () => {
     const make = () =>
       zm.object({ id: zm.number(), tags: zm.array(zm.object({ t: zm.string() })) });
     const plain = make();

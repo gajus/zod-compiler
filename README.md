@@ -485,10 +485,10 @@ The same applies to any [Standard Schema](https://standardschema.dev) consumer: 
 routes through the compiled validator.
 
 Zod itself never calls those methods: a parent parses its children, and the functional API
-(`z.safeParse(Schema, x)`, the only one `zod/mini` has) parses the root, through `_zod.run`. Compiled
-schemas answer there too, so `z.array(User)` built inside a function, `User.optional()` at a call site
-or a generic `Paginated(User)` validate each `User` with compiled code — ~7x on a 20-item page — and
-ask Zod only for the issues of a value that fails.
+(`z.safeParse(Schema, x)`, the style `zod/mini` code is written in) parses the root, through
+`_zod.run`. Compiled schemas answer there too, so `z.array(User)` built inside a function,
+`User.optional()` at a call site or a generic `Paginated(User)` validate each `User` with compiled
+code — ~7x on a 20-item page — and ask Zod only for the issues of a value that fails.
 
 That holds where the compiled output is exactly what Zod would have built: primitives, objects that
 strip, arrays of them. A schema that returns a container by reference (an array of primitives, a strict

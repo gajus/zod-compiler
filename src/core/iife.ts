@@ -424,8 +424,8 @@ export const ZOD_RUN_HELPER = "__zcZr";
  *
  * `__zcMkv` puts the compiled methods on the schema object, and zod never calls
  * those: a parent schema parses a child through `child._zod.run`, and the
- * functional API (`z.safeParse(schema, x)`, which is all `zod/mini` code and
- * `@hookform/resolvers` use) goes straight to the root's. So a compiled schema
+ * functional API (`z.safeParse(schema, x)`, the style `zod/mini` code is
+ * written in) goes straight to the root's. So a compiled schema
  * composed into a parent that is not itself compiled — built in a function, by
  * a generic factory, by `.optional()` at a call site — ran entirely on zod:
  * `Paginated(User)` over twenty items measured 5.7 µs against 0.83 with this in
