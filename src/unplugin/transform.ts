@@ -31,7 +31,7 @@ import { discoverSchemas } from "../discovery.js";
 import { ProcessExitDuringLoadError } from "../loader.js";
 import { mayExportSchemas } from "../static-filter.js";
 import { applyEdits, type Edit, type Insertion, moduleHeadOffset } from "./edits.js";
-import { hoistZodSchemasMeta } from "./hoist.js";
+import { analyzeZodSchemas, type ModuleScopeSchema, type SchemaAnalysis } from "./hoist.js";
 import { compileHoistedSchemas } from "./hoist-compile.js";
 import type { TransformOptions, ZodCompilerPluginOptions } from "./types.js";
 import { VIRTUAL_RUNTIME_ID } from "./virtual.js";
@@ -57,6 +57,8 @@ class StagedTransform {
   current: string;
   private readonly source: string;
   private readonly maps: unknown[] = [];
+  /** What each {@link apply} did, in order, for {@link locate}. */
+  private readonly applied: { edits: readonly Edit[]; insert: Insertion | undefined }[] = [];
 
   constructor(original: string, source: string) {
     this.current = original;
@@ -64,11 +66,35 @@ class StagedTransform {
   }
 
   apply(edits: readonly Edit[], insert?: Insertion): void {
+    this.applied.push({ edits, insert });
     this.stage(edits, (s) => {
       if (insert === undefined) return false;
       s.appendLeft(insert.offset, insert.text);
       return true;
     });
+  }
+
+  /**
+   * Where an offset into the ORIGINAL text now sits in `current`, or -1 for
+   * one that an edit has replaced.
+   *
+   * The source is analysed once, before anything is applied, and some of what
+   * that analysis finds can only be acted on in the last stage — by which time
+   * the stages before it have moved everything. Carrying the offset through
+   * their edits is exact, where searching `current` for the text again is not:
+   * the same schema may have been hoisted to the module head by then.
+   */
+  locate(offset: number): number {
+    let at = offset;
+    for (const { edits, insert } of this.applied) {
+      let shift = insert !== undefined && insert.offset <= at ? insert.text.length : 0;
+      for (const edit of edits) {
+        if (edit.end <= at) shift += edit.text.length - (edit.end - edit.start);
+        else if (edit.start <= at) return -1;
+      }
+      at += shift;
+    }
+    return at;
   }
 
   /**
@@ -253,7 +279,9 @@ export const TRANSFORM_ID_FILTER: { exclude: RegExp[]; include: RegExp[] } = {
  * 2. `schemas: "explicit"` — an import from "zod-compiler" (the package name);
  * 3. hoisting — a root imported from ZOD_MODULES or an identifier matching
  *    SCHEMA_NAME_PATTERN (both in hoist.ts; a *custom* pattern drops this
- *    filter entirely, see transformCodeFilter).
+ *    filter entirely, see transformCodeFilter). Compiling a module-scope
+ *    schema in place rides on the same scan and is narrower still: only a
+ *    chain rooted at a ZOD_MODULES binding is ever compiled that way.
  *
  * Adding a fourth trigger that can fire without a "zod" mention MUST widen
  * this pattern, or those files are silently skipped on every bundler with
@@ -323,16 +351,27 @@ export async function transformCodeWithMap(
 
   // Hoist Zod schema construction out of function bodies to module scope
   // (babel-plugin-zod-hoist equivalent). Mode-independent: inline schemas
-  // live exactly in the files that export none. hoistZodSchemasMeta() bails
+  // live exactly in the files that export none. analyzeZodSchemas() bails
   // in microseconds when no eligible imports exist.
-  let hoistedSchemas: ReturnType<typeof hoistZodSchemasMeta> = null;
-  if (options.hoist !== false && code.includes("import")) {
-    hoistedSchemas = timePhase("hoist", () =>
-      hoistZodSchemasMeta(code, {
+  //
+  // The same scan reports the schemas built AT module scope that export
+  // discovery will never see (see analyzeZodSchemas), to be compiled where
+  // they stand further down. That follows `schemas: "auto"` and not `hoist`:
+  // nothing is moved, and it is what "auto" already means for the hoisted
+  // ones — a schema with no exported name to opt in with gets compiled anyway.
+  let hoistedSchemas: SchemaAnalysis["hoist"] = null;
+  let moduleScope: ModuleScopeSchema[] = [];
+  if ((options.hoist !== false || autoDiscover) && code.includes("import")) {
+    const analysis = timePhase("hoist", () =>
+      analyzeZodSchemas(code, {
         ...(typeof options.hoist === "object" ? options.hoist : undefined),
+        hoist: options.hoist !== false,
+        moduleScope: autoDiscover,
         onScan: options.onSubstantialWork,
       }),
     );
+    hoistedSchemas = analysis.hoist;
+    moduleScope = analysis.moduleScope;
     if (hoistedSchemas !== null) {
       staged.apply(hoistedSchemas.edits, hoistedSchemas.insert);
       if (verbose) {
@@ -377,22 +416,111 @@ export async function transformCodeWithMap(
     }
   }
 
-  // When only hoisting (± hoisted-schema compilation) changed the file, that
-  // is still a transform result — with runtime helpers injected if any
-  // hoisted schema compiled.
+  // Compile the module-scope schemas the scan reported, through the same
+  // build-time evaluation and the same determinism gate as the hoisted ones
+  // (see hoist-compile.ts): an expression that reaches for anything but zod
+  // stays exactly as written. Nothing is spliced yet. Whether a private
+  // binding still wants a validator of its own depends on what discovery goes
+  // on to compile, so the edits are settled in the last stage.
+  const inPlace: { schema: ModuleScopeSchema; info: CompiledSchemaInfo | null }[] = [];
+  if (moduleScope.length > 0) {
+    const distinct = new Map<string, { name: string; text: string }>();
+    for (const { label, text } of moduleScope) {
+      distinct.set(`${label}\0${text}`, { name: label, text });
+    }
+    const compiled = await timePhase("hoist-compile", () =>
+      compileHoistedSchemas([...distinct.values()], code, id, mode, { compact: options.compact }),
+    );
+    const infos = new Map(compiled.map((c) => [`${c.name}\0${c.text}`, c.info]));
+    for (const schema of moduleScope) {
+      // `output: "bag"` leaves a bag of methods where the schema was. An
+      // argument is handed to whatever it was an argument of either way, as a
+      // hoisted one is; a binding is the file's own, and is only replaced when
+      // the file does nothing with it that a bag cannot do.
+      const bagged = options.zodCompat === false && schema.name !== undefined;
+      const info =
+        bagged && schema.contained !== true
+          ? undefined
+          : infos.get(`${schema.label}\0${schema.text}`);
+      inPlace.push({ schema, info: info ?? null });
+    }
+  }
+
+  /** Module-scope schemas that were this pass's to compile, and those it did. */
+  let inPlaceFound = 0;
+  let inPlaceCount = 0;
+
+  /**
+   * The in-place edits that stand, given the declarations discovery rewrote
+   * (`rewritten`, by exported name; `spans`, by extent in `staged.current`).
+   *
+   * A schema gets ONE validator. `const X = …; export { X }` and
+   * `export default { X }` are discovered under the binding's own name and
+   * compiled at its declaration — the very extent an in-place edit would
+   * take. `export const Alias = X` and `export const v = compile(X)` are
+   * discovered under another, and their validator is installed on the object
+   * X holds. And an argument inside a declaration that was rewritten
+   * (`export const S = lib.same(z.object(…))`, where the call hands its
+   * argument back) is that export, or a part of it.
+   */
+  const settleInPlace = (rewritten: ReadonlySet<string>, spans: readonly Edit[]): Edit[] => {
+    const edits: Edit[] = [];
+    let taken = 0;
+    for (const { schema, info } of inPlace) {
+      const start = staged.locate(schema.start);
+      const end = start + schema.text.length;
+      // The scan's offsets are trusted no further than this: the text has to
+      // be there, and (they come in source order) clear of the one before.
+      if (start < taken || staged.current.slice(start, end) !== schema.text) continue;
+      if (
+        schema.within?.some((name) => rewritten.has(name)) === true ||
+        spans.some((span) => span.start < end && start < span.end)
+      ) {
+        continue;
+      }
+      inPlaceFound++;
+      if (info === null) continue;
+      taken = end;
+      edits.push({
+        start,
+        end,
+        text: generateIIFE(schema.text, info, { zodCompat: options.zodCompat }),
+      });
+      inPlaceCount++;
+      for (const helper of info.codegenResult.usedHelpers) {
+        hoistHelpers.add(helper);
+      }
+      for (const helper of iifeHelperNames(info, { zodCompat: options.zodCompat })) {
+        hoistHelpers.add(helper);
+      }
+      if (verbose) {
+        log(`  ✓ ${schema.label} (module-scope schema compiled in place)`);
+      }
+    }
+    if (inPlaceCount > 0) {
+      if (!usesCoreErrors(hoistHelpers)) hoistHelpers.add("__zcFin");
+    }
+    return edits;
+  };
+
+  // When only hoisting and in-place compilation changed the file, that is
+  // still a transform result — with runtime helpers injected if anything
+  // compiled.
   const finishHoistOnly = (): TransformOutput | null => {
-    if (staged.current === code) return null;
-    if (hoistCompiledCount > 0) {
+    const edits = settleInPlace(new Set(), []);
+    if (staged.current === code && edits.length === 0) return null;
+    if (hoistCompiledCount + inPlaceCount > 0) {
       options.onBuildStats?.({
         files: 1,
-        schemas: hoistedSchemas?.schemas.length ?? 0,
-        optimized: hoistCompiledCount,
+        schemas: (hoistedSchemas?.schemas.length ?? 0) + inPlaceFound,
+        optimized: hoistCompiledCount + inPlaceCount,
         failed: 0,
       });
-      const prefix = computeRuntimePrefix(staged.current, hoistHelpers, mode, options.runtimeId);
-      if (prefix !== null) {
-        staged.applyThen([], () => prefix);
-      }
+      // Decided from the rewritten text, in the edits' own stage (see applyThen).
+      staged.applyThen(
+        edits,
+        (text) => computeRuntimePrefix(text, hoistHelpers, mode, options.runtimeId) ?? undefined,
+      );
     }
     return { code: staged.current, map: staged.map() };
   };
@@ -533,41 +661,14 @@ export async function transformCodeWithMap(
 
   if (compiled.length === 0) return finishHoistOnly();
 
-  // Report build stats only when at least one schema was compiled
-  // (hoisted-schema compiles count alongside export schemas).
-  options.onBuildStats?.({
-    files: 1,
-    schemas: schemas.length + (hoistedSchemas?.schemas.length ?? 0),
-    optimized: compiled.length + hoistCompiledCount,
-    failed: failedCount,
-  });
-
-  // __zcMkv wraps every IIFE. __zcFin has always been supplied alongside it
-  // whether called or not; that default is skipped when the file's validators
-  // fail with core errors (zod/mini, via __zcFinC/__zcFinDC), since a validator
-  // that does call __zcFin lists it already. Helpers used by compiled hoisted
-  // schemas ride along in the same injection.
-  const usedHelpers = aggregateUsedHelpers(compiled);
-  for (const schema of compiled) {
-    for (const helper of iifeHelperNames(schema, { zodCompat: options.zodCompat })) {
-      usedHelpers.add(helper);
-    }
-  }
-  for (const helper of hoistHelpers) {
-    usedHelpers.add(helper);
-  }
-  if (!usesCoreErrors(usedHelpers)) usedHelpers.add("__zcFin");
-  // Shared dedup validators ride the same runtime import.
-  for (const helper of shared.usedHelpers) {
-    usedHelpers.add(helper);
-  }
-
   // Two-pass rewrite: separate compile() schemas from autoDiscover schemas.
   // Both passes collect edits against the same pristine stage input — their
   // target regions are disjoint (compile() assignments vs plain exported
   // declarations of OTHER names), so one batched application is equivalent
   // to the historical sequential rewrites.
   let rewriteEdits: readonly Edit[];
+  /** Exports whose declaration was actually rewritten — not all that compiled are. */
+  const rewritten = new Set<string>();
   if (autoDiscover) {
     // Detect compile() schemas by checking source code patterns
     const compileExportNames = new Set<string>();
@@ -586,17 +687,23 @@ export async function transformCodeWithMap(
     // conditional rewriteSource call)
     if (compileSchemaInfos.length > 0) {
       edits.push(
-        ...collectCompileRewriteEdits(staged.current, compileSchemaInfos, {
-          zodCompat: options.zodCompat,
-        }),
+        ...collectCompileRewriteEdits(
+          staged.current,
+          compileSchemaInfos,
+          { zodCompat: options.zodCompat },
+          rewritten,
+        ),
       );
     }
     // Pass 2: plain exported schemas
     if (autoDiscoverSchemaInfos.length > 0) {
       edits.push(
-        ...collectAutoDiscoverEdits(staged.current, autoDiscoverSchemaInfos, {
-          zodCompat: options.zodCompat,
-        }),
+        ...collectAutoDiscoverEdits(
+          staged.current,
+          autoDiscoverSchemaInfos,
+          { zodCompat: options.zodCompat },
+          rewritten,
+        ),
       );
     }
     rewriteEdits = edits;
@@ -604,6 +711,38 @@ export async function transformCodeWithMap(
     rewriteEdits = collectCompileRewriteEdits(staged.current, compiled, {
       zodCompat: options.zodCompat,
     });
+  }
+  // The module-scope schemas discovery did not already account for, compiled
+  // in place — in this same stage: their extents and the rewrites' are disjoint.
+  const inPlaceEdits = settleInPlace(rewritten, rewriteEdits);
+
+  // Report build stats only when at least one schema was compiled
+  // (hoisted and in-place compiles count alongside export schemas).
+  options.onBuildStats?.({
+    files: 1,
+    schemas: schemas.length + (hoistedSchemas?.schemas.length ?? 0) + inPlaceFound,
+    optimized: compiled.length + hoistCompiledCount + inPlaceCount,
+    failed: failedCount,
+  });
+
+  // __zcMkv wraps every IIFE. __zcFin has always been supplied alongside it
+  // whether called or not; that default is skipped when the file's validators
+  // fail with core errors (zod/mini, via __zcFinC/__zcFinDC), since a validator
+  // that does call __zcFin lists it already. Helpers used by compiled hoisted
+  // and in-place schemas ride along in the same injection.
+  const usedHelpers = aggregateUsedHelpers(compiled);
+  for (const schema of compiled) {
+    for (const helper of iifeHelperNames(schema, { zodCompat: options.zodCompat })) {
+      usedHelpers.add(helper);
+    }
+  }
+  for (const helper of hoistHelpers) {
+    usedHelpers.add(helper);
+  }
+  if (!usesCoreErrors(usedHelpers)) usedHelpers.add("__zcFin");
+  // Shared dedup validators ride the same runtime import.
+  for (const helper of shared.usedHelpers) {
+    usedHelpers.add(helper);
   }
 
   // Head = runtime helpers/import, then the file-level shared dedup block, then
@@ -616,9 +755,9 @@ export async function transformCodeWithMap(
   // Deferred into the rewrite's own stage rather than staged after it: both
   // decisions read the REWRITTEN text, and giving a bare prepend its own stage
   // doubled the sourcemap work and added a composition pass (see applyThen).
-  staged.applyThen(rewriteEdits, (rewritten) => {
-    const prefix = computeRuntimePrefix(rewritten, usedHelpers, mode, options.runtimeId);
-    const needsShared = shared.code !== "" && !rewritten.includes(SHARED_BLOCK_MARKER);
+  staged.applyThen([...rewriteEdits, ...inPlaceEdits], (text) => {
+    const prefix = computeRuntimePrefix(text, usedHelpers, mode, options.runtimeId);
+    const needsShared = shared.code !== "" && !text.includes(SHARED_BLOCK_MARKER);
     const head = (prefix ?? "") + (needsShared ? `${shared.code}\n` : "");
     return head === "" ? undefined : head;
   });
@@ -746,6 +885,7 @@ function collectCompileRewriteEdits(
   code: string,
   schemas: CompiledSchemaInfo[],
   options?: { zodCompat?: boolean | undefined },
+  rewritten?: Set<string>,
 ): Edit[] {
   const edits: Edit[] = [];
   for (const schema of schemas) {
@@ -771,6 +911,7 @@ function collectCompileRewriteEdits(
       end: closeParenIndex + 1,
       text: prefix + generateIIFE(schemaArgName, schema, options),
     });
+    rewritten?.add(schema.exportName);
   }
   edits.push(...collectRemoveCompileImportEdits(code));
   return edits;
@@ -818,11 +959,15 @@ function mentionsIdentifier(expr: string, name: string): boolean {
   return new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(expr);
 }
 
-/** Edits for rewriteSourceAutoDiscover, collected against pristine `code`. */
+/**
+ * Edits for rewriteSourceAutoDiscover, collected against pristine `code`.
+ * `rewritten` receives the name of each export an edit was made for.
+ */
 function collectAutoDiscoverEdits(
   code: string,
   schemas: CompiledSchemaInfo[],
   options?: { zodCompat?: boolean | undefined },
+  rewritten?: Set<string>,
 ): Edit[] {
   const edits: Edit[] = [];
   for (const schema of schemas) {
@@ -879,6 +1024,7 @@ function collectAutoDiscoverEdits(
         end: rhsEnd,
         text: `${originalExpr};\n${generateIIFE(schema.exportName, schema, { ...options, pure: false })};`,
       });
+      rewritten?.add(schema.exportName);
       continue;
     }
 
@@ -887,6 +1033,7 @@ function collectAutoDiscoverEdits(
       end: rhsEnd,
       text: generateIIFE(originalExpr, schema, options),
     });
+    rewritten?.add(schema.exportName);
   }
   return edits;
 }

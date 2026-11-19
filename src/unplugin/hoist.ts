@@ -50,6 +50,11 @@ import { applyEdits, type Edit, type Insertion, moduleHeadOffset } from "./edits
  * parseExpressionAt (the same technique as the autoDiscover rewrite).
  * Anything unparseable (TS generics, `as` casts) is skipped: a miss leaves
  * the schema unhoisted, never breaks the code.
+ *
+ * The same scan also finds the schemas that need no hoisting and that export
+ * discovery cannot see — built at module scope, in an argument or a private
+ * binding — so the transform can compile them where they stand. See
+ * analyzeZodSchemas.
  */
 
 /**
@@ -176,6 +181,60 @@ interface Candidate {
    * depth 0 (`const make = () => z.object(...)`) it re-evaluates per call.
    */
   afterArrow: boolean;
+  /**
+   * Where the top-level statement the candidate belongs to starts. At depth 0
+   * the text from here to the candidate is what the chain initializes —
+   * `export const X = `, `const X = `, or nothing — which is all that
+   * {@link collectModuleScope} needs to tell an export from a private binding
+   * without parsing either.
+   */
+  statement: number;
+  /**
+   * An `=>` came earlier in that statement, so a depth-0 candidate may be
+   * further into a concise arrow body than {@link afterArrow} can see
+   * (`() => cond && z.object(…)`).
+   */
+  arrowBody: boolean;
+}
+
+/** Keywords that only ever begin a statement. */
+const STATEMENT_KEYWORDS = new Set([
+  "export",
+  "const",
+  "let",
+  "var",
+  "function",
+  "class",
+  "if",
+  "for",
+  "while",
+  "switch",
+  "try",
+  "do",
+]);
+
+/** Tokens a statement keyword follows without beginning a new statement. */
+const STATEMENT_MODIFIERS = new Set(["export", "default", "async", "declare", "abstract"]);
+
+/** Is there a line break in the whitespace directly before `index`? */
+function followsLineBreak(code: string, index: number): boolean {
+  for (let i = index - 1; i >= 0 && isSpaceCode(code.charCodeAt(i)); i--) {
+    if (code.charCodeAt(i) === 10) return true;
+  }
+  return false;
+}
+
+/**
+ * Does the word at `index`, read at depth 0 after `lastToken`, begin a new
+ * top-level statement? A statement keyword does; so does anything on a new
+ * line after a token that can end an expression — the automatic-semicolon
+ * rule, near enough, for sources that leave semicolons out.
+ */
+function beginsStatement(code: string, index: number, word: string, lastToken: string): boolean {
+  if (STATEMENT_KEYWORDS.has(word)) {
+    return lastToken !== "." && !STATEMENT_MODIFIERS.has(lastToken);
+  }
+  return isDivisionContext(lastToken) && followsLineBreak(code, index);
 }
 
 /**
@@ -258,6 +317,10 @@ function scanSource(code: string, roots: Set<string>): ScanResult {
   // resumes string state.
   const templateStack: number[] = [];
   let lastToken = "";
+  // The top-level statement being scanned: where it began, and whether an
+  // `=>` has appeared in it at depth 0.
+  let statementStart = 0;
+  let statementArrow = false;
   let i = 0;
 
   while (i < code.length) {
@@ -341,8 +404,19 @@ function scanSource(code: string, roots: Set<string>): ScanResult {
       // Skip whitespace to check for the member access
       let k = j;
       while (k < code.length && isSpaceCode(code.charCodeAt(k))) k++;
+      if (depth === 0 && beginsStatement(code, i, word, lastToken)) {
+        statementStart = i;
+        statementArrow = false;
+      }
       if (roots.has(word) && code[k] === "." && lastToken !== ".") {
-        candidates.push({ index: i, depth, name: word, afterArrow: lastToken === "=>" });
+        candidates.push({
+          index: i,
+          depth,
+          name: word,
+          afterArrow: lastToken === "=>",
+          statement: statementStart,
+          arrowBody: statementArrow,
+        });
       }
       lastToken = word;
       i = j;
@@ -351,6 +425,14 @@ function scanSource(code: string, roots: Set<string>): ScanResult {
 
     if (!isSpaceCode(code.charCodeAt(i))) {
       lastToken = ch === ">" && lastToken === "=" ? "=>" : ch;
+      if (depth === 0) {
+        if (ch === ";") {
+          statementStart = i + 1;
+          statementArrow = false;
+        } else if (lastToken === "=>") {
+          statementArrow = true;
+        }
+      }
     }
     i++;
   }
@@ -1068,6 +1150,526 @@ function collectBoundNames(code: string): Set<string> {
   return bound;
 }
 
+/** Heads of statements whose parentheses hold a condition, not arguments. */
+const CONTROL_KEYWORDS = new Set(["if", "for", "while", "switch", "catch", "with"]);
+
+/** Words after which a `{` opens an object literal rather than a block. */
+const LITERAL_BRACE_KEYWORDS = new Set([
+  "return",
+  "typeof",
+  "void",
+  "yield",
+  "await",
+  "in",
+  "of",
+  "new",
+  "default",
+  "case",
+  "throw",
+]);
+
+/** Does a `{` after `lastToken` open an object literal, as opposed to a body or a block? */
+function opensObjectLiteral(lastToken: string): boolean {
+  if (lastToken === "" || lastToken === "=>") return false;
+  if (/^[\w$]+$/.test(lastToken)) return LITERAL_BRACE_KEYWORDS.has(lastToken);
+  // After an operator or an opening bracket a value is due. After `)` it is
+  // a function body or a controlled block; after `}` or `;`, a block.
+  return !/^[)\]};"'`]$/.test(lastToken);
+}
+
+/**
+ * A token a return type can end on, so that a `{` after it is the body: a
+ * name, the close of a generic, an array, an object type or a parenthesized
+ * one, a literal. (After `:`, `|`, `<` and the like the type is still going.)
+ */
+const ENDS_TYPE = /^(?:[\w$]+|[>\]})"'`])$/;
+
+/** What the scanner knows about one open bracket. */
+interface Frame {
+  /** Offset of the opening bracket. */
+  open: number;
+  /**
+   * Its contents run exactly when the code around it does: call arguments, a
+   * grouping, an array or object literal. False for a function or class body,
+   * a controlled block, a parameter list.
+   */
+  inline: boolean;
+  /** An `=>` at this level: what follows, to the next comma, is an arrow body. */
+  arrow: boolean;
+  /** The `(` of a call that builds a schema, whose arguments are that schema's parts. */
+  building: boolean;
+  /**
+   * …except that it is one of zod's own parse functions (`z.safeParse(Body,
+   * value)`, the form `zod/mini` is written in): what it is given is a schema
+   * to validate with, not a part of one.
+   */
+  validating: boolean;
+  /** The member chain in progress where this bracket opened, resumed when it closes. */
+  root: string | null;
+  first: string | null;
+}
+
+/** One mention, in code, of a name the scan was asked to watch. */
+interface Reference {
+  name: string;
+  /**
+   * What the mention does with the schema the name is bound to:
+   *
+   * - `validated`: validates with it (`Body.safeParse(…)`) — the one thing a
+   *   compiled validator makes faster, and the one thing a bag of methods does
+   *   as well as the schema;
+   * - `passed`: hands the schema itself on — an argument, a return value, an
+   *   export, an alias. Whoever receives it may validate with it;
+   * - `schema`: needs it AS a schema and gains nothing from a validator —
+   *   another schema is built from it (`Base.extend(…)`, a member of a
+   *   `z.object`), or something else is read off it (`.shape`, `.decode(…)`);
+   * - `none`: not a use — its declaration, a type query, a key of that name.
+   */
+  kind: "none" | "passed" | "schema" | "validated";
+  /**
+   * For `passed`: the module-scope declaration whose initializer the mention
+   * sits in (`validateUser` for `const validateUser = compile(User)`), which
+   * may therefore BE this schema under another name.
+   */
+  within?: string;
+}
+
+interface InteriorScan {
+  /**
+   * Zod-rooted chains that sit where module-scope code runs exactly once and
+   * are not part of a larger schema, in source order (offsets of the root).
+   */
+  schemas: number[];
+  references: Reference[];
+}
+
+/**
+ * Scan `code[from, to)` for zod-rooted chains, this time knowing what each
+ * bracket IS.
+ *
+ * {@link scanSource} counts depth, which is all hoisting needs: anything below
+ * depth 0 is taken to be inside a function. That is the wrong question here.
+ * `t.procedure.input(z.object({…}))` at module scope puts its schema at depth 1
+ * and still evaluates it once, while the body of the callback two arguments
+ * later runs per request. So each bracket is classified as it opens — call
+ * arguments and literals pass the evaluation of their surroundings through,
+ * function bodies and parameter lists do not — and an `=>` turns the rest of
+ * its level into a body.
+ *
+ * The classification is lexical, so it can be wrong, and it is built to be
+ * wrong in one direction: a doubt makes a position "not module scope", which
+ * leaves the schema as it was written. The other direction would still be
+ * correct — compiling in place never moves an expression — just pointless,
+ * rebuilding a validator on every call.
+ *
+ * `builds(root, first)` says whether a call on the chain `root.first…(` builds
+ * a schema; `watch` names bindings whose uses are reported.
+ */
+function scanInterior(
+  code: string,
+  from: number,
+  to: number,
+  zod: ReadonlySet<string>,
+  builds: (root: string, first: string | null) => boolean,
+  watch?: ReadonlySet<string>,
+): InteriorScan {
+  const found: number[] = [];
+  const references: Reference[] = [];
+  const frames: Frame[] = [];
+  const templateStack: number[] = [];
+  // [open, close) of bracket pairs that turned out to be parameter lists or
+  // statement heads — known only once what follows the `)` has been seen.
+  const heads: number[] = [];
+  let lastToken = "";
+  // The member chain in progress at the current level.
+  let root: string | null = null;
+  let first: string | null = null;
+  // An `=>` at the outermost level of the range.
+  let outerArrow = false;
+  // The `(` of a pair that has just closed and may yet turn out to have held
+  // parameters. Only what follows says: an `=>`, a body, or a return type and
+  // then one of those. `typed` is that return type under way — a `:` followed
+  // the `)` — and `angle` how deep in its `<…>` the scan is.
+  let pending = -1;
+  let pendingDepth = -1;
+  let typed = false;
+  let angle = 0;
+  let functionHead = false;
+  let statementStart = from;
+  let i = from;
+
+  const forget = (): void => {
+    pending = -1;
+    typed = false;
+    angle = 0;
+  };
+  /** The pending parentheses were a parameter list (or a statement's head), which ends at `at`. */
+  const settle = (at: number): void => {
+    heads.push(pending, at);
+    forget();
+  };
+
+  while (i < to) {
+    const ch = code[i] as string;
+    const next = code[i + 1];
+
+    if (ch === "/" && next === "/") {
+      const nl = code.indexOf("\n", i);
+      i = nl === -1 ? to : nl + 1;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      const close = code.indexOf("*/", i + 2);
+      i = close === -1 ? to : close + 2;
+      continue;
+    }
+    if (ch === "/") {
+      if (!isDivisionContext(lastToken)) {
+        i = skipRegexLiteral(code, i);
+        lastToken = ")"; // a regex literal is an operand
+      } else {
+        lastToken = ch;
+        i++;
+      }
+      root = null;
+      forget();
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      i = skipString(code, i, ch);
+      lastToken = ch;
+      root = null;
+      // (A string can be a type: `(kind): "a" | "b" => …`.)
+      if (!typed) forget();
+      continue;
+    }
+    if (ch === "`") {
+      i = skipTemplateChunk(code, i + 1, templateStack, frames.length);
+      lastToken = templateChunkToken(code, i);
+      root = null;
+      forget();
+      continue;
+    }
+    if (
+      templateStack.length > 0 &&
+      ch === "}" &&
+      frames.length === templateStack[templateStack.length - 1]
+    ) {
+      templateStack.pop();
+      i = skipTemplateChunk(code, i + 1, templateStack, frames.length);
+      lastToken = templateChunkToken(code, i);
+      root = null;
+      forget();
+      continue;
+    }
+
+    if (ch === "(" || ch === "[" || ch === "{") {
+      let inline = true;
+      let building = false;
+      // After a parameter list, or after the return type that follows one, a
+      // brace opens a body. (Directly after the `:` it is still the type.)
+      const body =
+        ch === "{" &&
+        pending !== -1 &&
+        frames.length === pendingDepth &&
+        (lastToken === ")" || (typed && ENDS_TYPE.test(lastToken)));
+      if (body) settle(i);
+      else if (!typed) forget();
+      let validating = false;
+      if (ch === "(") {
+        inline = !functionHead && !CONTROL_KEYWORDS.has(lastToken);
+        functionHead = false;
+        building = root !== null && builds(root, first);
+        validating = building && zod.has(root as string) && PARSE_METHODS.has(first ?? "");
+      } else if (ch === "{") {
+        inline = !body && opensObjectLiteral(lastToken);
+      }
+      frames.push({ open: i, inline, arrow: false, building, validating, root, first });
+      root = null;
+      first = null;
+      lastToken = ch;
+      i++;
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      const frame = frames.pop();
+      // A chain goes on after a call or an index (`a.b(c).d`), not after a block.
+      root = frame !== undefined && ch !== "}" ? frame.root : null;
+      first = frame !== undefined && ch !== "}" ? frame.first : null;
+      // A pair that closes inside a return type is part of the type; one that
+      // closes around the pending pair ends it.
+      const inType = typed && pending !== -1 && frames.length >= pendingDepth;
+      if (!inType) {
+        forget();
+        if (ch === ")" && frame !== undefined) {
+          pending = frame.open;
+          pendingDepth = frames.length;
+        }
+      }
+      lastToken = ch;
+      i++;
+      continue;
+    }
+
+    if (isIdentStartCode(code.charCodeAt(i)) && !isIdentPartCode(code.charCodeAt(i - 1))) {
+      let j = i + 1;
+      while (j < to && isIdentPartCode(code.charCodeAt(j))) j++;
+      const word = code.slice(i, j);
+      let k = j;
+      while (k < to && isSpaceCode(code.charCodeAt(k))) k++;
+
+      if (frames.length === 0 && beginsStatement(code, i, word, lastToken)) {
+        statementStart = i;
+        outerArrow = false;
+        forget();
+      }
+      // Between a parameter list and its arrow or body there are words only
+      // in a return type (`(a): Promise<T> => …`).
+      if (!typed) forget();
+      if (lastToken === ".") {
+        if (root !== null && first === null) first = word;
+        // A property that happens to share the name: seen, and not a use.
+        if (watch?.has(word)) references.push({ name: word, kind: "none" });
+      } else {
+        if (word === "function") functionHead = true;
+        // (`new z.ZodString(…)` is not a chain: an arrow cannot be constructed.)
+        if (zod.has(word) && code[k] === "." && lastToken !== "new") {
+          // In place means evaluated once, so: every enclosing bracket passes
+          // evaluation through, none of them is the argument list of a call
+          // that is itself building a schema, and no arrow stands in between.
+          let once = !outerArrow;
+          for (const frame of frames) {
+            if (!frame.inline || frame.arrow || frame.building) once = false;
+          }
+          if (once) found.push(i);
+        }
+        if (watch?.has(word)) {
+          references.push(classifyReference(code, word, i, k, lastToken, frames, statementStart));
+        }
+        root = word;
+        first = null;
+      }
+      lastToken = word;
+      i = j;
+      continue;
+    }
+
+    if (isSpaceCode(code.charCodeAt(i))) {
+      i++;
+      continue;
+    }
+
+    if (ch === "=" && next === ">") {
+      // What the parentheses before an arrow held were its parameters.
+      if (pending !== -1 && frames.length === pendingDepth && (typed || lastToken === ")")) {
+        settle(i);
+      } else if (!typed) {
+        forget();
+      }
+      const frame = frames[frames.length - 1];
+      if (frame === undefined) outerArrow = true;
+      else frame.arrow = true;
+      root = null;
+      lastToken = "=>";
+      i += 2;
+      continue;
+    }
+    if (ch === "." && next === "." && code[i + 2] === ".") {
+      // A spread: what follows is an expression of its own, not a member.
+      if (!typed) forget();
+      root = null;
+      lastToken = "...";
+      i += 3;
+      continue;
+    }
+    if (ch === "." || (ch === "?" && next === "." && !/[0-9]/.test(code[i + 2] ?? ""))) {
+      if (!typed) forget();
+      lastToken = ".";
+      i += ch === "." ? 1 : 2;
+      continue;
+    }
+    if (ch === ",") {
+      const frame = frames[frames.length - 1];
+      if (frame === undefined) outerArrow = false;
+      else frame.arrow = false;
+    } else if (ch === ";" && frames.length === 0) {
+      statementStart = i + 1;
+      outerArrow = false;
+    }
+    if (typed) {
+      // Still a return type? Its own punctuation says yes; an operator, the
+      // end of a statement, or a comma outside its `<…>` says this was a
+      // conditional's `:` all along.
+      if (ch === "<") angle++;
+      else if (ch === ">") angle = Math.max(0, angle - 1);
+      else if (ch === ";" || (ch === "," && angle === 0) || /[=+\-*%!^~]/.test(ch)) forget();
+    } else if (
+      ch === ":" &&
+      pending !== -1 &&
+      lastToken === ")" &&
+      frames.length === pendingDepth
+    ) {
+      typed = true;
+    } else {
+      forget();
+    }
+    root = null;
+    lastToken = ch;
+    i++;
+  }
+
+  // A schema inside what turned out to be a parameter list or a statement
+  // head is a default value or a condition, not a module-scope expression.
+  const schemas = found.filter((index) => {
+    for (let h = 0; h < heads.length; h += 2) {
+      if (index > (heads[h] as number) && index < (heads[h + 1] as number)) return false;
+    }
+    return true;
+  });
+  return { schemas, references };
+}
+
+/**
+ * The members a compiled validator answers itself — everything `__zcMkv`
+ * installs that is called by name. A bag (`output: "bag"`) has these and no
+ * others.
+ */
+const VALIDATOR_METHODS = new Set(["parse", "safeParse", "parseAsync", "safeParseAsync", "is"]);
+
+/** A statement that declares a binding and has reached its initializer. */
+const DECLARATION = /^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*)?=/;
+
+/** Words after which a name is being declared or queried for its type, not used. */
+const NON_USE_PRECEDING = new Set([
+  "const",
+  "let",
+  "var",
+  "function",
+  "class",
+  "typeof",
+  "type",
+  "interface",
+  "enum",
+  "namespace",
+]);
+
+/**
+ * What a mention of a watched binding is to that binding. `at` is where the
+ * identifier starts and `after` the offset of the token that follows it.
+ */
+function classifyReference(
+  code: string,
+  name: string,
+  at: number,
+  after: number,
+  lastToken: string,
+  frames: readonly Frame[],
+  statementStart: number,
+): Reference {
+  // Its own declaration, a type query (`z.infer<typeof X>`), a type of the
+  // same name: none of them uses the schema.
+  if (NON_USE_PRECEDING.has(lastToken)) return { name, kind: "none" };
+  // An object literal's key.
+  if (code[after] === ":" && (lastToken === "{" || lastToken === ","))
+    return { name, kind: "none" };
+
+  if (code[after] === "." || (code[after] === "?" && code[after + 1] === ".")) {
+    const member = /^\??\.\s*([A-Za-z_$][\w$]*)/.exec(code.slice(after, after + 80));
+    // `X.parse(…)` is the same call wherever it is written; any other member
+    // is read off the schema, and most of them derive a new one from it.
+    return {
+      name,
+      kind: member !== null && VALIDATOR_METHODS.has(member[1] as string) ? "validated" : "schema",
+    };
+  }
+  // Handed to a call that is building a schema: a part of that schema. The
+  // nearest such call decides — `z.safeParse(Body, value)` validates with it.
+  for (let f = frames.length - 1; f >= 0; f--) {
+    const frame = frames[f] as Frame;
+    if (!frame.building) continue;
+    if (frame.validating) break;
+    return { name, kind: "schema" };
+  }
+  const declared = DECLARATION.exec(code.slice(statementStart, at));
+  if (declared !== null && declared[1] !== name) {
+    return { name, kind: "passed", within: declared[1] as string };
+  }
+  return { name, kind: "passed" };
+}
+
+/** A schema construction at module scope that can be compiled where it stands. */
+export interface ModuleScopeSchema {
+  /** Extent of the construction in the analysed source. */
+  start: number;
+  end: number;
+  /** Its source text. */
+  text: string;
+  /** An identifier to name the validator's functions after: the binding, or a hash of the text. */
+  label: string;
+  /** For the initializer of `const <name> = …`: the binding. Absent for an argument. */
+  name?: string;
+  /**
+   * For a binding: the module-scope declarations that take the schema itself
+   * into their initializer (`export const Alias = name`, `const v =
+   * compile(name)`). Any of them may be the same object under another name —
+   * and if discovery compiles that one, this one is compiled already.
+   */
+  within?: string[];
+  /**
+   * For a binding: nothing in the file does anything with it but validate.
+   * Every mention of the name — counted in the raw text, so including the ones
+   * a lexical scan cannot read, in a comment or a string or JSX — is its
+   * declaration, a type query or a call of one of {@link VALIDATOR_METHODS}.
+   * Only then can a bag of methods stand where the schema stood.
+   */
+  contained?: boolean;
+}
+
+/**
+ * What may follow a construction that is the whole of an initializer: the end
+ * of the declarator or the line, a comment, or a TypeScript assertion.
+ */
+const ENDS_INITIALIZER = /^\s*(?:[;,\n]|$|\/\/|(?:as|satisfies)\b)/;
+
+/** `const Name = ` and nothing else, up to the end of the text. Not exported. */
+const PRIVATE_CONST = /^const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*)?=\s*$/;
+
+/** Every `const Name = Root.` in the text, wherever it is. */
+const CONST_CHAIN = /\bconst\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]*)?=\s*([A-Za-z_$][\w$]*)\s*\./g;
+
+/** How many times `name` is written in `code` as a whole word, wherever that is. */
+function countMentions(code: string, name: string): number {
+  const word = new RegExp(`(?<![\\w$])${name.replace(/\$/g, "\\$")}(?![\\w$])`, "g");
+  let count = 0;
+  while (word.exec(code) !== null) count++;
+  return count;
+}
+
+/**
+ * Names bound by `const` to a chain that starts at a zod binding, or at
+ * another such name. A superset — the pattern is matched against the raw text,
+ * strings and nested scopes included — which is the safe direction for what it
+ * decides: a name wrongly counted makes a call on it a schema-building one,
+ * whose arguments are then left alone.
+ */
+function schemaConstants(code: string, zod: ReadonlySet<string>): Set<string> {
+  const pairs: [name: string, root: string][] = [];
+  for (const match of code.matchAll(CONST_CHAIN)) {
+    pairs.push([match[1] as string, match[2] as string]);
+  }
+  const names = new Set<string>();
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [name, root] of pairs) {
+      if (!names.has(name) && (zod.has(root) || names.has(root))) {
+        names.add(name);
+        grew = true;
+      }
+    }
+  }
+  return names;
+}
+
 export interface HoistOptions {
   /**
    * Imported identifiers matching this pattern are treated as schema chain
@@ -1084,6 +1686,21 @@ export interface HoistOptions {
    * "nothing to hoist" costs a full scan per zod-importing file per run.
    */
   onScan?: (() => void) | undefined;
+}
+
+/** What {@link analyzeZodSchemas} is asked to find. */
+export interface AnalyzeOptions extends HoistOptions {
+  /**
+   * Collect schemas built inside functions, to be moved to module scope.
+   * @default true
+   */
+  hoist?: boolean | undefined;
+  /**
+   * Also report the schemas built AT module scope that no export scan will
+   * ever see (see {@link ModuleScopeSchema}), to be compiled where they stand.
+   * @default false
+   */
+  moduleScope?: boolean | undefined;
 }
 
 /**
@@ -1126,6 +1743,14 @@ export interface HoistResult {
   insert: Insertion;
 }
 
+/** One scan's findings: what to move, and what to compile without moving. */
+export interface SchemaAnalysis {
+  /** The hoist, or null when nothing was (or was to be) hoisted. */
+  hoist: HoistResult | null;
+  /** Module-scope schemas that can be compiled in place, in source order. */
+  moduleScope: ModuleScopeSchema[];
+}
+
 /**
  * Hoist eligible Zod schema expressions to module scope.
  * Returns the rewritten source, or null when nothing was hoisted.
@@ -1139,14 +1764,54 @@ export function hoistZodSchemas(code: string, options?: HoistOptions): string | 
  * transform can compile the hoisted schemas into optimized validators.
  */
 export function hoistZodSchemasMeta(code: string, options?: HoistOptions): HoistResult | null {
+  return analyzeZodSchemas(code, options).hoist;
+}
+
+/**
+ * The one scan behind both things done to schemas that are not exports:
+ * hoisting the ones built inside functions, and — with `moduleScope` — finding
+ * the ones built at module scope where nothing will find them.
+ *
+ * Those are the schemas export discovery cannot reach, and until this they ran
+ * as plain Zod however many requests went through them: the argument of
+ * `t.procedure.input(…)` or `zValidator("json", …)`, and the private
+ * `const Body = z.object(…)` a handler parses with. They are not hoisted,
+ * because there is nowhere better to put them — they are evaluated once
+ * already. They are reported so the transform can compile each IN PLACE, the
+ * expression replaced by a validator wrapped around that same expression:
+ * nothing moves, so evaluation order, scoping and the identity of the schema
+ * object are what they were.
+ *
+ * Two kinds are reported and no others:
+ *
+ * - a zod-rooted expression among the ARGUMENTS of a module-scope chain that
+ *   is not itself a schema (`t.router({ a: t.procedure.input(HERE) })`). Only
+ *   the outermost one: what is inside it is part of it.
+ * - the initializer of a private `const` that something USES — parses with,
+ *   passes on, exports under another name. One that only other schemas are
+ *   built from (`Base.extend(…)`, a member of a `z.object`) is left plain: the
+ *   schema built from it validates the whole thing, and a validator of its own
+ *   would be bytes and module-init work for nothing.
+ *
+ * Deciding which is which costs no parse. A depth-0 chain is already measured
+ * by {@link findChainEnd} to mask it, and the text between the start of its
+ * statement and its root says whether it initializes an export, a private
+ * binding or nothing; acorn only sees the handful that survive, as it does for
+ * hoists. (Parsing every top-level declaration is what this file once did, and
+ * it was most of a cold build's hoist time.)
+ */
+export function analyzeZodSchemas(code: string, options?: AnalyzeOptions): SchemaAnalysis {
+  const nothing: SchemaAnalysis = { hoist: null, moduleScope: [] };
   // Idempotency: a file carrying hoisted declarations IS this pass's output.
   // Plain hoists are naturally inert on re-runs (depth-0 masking), but a
   // compiled hoisted decl embeds its original z.* expression inside the IIFE
   // (depth > 0) — re-hoisting it would emit a duplicate _zh_ declaration.
-  if (/\bconst _zh_[0-9a-f]{8} = /.test(code)) return null;
+  if (/\bconst _zh_[0-9a-f]{8} = /.test(code)) return nothing;
 
   const imports = collectImportBindings(code);
-  if (imports.all.size === 0) return null;
+  if (imports.all.size === 0) return nothing;
+  const wantHoist = options?.hoist !== false;
+  const wantModuleScope = options?.moduleScope === true;
 
   const rawPattern = options?.schemaNamePattern;
   const namePattern =
@@ -1169,11 +1834,11 @@ export function hoistZodSchemasMeta(code: string, options?: HoistOptions): Hoist
   if (imports.zod.size > 0) {
     for (const name of imports.all) roots.add(name);
   }
-  if (roots.size === 0) return null;
+  if (roots.size === 0) return nothing;
 
   options?.onScan?.();
   const { candidates, stripped } = scanSource(code, roots);
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) return nothing;
 
   let boundNames: Set<string> | undefined;
   function isShadowed(name: string): boolean {
@@ -1189,6 +1854,84 @@ export function hoistZodSchemasMeta(code: string, options?: HoistOptions): Hoist
   const hoists: Hoist[] = [];
   const declByText = new Map<string, string>();
   let consumedUntil = 0;
+
+  const moduleScope: ModuleScopeSchema[] = [];
+  /** Private `const` schemas at module scope, to be kept or dropped by how they are used. */
+  const bindings: { name: string; index: number }[] = [];
+  let constants: Set<string> | undefined;
+
+  /**
+   * Does a call on the chain `root.first…(` build a schema? Then what it is
+   * given are parts of that schema, not schemas to compile on their own.
+   */
+  const builds = (root: string, first: string | null): boolean => {
+    if (imports.zod.has(root)) return true;
+    constants ??= schemaConstants(code, imports.zod);
+    // A schema held in a module binding: `Base.extend(…)` builds, `Base.parse(…)` uses.
+    if (constants.has(root)) return first !== null && !PARSE_METHODS.has(first) && first !== "is";
+    if (!imports.all.has(root)) return false;
+    // The rule hoisting applies to imported bases: named like a schema, or
+    // derived from with a combinator.
+    return namePattern?.test(root) === true || (first !== null && COMBINATOR_METHODS.has(first));
+  };
+
+  /**
+   * The schema construction rooted at `index`, or null when what is there is
+   * not one that can be compiled where it stands.
+   */
+  const constructionAt = (index: number): ModuleScopeSchema | null => {
+    let parsed: Expression;
+    try {
+      parsed = parseAssignmentAt(code, index);
+    } catch {
+      // TypeScript inside the expression (a generic call, a cast): left as written.
+      return null;
+    }
+    const chain = narrowToCallChain(parsed, index);
+    if (chain === null) return null;
+    // The chain has to be the whole value. acorn stops where the JavaScript it
+    // can read stops, so `z.string().transform<number>(…)` narrows to its
+    // `z.string()`, and `z.object(…).shape` to its `z.object(…)`: a validator
+    // there would be for a schema nothing validates with.
+    if (/^\s*(?:\?\.|[.(<[`])/.test(code.slice(chain.end, chain.end + 40))) return null;
+    const described = describeChain(chain);
+    // `z.object(…).parse(x)` builds a schema, uses it once and drops it.
+    if (described === null || described.methods.some((m) => PARSE_METHODS.has(m))) return null;
+    // `this`, `super`, an eager `await`: not something to evaluate at build time.
+    if (analyzeCaptures(chain).impure) return null;
+    const text = code.slice(index, chain.end);
+    return { start: index, end: chain.end, text, label: `_zi_${fnv1a(text)}` };
+  };
+
+  /** Look at a statement-level chain for the schemas discovery will not find in it. */
+  const collectModuleScope = (candidate: Candidate, end: number): void => {
+    if (imports.zod.has(candidate.name)) {
+      // A schema at statement level. An exported one is discovery's; a private
+      // binding it never sees. Nothing else here is a schema to keep.
+      const declared = PRIVATE_CONST.exec(code.slice(candidate.statement, candidate.index));
+      if (declared !== null) bindings.push({ name: declared[1] as string, index: candidate.index });
+      return;
+    }
+    const member = /^[\w$]+\s*\??\.\s*([A-Za-z_$][\w$]*)/.exec(
+      code.slice(candidate.index, candidate.index + 120),
+    );
+    // A schema derived from an imported one (`Base.extend(…)`): what it is
+    // given are its parts, and if it is exported, discovery has all of it.
+    if (builds(candidate.name, member === null ? null : (member[1] as string))) return;
+    // Anything else — a router, a route table, a tagged query — is not a
+    // schema, and the schemas among its arguments are whole ones.
+    // The scan reports outermost schemas only, so no two of these overlap.
+    // `masked` holds that to be true whatever the scan does: overlapping edits
+    // are not something to find out about from the bundler.
+    let masked = candidate.index;
+    for (const index of scanInterior(code, candidate.index, end, imports.zod, builds).schemas) {
+      if (index < masked) continue;
+      const schema = constructionAt(index);
+      if (schema === null) continue;
+      moduleScope.push(schema);
+      masked = schema.end;
+    }
+  };
 
   for (const candidate of candidates) {
     if (candidate.index < consumedUntil) continue;
@@ -1210,8 +1953,12 @@ export function hoistZodSchemasMeta(code: string, options?: HoistOptions): Hoist
     //   `z.object({...})` of `sql.type(z.object({...}))` hoists on its own.
     if (candidate.depth === 0 && !candidate.afterArrow) {
       consumedUntil = findChainEnd(code, candidate.index);
+      // Once per module load is what makes compiling in place worth it; a
+      // chain further into a concise arrow body is evaluated per call.
+      if (wantModuleScope && !candidate.arrowBody) collectModuleScope(candidate, consumedUntil);
       continue;
     }
+    if (!wantHoist) continue;
 
     let parsed: Expression;
     try {
@@ -1321,7 +2068,39 @@ export function hoistZodSchemasMeta(code: string, options?: HoistOptions): Hoist
     consumedUntil = Math.max(consumedUntil, chain.end);
   }
 
-  if (hoists.length === 0) return null;
+  if (bindings.length > 0) {
+    // A private binding earns a validator by being used, and whether it is
+    // takes every mention of it in the file — the handler that parses with it
+    // may come before the declaration or a thousand lines after.
+    const watch = new Set(bindings.map((binding) => binding.name));
+    const { references } = scanInterior(code, 0, code.length, imports.zod, builds, watch);
+    for (const { name, index } of bindings) {
+      const mentions = references.filter((reference) => reference.name === name);
+      // Built upon and never validated with or handed on: the schemas built
+      // from it are the ones that validate, and they contain it.
+      if (!mentions.some((m) => m.kind === "validated" || m.kind === "passed")) continue;
+      const schema = constructionAt(index);
+      // An initializer has to BE the construction: `z.string() ?? fallback`
+      // binds something that may not be the schema.
+      if (schema === null || !ENDS_INITIALIZER.test(code.slice(schema.end, schema.end + 40))) {
+        continue;
+      }
+      moduleScope.push({
+        ...schema,
+        // (The generated function is named after it, and a `$` is one
+        // character more than that name's reader allows.)
+        label: /^\w+$/.test(name) ? name : schema.label,
+        name,
+        within: [...new Set(mentions.flatMap((m) => (m.within === undefined ? [] : [m.within])))],
+        contained:
+          mentions.every((m) => m.kind === "none" || m.kind === "validated") &&
+          mentions.length === countMentions(code, name),
+      });
+    }
+    moduleScope.sort((a, b) => a.start - b.start);
+  }
+
+  if (hoists.length === 0) return { hoist: null, moduleScope };
 
   const decls = [...declByText.entries()]
     .map(([text, name]) => `const ${name} = ${text};`)
@@ -1332,9 +2111,12 @@ export function hoistZodSchemasMeta(code: string, options?: HoistOptions): Hoist
   const edits: Edit[] = hoists.map((h) => ({ start: h.start, end: h.end, text: h.name }));
   const insert: Insertion = { offset: moduleHeadOffset(code), text: `${decls}\n` };
   return {
-    code: applyEdits(code, edits, insert),
-    schemas: [...declByText.entries()].map(([text, name]) => ({ name, text })),
-    edits,
-    insert,
+    hoist: {
+      code: applyEdits(code, edits, insert),
+      schemas: [...declByText.entries()].map(([text, name]) => ({ name, text })),
+      edits,
+      insert,
+    },
+    moduleScope,
   };
 }

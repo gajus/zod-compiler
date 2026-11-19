@@ -199,18 +199,18 @@ neither; see [React Native / Expo](#react-native--expo).
 
 ### Options
 
-| Option        | Type                             | Default         | Description                                                                                                 |
-| ------------- | -------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------- |
-| `schemas`     | `"auto" \| "explicit"`           | `"auto"`        | `"auto"` compiles every exported schema (and hoisted in-function ones); `"explicit"` only `compile()` calls |
-| `include`     | `string[]`                       | —               | Only process files matching these path globs                                                                |
-| `exclude`     | `string[]`                       | —               | Skip files matching these path globs                                                                        |
-| `output`      | `"schema" \| "bag" \| "compact"` | `"schema"`      | What a compiled export evaluates to; see [Compact Output](#compact-output-output-compact)                   |
-| `verbose`     | `boolean`                        | `false`         | Log per-schema compilation status                                                                           |
-| `hoist`       | `boolean`                        | `true`          | Move schemas built inside functions to module scope; see [Schema Hoisting](#schema-hoisting)                |
-| `apply`       | `"build" \| "serve" \| "all"`    | builds + Vitest | **Vite only**: when the plugin runs                                                                         |
-| `codegenMode` | `"lean" \| "inline"`             | auto            | `"inline"` emits helpers per file; needed for transpile-only esbuild (see [SWC](#swc))                      |
-| `cache`       | `boolean \| string`              | `true`          | Persistent transform cache in `node_modules/.cache/zod-compiler`                                            |
-| `parallel`    | `boolean \| number`              | `false`         | Run transforms on worker threads; see [Parallel Transforms](#parallel-transforms)                           |
+| Option        | Type                             | Default         | Description                                                                                                                       |
+| ------------- | -------------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `schemas`     | `"auto" \| "explicit"`           | `"auto"`        | `"auto"` compiles every exported schema (and the [unexported ones](#schema-hoisting) it can); `"explicit"` only `compile()` calls |
+| `include`     | `string[]`                       | —               | Only process files matching these path globs                                                                                      |
+| `exclude`     | `string[]`                       | —               | Skip files matching these path globs                                                                                              |
+| `output`      | `"schema" \| "bag" \| "compact"` | `"schema"`      | What a compiled export evaluates to; see [Compact Output](#compact-output-output-compact)                                         |
+| `verbose`     | `boolean`                        | `false`         | Log per-schema compilation status                                                                                                 |
+| `hoist`       | `boolean`                        | `true`          | Move schemas built inside functions to module scope; see [Schema Hoisting](#schema-hoisting)                                      |
+| `apply`       | `"build" \| "serve" \| "all"`    | builds + Vitest | **Vite only**: when the plugin runs                                                                                               |
+| `codegenMode` | `"lean" \| "inline"`             | auto            | `"inline"` emits helpers per file; needed for transpile-only esbuild (see [SWC](#swc))                                            |
+| `cache`       | `boolean \| string`              | `true`          | Persistent transform cache in `node_modules/.cache/zod-compiler`                                                                  |
+| `parallel`    | `boolean \| number`              | `false`         | Run transforms on worker threads; see [Parallel Transforms](#parallel-transforms)                                                 |
 
 ```typescript
 zodCompiler({
@@ -254,11 +254,14 @@ Schemas built inside functions are rebuilt on every call. With `hoist` (on by de
 module scope:
 
 ```typescript
-// before                                  // after
+// before
 function getSchema() {
-  const _zh_94b7 = z.object({ name: z.string() });
   return z.object({ name: z.string() });
-  function getSchema() {}
+}
+
+// after
+const _zh_94b7 = z.object({ name: z.string() });
+function getSchema() {
   return _zh_94b7;
 }
 ```
@@ -269,6 +272,14 @@ Only expressions built from imported bindings and literals move; anything touchi
 
 In auto mode hoisted schemas also **compile**, rescuing schemas that never leave a function (a slonik
 query, a tRPC input) and are therefore invisible to export scanning: ~16,700 ns → ~14 ns per call.
+
+So do schemas that are already at module scope but are not exports, **where they stand**: an argument
+of a chain that is not itself a schema (`publicProcedure.input(z.object(…))`,
+`zValidator("json", z.object(…))`) and a private `const Body = z.object(…)` the file validates with or
+passes on: a handler parsing with one went from 548 ns to 34 ns. Nothing moves, so this follows
+`schemas: "auto"` rather than `hoist`. The same rule applies as for hoisting: only expressions built
+from zod's own bindings compile (`z.object({ user: UserSchema })` stays plain Zod), and a private
+schema that other schemas are merely built from is left alone.
 
 ### Bundle Size & Cross-File Dedup
 

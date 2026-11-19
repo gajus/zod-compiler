@@ -76,8 +76,17 @@ export interface ZodCompilerPluginOptions {
    *   with a runtime `import ... from "zod"`, statically pre-filters ones
    *   whose exports provably aren't schemas, and executes the remaining
    *   candidates to check exports for `_zod.def`. Also enables build-time
-   *   compilation of hoisted in-function schemas (anonymous schemas like
-   *   `sql.type(z.object(...))` — there is no exported name to opt in with).
+   *   compilation of the schemas that are NOT exports, for which there is no
+   *   name to opt in with: the ones hoisted out of functions (anonymous
+   *   schemas like `sql.type(z.object(...))`), and the ones already at module
+   *   scope that no export reaches — the argument of
+   *   `publicProcedure.input(z.object(...))`, a private
+   *   `const Body = z.object(...)` that something validates with or passes
+   *   on. Those are compiled where they stand: the expression is evaluated
+   *   where it was written and yields the same schema object, so `hoist` has
+   *   no say in it. All of these compile only when built from zod's own
+   *   bindings (`z.object({ user: UserSchema })` stays plain Zod), and a
+   *   private schema that other schemas are merely built from is left alone.
    * - `"explicit"`: only schemas wrapped in `compile()` from zod-compiler
    *   are compiled; build-time file execution is limited to files that
    *   import it. Hoisting still applies, but hoisted schemas stay plain Zod.
@@ -102,7 +111,11 @@ export interface ZodCompilerPluginOptions {
    *   @hono/zod-validator and tRPC keep working.
    * - `"bag"`: a minimal plain object with just the compiled methods —
    *   smaller bundles (the Zod construction can tree-shake away), but
-   *   anything expecting a real Zod schema breaks.
+   *   anything expecting a real Zod schema breaks. That goes for every
+   *   compiled schema an export or a call hands on. A private module-scope
+   *   `const` is the exception: it becomes a bag only when the file does
+   *   nothing with it but validate (`Body.parse(…)`, `.safeParse(…)`,
+   *   `.is(…)`), and stays a schema otherwise.
    * - `"compact"`: like `"schema"` (Zod identity preserved, full API), but only
    *   the fast validation path is compiled. The cold error path is delegated to
    *   the retained Zod schema's own `safeParse`, dropping the compiled slow walk
