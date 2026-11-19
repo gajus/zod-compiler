@@ -440,7 +440,7 @@ expensive one. Later runs hit the persistent cache.
 
 The directory also keeps the transpiled sources discovery executes (`jiti/`). Those outlive a
 dependency bump that invalidates the transform results, hence `restore-keys`: a stale cache still
-skips the transpile, 3.5 s → 1.8 s on a 400-file project.
+skips the transpile, 4.2 s → 1.3 s on a 400-file project.
 
 Scope discovery with `include`; set `ZOD_COMPILER_TIMING=1` for a per-phase breakdown. Files that
 never mention `zod` cost nothing.
@@ -499,7 +499,7 @@ Zod itself never calls those methods: a parent parses its children, and the func
 (`z.safeParse(Schema, x)`, the style `zod/mini` code is written in) parses the root, through
 `_zod.run`. Compiled schemas answer there too, so `z.array(User)` built inside a function,
 `User.optional()` at a call site or a generic `Paginated(User)` validate each `User` with compiled
-code — ~7x on a 20-item page — and ask Zod only for the issues of a value that fails.
+code — ~6x on a 20-item page — and ask Zod only for the issues of a value that fails.
 
 That holds where the compiled output is exactly what Zod would have built: primitives, objects that
 strip, arrays of them. A schema that returns a container by reference (an array of primitives, a strict
@@ -628,8 +628,8 @@ Schema-level `error` and `z.config()` maps are unaffected; for a per-call map us
 | medium object (valid)                           | 1.9M   | 2.3M   | **9.8M**         | 11.1M | 7.6M  | 4.2x      |
 | medium object (extra keys stripped)             | 1.8M   | 2.1M   | **9.7M**         | —     | —     | 4.6x      |
 | medium object (invalid)                         | 517K   | 364K   | **15.9M**        | 2.8M  | 7.5M  | **44x**   |
-| large object (10 items)                         | 120K   | 175K   | **5.3M**         | 6.0M  | 1.2M  | **30x**   |
-| large object (100 items)                        | 13K    | 18K    | **764K**         | 1.3M  | 124K  | **43x**   |
+| large object (10 items)                         | 118K   | 161K   | **6.1M**         | 6.3M  | 1.3M  | **38x**   |
+| large object (100 items)                        | 13K    | 17K    | **950K**         | 1.2M  | 133K  | **56x**   |
 | readonly field (wrapper compiles away)          | 3.1M   | 6.6M   | **17.8M**        | —     | —     | 2.7x      |
 | readonly root object (rebuild + freeze)         | 2.9M   | 5.6M   | **13.5M**        | —     | —     | 2.4x      |
 | readonly array (copy + freeze)                  | 4.0M   | 4.2M   | **12.9M**        | —     | —     | 3.1x      |
@@ -639,9 +639,11 @@ Schema-level `error` and `z.config()` maps are unaffected; for a per-call map us
 | nested recursion (121 nodes)                    | 24K    | 42K    | **816K**         | 1.6M  | 205K  | **20x**   |
 | deeply nested object (243 leaves)               | 11K    | 28K    | **845K**         | 1.0M  | 125K  | **30x**   |
 | event log (combined)                            | 375K   | 808K   | **7.6M**         | —     | —     | 9.4x      |
-| catalog product with image URLs (valid)         | 432K   | 467K   | **2.1M**         | —     | —     | 4.6x      |
-| catalog product with image URLs (invalid)       | 114K   | 106K   | **14.8M**        | —     | —     | **140x**  |
-| catalog page (20 products)                      | 21K    | 23K    | **122K**         | —     | —     | 5.2x      |
+| catalog product with image URLs (valid)         | 444K   | 485K   | **4.6M**         | —     | —     | 9.5x      |
+| catalog product with image URLs (invalid)       | 196K   | 176K   | **14.9M**        | —     | —     | **85x**   |
+| catalog page (20 products)                      | 22K    | 24K    | **308K**         | —     | —     | **13x**   |
+| page of compiled items, page not compiled (20)  | —      | 163K   | **1.0M**         | —     | —     | 6.2x      |
+| functional API: `z.safeParse(Schema, x)`        | —      | 2.6M   | **7.6M**         | —     | —     | 2.9x      |
 | object with transform (zero-capture)            | 1.1M   | 1.9M   | **7.6M**         | —     | —     | 4.0x      |
 | array 10 × transform (zero-capture)             | 123K   | 209K   | **4.3M**         | —     | —     | **21x**   |
 | array 50 × transform (zero-capture)             | 26K    | 41K    | **1.0M**         | —     | —     | **25x**   |
