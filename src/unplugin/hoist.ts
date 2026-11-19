@@ -304,7 +304,7 @@ function scanSource(code: string, roots: Set<string>): ScanResult {
       const end = skipTemplateChunk(code, i + 1, templateStack, depth);
       mask(i, end);
       i = end;
-      lastToken = "`";
+      lastToken = templateChunkToken(code, end);
       continue;
     }
     if (
@@ -317,7 +317,7 @@ function scanSource(code: string, roots: Set<string>): ScanResult {
       const end = skipTemplateChunk(code, i + 1, templateStack, depth);
       mask(i, end);
       i = end;
-      lastToken = "`";
+      lastToken = templateChunkToken(code, end);
       continue;
     }
 
@@ -403,6 +403,23 @@ function skipTemplateChunk(
     }
   }
   return code.length;
+}
+
+/**
+ * The token a template chunk that ended at `end` leaves the scanner on.
+ *
+ * A chunk ends at the closing backtick or at a `${`, and what a `/` means
+ * next depends on which. After the literal it divides. After `${` an
+ * expression begins, so it opens a regex — and reading that one as a division
+ * loses the scanner its place for the rest of the file: `${/[/]/.test(v)}`
+ * came out as a division, an array holding a regex, and one closing brace too
+ * few, after which the literal's own closing backtick OPENED a template. From
+ * there code was read as text and text as code, and a later literal whose
+ * text happened to read like a schema (`` `z.string() is how …` ``) had that
+ * text hoisted out of it.
+ */
+function templateChunkToken(code: string, end: number): string {
+  return code[end - 1] === "{" && code[end - 2] === "$" ? "${" : "`";
 }
 
 function skipRegexLiteral(code: string, start: number): number {
@@ -493,7 +510,7 @@ function findChainEnd(code: string, identStart: number): number {
       }
       if (ch === "`") {
         i = skipTemplateChunk(code, i + 1, templateStack, depth);
-        lastToken = "`";
+        lastToken = templateChunkToken(code, i);
         if (depth === 0 && templateStack.length === 0) return;
         continue;
       }
@@ -504,7 +521,7 @@ function findChainEnd(code: string, identStart: number): number {
       ) {
         templateStack.pop();
         i = skipTemplateChunk(code, i + 1, templateStack, depth);
-        lastToken = "`";
+        lastToken = templateChunkToken(code, i);
         if (depth === 0 && templateStack.length === 0) return;
         continue;
       }
