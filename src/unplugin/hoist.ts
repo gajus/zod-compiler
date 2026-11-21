@@ -663,6 +663,12 @@ function findChainEnd(code: string, identStart: number): number {
  * throws on the surrounding `)`; assignment level treats the comma as
  * trailing garbage and stops cleanly. parseMaybeAssign is the entry point
  * the acorn plugin ecosystem overrides — stable across versions.
+ *
+ * The parse runs over a slice starting at `pos`, and its nodes are moved back
+ * to `code`'s offsets afterwards. Handed a start position instead, acorn's
+ * constructor counts the lines before it by splitting everything up to there,
+ * and a raised error counts them again. One parse per schema of a large file
+ * made the scan quadratic in the file's length.
  */
 function parseAssignmentAt(code: string, pos: number): Expression {
   interface ParserInternals {
@@ -672,10 +678,36 @@ function parseAssignmentAt(code: string, pos: number): Expression {
   const parser = new (Parser as unknown as new (
     options: Options,
     input: string,
-    startPos?: number,
-  ) => ParserInternals)({ ecmaVersion: "latest", sourceType: "module" }, code, pos);
+  ) => ParserInternals)(
+    { ecmaVersion: "latest", sourceType: "module" },
+    pos === 0 ? code : code.slice(pos),
+  );
   parser.nextToken();
-  return parser.parseMaybeAssign();
+  const parsed = parser.parseMaybeAssign();
+  if (pos !== 0) shiftNodes(parsed, pos);
+  return parsed;
+}
+
+/** Move every node of an acorn tree `delta` characters on. */
+function shiftNodes(root: AnyNode, delta: number): void {
+  const seen = new Set<object>();
+  const pending: unknown[] = [root];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value !== "object" || value === null || seen.has(value)) continue;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      pending.push(...(value as unknown[]));
+      continue;
+    }
+    // A node is what has a `type` and a position. A regex literal's `value`
+    // and `regex`, or a template element's `value`, are plain data.
+    const node = value as { type?: unknown; start?: unknown; end?: unknown };
+    if (typeof node.type !== "string" || typeof node.start !== "number") continue;
+    (node as AnyNode).start += delta;
+    (node as AnyNode).end += delta;
+    pending.push(...Object.values(node));
+  }
 }
 
 /**
@@ -1637,12 +1669,17 @@ const PRIVATE_CONST = /^const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*)?=\s*$/;
 /** Every `const Name = Root.` in the text, wherever it is. */
 const CONST_CHAIN = /\bconst\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]*)?=\s*([A-Za-z_$][\w$]*)\s*\./g;
 
-/** How many times `name` is written in `code` as a whole word, wherever that is. */
-function countMentions(code: string, name: string): number {
-  const word = new RegExp(`(?<![\\w$])${name.replace(/\$/g, "\\$")}(?![\\w$])`, "g");
-  let count = 0;
-  while (word.exec(code) !== null) count++;
-  return count;
+/** How many times each of `names` is written in `code` as a whole word, wherever that is. */
+function countMentions(code: string, names: ReadonlySet<string>): Map<string, number> {
+  // Each of `names` is `[A-Za-z_$][\w$]*`, so a mention — the name with no
+  // `[\w$]` on either side — is a maximal run of those characters equal to
+  // it. One pass counts them all; a pattern per name, each run over the whole
+  // file, was quadratic in the private schemas a file declares.
+  const counts = new Map<string, number>();
+  for (const [word] of code.matchAll(/[\w$]+/g)) {
+    if (names.has(word)) counts.set(word, (counts.get(word) ?? 0) + 1);
+  }
+  return counts;
 }
 
 /**
@@ -2074,8 +2111,17 @@ export function analyzeZodSchemas(code: string, options?: AnalyzeOptions): Schem
     // may come before the declaration or a thousand lines after.
     const watch = new Set(bindings.map((binding) => binding.name));
     const { references } = scanInterior(code, 0, code.length, imports.zod, builds, watch);
+    // Grouped once: filtering every reference for each binding was quadratic
+    // in the private schemas a file declares.
+    const referencesOf = new Map<string, Reference[]>();
+    for (const reference of references) {
+      const group = referencesOf.get(reference.name);
+      if (group === undefined) referencesOf.set(reference.name, [reference]);
+      else group.push(reference);
+    }
+    let written: Map<string, number> | undefined;
     for (const { name, index } of bindings) {
-      const mentions = references.filter((reference) => reference.name === name);
+      const mentions = referencesOf.get(name) ?? [];
       // Built upon and never validated with or handed on: the schemas built
       // from it are the ones that validate, and they contain it.
       if (!mentions.some((m) => m.kind === "validated" || m.kind === "passed")) continue;
@@ -2094,7 +2140,7 @@ export function analyzeZodSchemas(code: string, options?: AnalyzeOptions): Schem
         within: [...new Set(mentions.flatMap((m) => (m.within === undefined ? [] : [m.within])))],
         contained:
           mentions.every((m) => m.kind === "none" || m.kind === "validated") &&
-          mentions.length === countMentions(code, name),
+          mentions.length === ((written ??= countMentions(code, watch)).get(name) ?? 0),
       });
     }
     moduleScope.sort((a, b) => a.start - b.start);

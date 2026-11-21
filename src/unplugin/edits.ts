@@ -71,28 +71,86 @@ export function moduleHeadOffset(code: string): number {
 }
 
 /**
- * Apply non-overlapping edits (any order) and an optional insertion to a
- * string. Mirrors MagicString.overwrite + appendLeft semantics: an insertion
- * at an edit boundary lands before the edit's replacement.
+ * A batch of non-overlapping edits in position order, for asking where an
+ * offset falls among them without walking them all. Disjoint edits sorted by
+ * start are sorted by end as well, which is what makes each question a binary
+ * search.
  */
-export function applyEdits(code: string, edits: readonly Edit[], insert?: Insertion): string {
-  const ops: Array<Edit | (Insertion & { insertion: true })> = [...edits];
-  if (insert) ops.push({ ...insert, insertion: true });
-  ops.sort((a, b) => {
-    const aStart = "insertion" in a ? a.offset : a.start;
-    const bStart = "insertion" in b ? b.offset : b.start;
-    if (aStart !== bStart) return bStart - aStart;
-    // Same position: apply the insertion last so it ends up BEFORE the
-    // replacement text in the output (appendLeft semantics).
-    return "insertion" in a ? -1 : 1;
-  });
-  let result = code;
-  for (const op of ops) {
-    if ("insertion" in op) {
-      result = result.slice(0, op.offset) + op.text + result.slice(op.offset);
-    } else {
-      result = result.slice(0, op.start) + op.text + result.slice(op.end);
+export class EditIndex {
+  private readonly starts: number[];
+  private readonly ends: number[];
+  /** `sums[i]`: how much longer the first `i` edits make the text. */
+  private readonly sums: number[];
+
+  constructor(edits: readonly Edit[]) {
+    const sorted = [...edits].sort((a, b) => a.start - b.start || a.end - b.end);
+    this.starts = sorted.map((edit) => edit.start);
+    this.ends = sorted.map((edit) => edit.end);
+    this.sums = [0];
+    for (const edit of sorted) {
+      this.sums.push((this.sums.at(-1) as number) + edit.text.length - (edit.end - edit.start));
     }
   }
-  return result;
+
+  /** How many of the edits end at or before `offset`. */
+  endingBy(offset: number): number {
+    let low = 0;
+    let high = this.ends.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if ((this.ends[mid] as number) <= offset) low = mid + 1;
+      else high = mid;
+    }
+    return low;
+  }
+
+  /** Whether the edit at `position` in this order exists and starts at or before `offset`. */
+  startsBy(position: number, offset: number): boolean {
+    return position < this.starts.length && (this.starts[position] as number) <= offset;
+  }
+
+  /** How much longer the first `count` edits make the text. */
+  added(count: number): number {
+    return this.sums[count] as number;
+  }
+
+  /** Whether any of the edits overlaps `[start, end)`. */
+  overlaps(start: number, end: number): boolean {
+    const next = this.endingBy(start);
+    return next < this.starts.length && (this.starts[next] as number) < end;
+  }
+}
+
+/**
+ * Apply non-overlapping edits (any order) and an optional insertion to a
+ * string, exactly as a pipeline stage does to its MagicString: each edit an
+ * `overwrite` (an `appendLeft` when it is zero-width), then the insertion an
+ * `appendLeft`. So an insertion at a replacement's start lands before the
+ * replacement, and one where zero-width edits are lands after their text.
+ */
+export function applyEdits(code: string, edits: readonly Edit[], insert?: Insertion): string {
+  // Assembled front to back from slices of `code`. Splicing each edit into
+  // the result of the last one re-copied the whole text per edit, which was
+  // quadratic in the edits a large file gets.
+  const parts: string[] = [];
+  let at = 0;
+  let pending = insert;
+  for (const edit of [...edits].sort((a, b) => a.start - b.start || a.end - b.end)) {
+    if (
+      pending !== undefined &&
+      (pending.offset < edit.start || (pending.offset === edit.start && edit.end > edit.start))
+    ) {
+      parts.push(code.slice(at, pending.offset), pending.text);
+      at = pending.offset;
+      pending = undefined;
+    }
+    parts.push(code.slice(at, edit.start), edit.text);
+    at = edit.end;
+  }
+  if (pending !== undefined) {
+    parts.push(code.slice(at, pending.offset), pending.text);
+    at = pending.offset;
+  }
+  parts.push(code.slice(at));
+  return parts.join("");
 }

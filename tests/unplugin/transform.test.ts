@@ -828,6 +828,14 @@ describe("findExpressionEnd()", () => {
     const end = findExpressionEnd(code, 10);
     expect(end).toBe(-1);
   });
+
+  it("answers in the file's offsets for an expression deep into it", () => {
+    const code = `${"// line\n".repeat(500)}const x = z.object({\n  a: z.string(),\n}), y = 1;`;
+    const start = code.indexOf("z.object");
+    expect(code.slice(start, findExpressionEnd(code, start))).toBe(
+      "z.object({\n  a: z.string(),\n}), y = 1",
+    );
+  });
 });
 
 describe("rewriteSourceAutoDiscover()", () => {
@@ -881,6 +889,39 @@ describe("rewriteSourceAutoDiscover()", () => {
 
     expect(result).toContain("safeParse_A");
     expect(result).toContain("safeParse_B");
+  });
+
+  it("finds each export's own declaration where one name begins another", () => {
+    const code = [
+      `import { z } from "zod";`,
+      `export const Model10 = z.number();`,
+      `export const Model1Schema = z.boolean();`,
+      `export const Model1 = z.string();`,
+    ].join("\n");
+    const schemas = ["Model1", "Model10", "Model1Schema"].map((name) =>
+      makeCompiledInfo(name, z.string()),
+    );
+    const result = rewriteSourceAutoDiscover(code, schemas);
+
+    expect(result).toContain("__zcMkv(safeParse_Model1,z.string()");
+    expect(result).toContain("__zcMkv(safeParse_Model10,z.number()");
+    expect(result).toContain("__zcMkv(safeParse_Model1Schema,z.boolean()");
+  });
+
+  it("finds declarations by let and var, past ones that bind no export", () => {
+    const code = [
+      `import { z } from "zod";`,
+      `let cache: Map<string, unknown>;`,
+      `export let Mutable = z.string();`,
+      `const helper = 1, other = 2;`,
+      `export var Legacy: z.ZodNumber = z.number();`,
+    ].join("\n");
+    const schemas = ["Mutable", "Legacy"].map((name) => makeCompiledInfo(name, z.string()));
+    const result = rewriteSourceAutoDiscover(code, schemas);
+
+    expect(result).toContain("__zcMkv(safeParse_Mutable,z.string()");
+    expect(result).toContain("__zcMkv(safeParse_Legacy,z.number()");
+    expect(result).toContain("let cache: Map<string, unknown>;");
   });
 
   it("handles schema with type annotation", () => {

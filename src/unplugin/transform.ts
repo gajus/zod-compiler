@@ -30,7 +30,7 @@ import type { DiscoveredSchema } from "../core/types.js";
 import { discoverSchemas } from "../discovery.js";
 import { ProcessExitDuringLoadError } from "../loader.js";
 import { mayExportSchemas } from "../static-filter.js";
-import { applyEdits, type Edit, type Insertion, moduleHeadOffset } from "./edits.js";
+import { applyEdits, type Edit, EditIndex, type Insertion, moduleHeadOffset } from "./edits.js";
 import { analyzeZodSchemas, type ModuleScopeSchema, type SchemaAnalysis } from "./hoist.js";
 import { compileHoistedSchemas } from "./hoist-compile.js";
 import type { TransformOptions, ZodCompilerPluginOptions } from "./types.js";
@@ -58,7 +58,12 @@ class StagedTransform {
   private readonly source: string;
   private readonly maps: unknown[] = [];
   /** What each {@link apply} did, in order, for {@link locate}. */
-  private readonly applied: { edits: readonly Edit[]; insert: Insertion | undefined }[] = [];
+  private readonly applied: {
+    edits: readonly Edit[];
+    insert: Insertion | undefined;
+    /** `edits` in position order, built by the first {@link locate}. */
+    byPosition?: EditIndex;
+  }[] = [];
 
   constructor(original: string, source: string) {
     this.current = original;
@@ -86,13 +91,17 @@ class StagedTransform {
    */
   locate(offset: number): number {
     let at = offset;
-    for (const { edits, insert } of this.applied) {
-      let shift = insert !== undefined && insert.offset <= at ? insert.text.length : 0;
-      for (const edit of edits) {
-        if (edit.end <= at) shift += edit.text.length - (edit.end - edit.start);
-        else if (edit.start <= at) return -1;
-      }
-      at += shift;
+    for (const stage of this.applied) {
+      const index = (stage.byPosition ??= new EditIndex(stage.edits));
+      // The edits wholly before `at`, and the one after them, which is the
+      // only one that can contain it. Looked up rather than walked: this runs
+      // once per module-scope schema, against every edit of every stage.
+      const before = index.endingBy(at);
+      if (index.startsBy(before, at)) return -1;
+      const { insert } = stage;
+      at +=
+        (insert !== undefined && insert.offset <= at ? insert.text.length : 0) +
+        index.added(before);
     }
     return at;
   }
@@ -395,10 +404,16 @@ export async function transformCodeWithMap(
       }),
     );
     const spliceEdits: Edit[] = [];
+    // The declarations sit at the module head in the order they were compiled
+    // in, so each is looked for after the last. Searching from the top for
+    // every one was quadratic in the number of them.
+    let after = 0;
     for (const h of hoistCompiled) {
       const decl = `const ${h.name} = ${h.text};`;
-      const at = staged.current.indexOf(decl);
+      let at = staged.current.indexOf(decl, after);
+      if (at === -1) at = staged.current.indexOf(decl);
       if (at === -1) continue;
+      after = at + decl.length;
       const iife = generateIIFE(h.text, h.info, { zodCompat: options.zodCompat });
       spliceEdits.push({ start: at, end: at + decl.length, text: `const ${h.name} = ${iife};` });
       hoistCompiledCount++;
@@ -470,6 +485,7 @@ export async function transformCodeWithMap(
    */
   const settleInPlace = (rewritten: ReadonlySet<string>, spans: readonly Edit[]): Edit[] => {
     const edits: Edit[] = [];
+    const rewrites = new EditIndex(spans);
     let taken = 0;
     for (const { schema, info } of inPlace) {
       const start = staged.locate(schema.start);
@@ -479,7 +495,7 @@ export async function transformCodeWithMap(
       if (start < taken || staged.current.slice(start, end) !== schema.text) continue;
       if (
         schema.within?.some((name) => rewritten.has(name)) === true ||
-        spans.some((span) => span.start < end && start < span.end)
+        rewrites.overlaps(start, end)
       ) {
         continue;
       }
@@ -677,13 +693,10 @@ export async function transformCodeWithMap(
   const rewritten = new Set<string>();
   if (autoDiscover) {
     // Detect compile() schemas by checking source code patterns
-    const compileExportNames = new Set<string>();
-    for (const s of compiled) {
-      const pattern = new RegExp(`\\b${s.exportName}\\s*=\\s*compile[\\s<(]`);
-      if (pattern.test(staged.current)) {
-        compileExportNames.add(s.exportName);
-      }
-    }
+    const compileExportNames = compileAssignedNames(
+      staged.current,
+      compiled.map((s) => s.exportName),
+    );
     const compileSchemaInfos = compiled.filter((s) => compileExportNames.has(s.exportName));
     const autoDiscoverSchemaInfos = compiled.filter((s) => !compileExportNames.has(s.exportName));
 
@@ -929,11 +942,15 @@ function collectCompileRewriteEdits(
  */
 export function findExpressionEnd(code: string, start: number): number {
   try {
-    const node = parseExpressionAt(code, start, {
+    // Parsed from a slice rather than at an offset into `code`: handed a start
+    // position, acorn's constructor counts the lines before it by splitting
+    // everything up to there, so a file of declarations parsed one by one was
+    // quadratic in its length.
+    const node = parseExpressionAt(code.slice(start), 0, {
       ecmaVersion: "latest",
       sourceType: "module",
     });
-    return node.end;
+    return start + node.end;
   } catch {
     return -1;
   }
@@ -966,6 +983,63 @@ function mentionsIdentifier(expr: string, name: string): boolean {
 }
 
 /**
+ * Which of `names` are assigned a `compile(…)` call in `code`: those for which
+ * `\b<name>\s*=\s*compile[\s<(]` matches.
+ *
+ * The assignments are found once, and the word in front of each is read off.
+ * Building that pattern per name and running it over the whole file was
+ * quadratic in the schemas a file exports, most of which have no `compile(` to
+ * find. A name with a character outside `\w` still gets the pattern itself, as
+ * it always has (where a `$` in it is an anchor, so it never matched).
+ */
+function compileAssignedNames(code: string, names: readonly string[]): Set<string> {
+  const assigned = new Set<string>();
+  for (const site of code.matchAll(/=\s*compile[\s<(]/g)) {
+    let end = site.index;
+    while (end > 0 && /\s/.test(code[end - 1] as string)) end--;
+    let start = end;
+    while (start > 0 && /\w/.test(code[start - 1] as string)) start--;
+    assigned.add(code.slice(start, end));
+  }
+  const found = new Set<string>();
+  if (assigned.size === 0) return found;
+  for (const name of names) {
+    const matches = /^\w+$/.test(name)
+      ? assigned.has(name)
+      : new RegExp(`\\b${name}\\s*=\\s*compile[\\s<(]`).test(code);
+    if (matches) found.add(name);
+  }
+  return found;
+}
+
+/**
+ * Where the initializer of each of `names` starts in `code`: just past the `=`
+ * (and the whitespace after it) of the first `(const|let|var) <name>[: <type>] =`
+ * declaring it.
+ *
+ * One pass over the file for all of them. A pattern per name, each run from the
+ * top of the file, made the rewrite quadratic in the schemas a file exports —
+ * the shape of a module generated from an OpenAPI document. A declaration
+ * keyword is followed by the identifier it binds, which is either one of
+ * `names` or not; that is the same first match the per-name pattern found, for
+ * every name a declaration can bind.
+ */
+function findInitializers(code: string, names: ReadonlySet<string>): Map<string, number> {
+  const starts = new Map<string, number>();
+  const keyword = /(?:const|let|var)\s+/g;
+  const binding = /[\p{ID_Start}$_][\p{ID_Continue}$\u200C\u200D]*/uy;
+  const equals = /(?:\s*:[^=]*)?\s*=\s*/y;
+  while (starts.size < names.size && keyword.exec(code) !== null) {
+    binding.lastIndex = keyword.lastIndex;
+    const name = binding.exec(code)?.[0];
+    if (name === undefined || !names.has(name) || starts.has(name)) continue;
+    equals.lastIndex = binding.lastIndex;
+    if (equals.exec(code) !== null) starts.set(name, equals.lastIndex);
+  }
+  return starts;
+}
+
+/**
  * Edits for rewriteSourceAutoDiscover, collected against pristine `code`.
  * `rewritten` receives the name of each export an edit was made for.
  */
@@ -976,16 +1050,11 @@ function collectAutoDiscoverEdits(
   rewritten?: Set<string>,
 ): Edit[] {
   const edits: Edit[] = [];
+  // Match: export? (const|let|var) ExportName[: TypeAnnotation] = <expr>
+  const initializers = findInitializers(code, new Set(schemas.map((s) => s.exportName)));
   for (const schema of schemas) {
-    const escapedName = schema.exportName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    // Match: export? (const|let|var) ExportName[: TypeAnnotation] = <expr>
-    const assignPattern = new RegExp(
-      `((?:export\\s+)?(?:const|let|var)\\s+${escapedName}(?:\\s*:[^=]*)?\\s*=\\s*)`,
-    );
-    const match = assignPattern.exec(code);
-    if (!match) continue;
-
-    const rhsStart = match.index + match[0].length;
+    const rhsStart = initializers.get(schema.exportName);
+    if (rhsStart === undefined) continue;
     const rhsEnd = findExpressionEnd(code, rhsStart);
     if (rhsEnd === -1) continue;
 
