@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
+  bindsRetainedSchema,
   FAIL_CLASS_DECL,
   FAIL_CORE_CLASS_DECL,
   FAILZ_CLASS_DECL,
@@ -63,14 +64,13 @@ export function generateCompiledFileContent(
 
   // A schema needs the source import when:
   //   - zodCompat: true (__zcMkv installs compiled methods on the schema)
-  //   - has refEntries (fallback schemas referenced via __rf[])
-  //   - delegates its cold path to the retained schema (reads the __zs binding)
+  //   - its IIFE binds the retained schema: fallback refs (`__rf[]`), a cold
+  //     path delegated to it, a recursive validator answering a cycle with it
   //
-  // The last clause must stay in lockstep with generateIIFE's own test for
-  // emitting `var __zs=<expr>;`: hand it an empty expression for a schema it
-  // decides to bind and the file is a syntax error (`var __zs=;`).
-  const needsSource = (s: CompiledSchemaInfo): boolean =>
-    zodCompat || s.refEntries.length > 0 || s.codegenResult.usesRetainedSchema === true;
+  // The last clause is generateIIFE's own test for emitting `var __zs=<expr>;`:
+  // hand it an empty expression for a schema it decides to bind and the file
+  // is a syntax error (`var __zs=;`).
+  const needsSource = (s: CompiledSchemaInfo): boolean => zodCompat || bindsRetainedSchema(s);
   const schemasNeedingImport = schemas.filter(needsSource);
 
   const exports = schemas.map((schema) => {

@@ -593,24 +593,30 @@ not the whole object. Run `zod-compiler check` to see what compiled.
 ### Behavioral Differences from Zod
 
 Compiled validators match Zod on verdicts, output data and error messages, including issue ordering.
-Three things differ by design:
+Four things differ by design:
 
-| Behavior                  | Zod                                             | zod-compiler                                                                                                                        |
-| ------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Record key iteration      | Own enumerable keys, symbols included           | Own enumerable **string** keys only                                                                                                 |
-| Container output identity | A fresh array / set / map / object              | The input container, by reference (array holes and the input's key order survive); a rebuilt object is fresh and in zod's key order |
-| Per-call parse params     | `safeParse(x, { error, reportInput })` honoured | Ignored; global `z.config()` maps still apply                                                                                       |
+| Behavior                                 | Zod                                                    | zod-compiler                                                                                                                        |
+| ---------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Record key iteration                     | Own enumerable keys, symbols included                  | Own enumerable **string** keys only                                                                                                 |
+| Container output identity                | A fresh array / set / map / object                     | The input container, by reference (array holes and the input's key order survive); a rebuilt object is fresh and in zod's key order |
+| Per-call parse params                    | `safeParse(x, { error, reportInput })` honoured        | Ignored; global `z.config()` maps still apply                                                                                       |
+| An object a recursive schema meets twice | Parsed once: one output object, its callbacks run once | Parsed in each place: a rebuilt object becomes one copy per place, and its callbacks run for each                                   |
 
 Schema-level `error` and `z.config()` maps are unaffected; for a per-call map use
 `z.safeParse(Schema, x, params)`, whose issues are always Zod's own.
 
 `z.object()` strips unknown keys exactly as Zod does, so its output is always a fresh object.
 
-None of this reaches a callback. Every container in the value a `.transform()`, `.refine()` or
-`.superRefine()` receives, or that a `.pipe()` hands on, is built the way Zod builds it. A callback
-that sorts, pushes or deletes edits only that copy, and the copy is what the parse returns. Values
-Zod itself passes by reference (a `z.any()` or `z.unknown()` member, a loose object's unknown keys)
-are passed the same way.
+The containers handed back by reference never reach a callback. Every container in the value a
+`.transform()`, `.refine()` or `.superRefine()` receives, or that a `.pipe()` hands on, is built the
+way Zod builds it. A callback that sorts, pushes or deletes edits only that copy, and the copy is what
+the parse returns. Values Zod itself passes by reference (a `z.any()` or `z.unknown()` member, a
+loose object's unknown keys) are passed the same way.
+
+An input with a reference cycle (`a.next = a`) gets Zod's result, cycle included. The compiled walks
+follow it to the stack limit and then hand the input to Zod's own parse. A callback on the way runs
+at every level they reached, several thousand times, before Zod runs it once more. Without callbacks,
+a cyclic parse costs about half a millisecond.
 
 ## Benchmark
 

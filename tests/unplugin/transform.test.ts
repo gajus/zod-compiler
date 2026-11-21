@@ -968,7 +968,9 @@ describe("rewriteSourceAutoDiscover()", () => {
       // statement below it runs — by which point the binding is assigned.
       expect(result).toContain(`${decl};\n`);
       expect(result).toContain("var __zs=NodeZodSchema;");
-      expect(result).toContain("__zcMkv(safeParse_NodeZodSchema,__zs,");
+      // Installed through the entry that answers a cyclic input with zod.
+      expect(result).toContain("__zcMkv(__zr,__zs,");
+      expect(result).toContain("r=safeParse_NodeZodSchema(input);");
       // The statement's whole point is __zcMkv's mutation; annotating it pure
       // would let a bundler drop the compilation.
       expect(result).not.toContain("/* @__PURE__ */");

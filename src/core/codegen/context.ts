@@ -117,6 +117,14 @@ export interface CodeGenResult {
    * validator.
    */
   usesRetainedSchema?: boolean;
+  /**
+   * The validator recurses through its input (the schema holds a
+   * `recursiveRef`), so a reference cycle in the input takes its walks to the
+   * stack limit. `generateIIFE` binds the schema, captures its own safeParse
+   * before `__zcMkv` replaces it, and fronts the synchronous entry points with
+   * `__zcOvf` (see ZC_OVERFLOW_DECL), which answers an overflow with that.
+   */
+  recurses?: true;
 }
 
 /** Hosted-validator names for one recursion target (see CodeGenContext.recTargets). */

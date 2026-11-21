@@ -27,7 +27,7 @@ import {
   RETAINED_SCHEMA_VAR,
 } from "./context.js";
 import type { SharedSchemaPlan } from "./dedupe.js";
-import { ZC_PROTO_SCRUB_DECL } from "./issue-decls.js";
+import { ZC_OVERFLOW_DECL, ZC_OVERFLOW_ERROR_DECL, ZC_PROTO_SCRUB_DECL } from "./issue-decls.js";
 import { createFastGen, generateFast } from "./fast-path.js";
 import { createSlowGen, generateSlow } from "./slow-path.js";
 
@@ -126,6 +126,10 @@ export function generateValidator(
       fastTotal: false,
     };
   }
+
+  // Registered before anything else enters the preamble, so the rollback of a
+  // declined fast path below cannot take it out again.
+  const overflow = recursionGuard(ir, ctx);
 
   // Recursion-target table. The root (refId 0) reuses the schema's own
   // `safeParse_<name>` / hosted fast-check, so it needs no separate helper and
@@ -305,6 +309,7 @@ export function generateValidator(
       ].join("\n"),
       refCount: baseRefCount,
       usedHelpers: ctx.usedHelpers,
+      ...overflow,
       fastFnName,
       // Mutation-free total fast path: fc(input) ⟺ accepts(input), so `.is()`
       // installs fc directly (compact never weakens the guard).
@@ -340,6 +345,7 @@ export function generateValidator(
       ].join("\n"),
       refCount: baseRefCount,
       usedHelpers: ctx.usedHelpers,
+      ...overflow,
       fastFnName: null,
       fastTotal: false,
       isFnName: buildIsFnName,
@@ -414,6 +420,7 @@ export function generateValidator(
       ].join("\n"),
       refCount: options?.refCount ?? 0,
       usedHelpers: ctx.usedHelpers,
+      ...overflow,
       // No by-reference shortcut: `data` is the freshly built object, so
       // parse() must go through safeParse rather than returning its input.
       fastFnName: null,
@@ -434,6 +441,7 @@ export function generateValidator(
       functionDef: functionDefParts.join("\n"),
       refCount: options?.refCount ?? 0,
       usedHelpers: ctx.usedHelpers,
+      ...overflow,
       fastFnName: null,
       // any/unknown always succeed; `.is()` derives `true` from the fn fallback.
       fastTotal: false,
@@ -501,6 +509,7 @@ export function generateValidator(
       functionDef: functionDefParts.join("\n"),
       refCount: options?.refCount ?? 0,
       usedHelpers: ctx.usedHelpers,
+      ...overflow,
       // `fc` is a sound VERDICT here either way, but publishing it also promises
       // `parse()` may return the input — which a scrubbed output cannot (see
       // fastResultIsInput). `.is()` reads only the verdict, so it takes the
@@ -546,6 +555,7 @@ export function generateValidator(
     functionDef,
     refCount: options?.refCount ?? 0,
     usedHelpers: ctx.usedHelpers,
+    ...overflow,
     // `fc` carries a stronger contract than "accepts": `__zcMkv` returns the
     // INPUT from `parse()`/`parseAsync()`/`~standard` whenever it holds, so it
     // may only be published when a passing check implies `data === input`. A
@@ -593,6 +603,32 @@ function zodRunFields(
   const copy = generateCopyBuild(ir, ctx);
   if (copy === null || ctx.buildFailName === undefined) return {};
   return { zodRun: support, zodRunBuild: { build: copy, fail: ctx.buildFailName } };
+}
+
+/**
+ * What a validator that recurses through its input needs for an input with a
+ * reference cycle: the helpers its entry points answer a stack overflow with
+ * (see ZC_OVERFLOW_DECL). `generateIIFE` supplies the rest, the schema's own
+ * safeParse, captured before `__zcMkv` replaces it. Nothing for a validator
+ * that does not recurse.
+ */
+function recursionGuard(ir: SchemaIR, ctx: CodeGenContext): Pick<CodeGenResult, "recurses"> {
+  if (!containsRecursion(ir)) return {};
+  emitRuntimeHelper(ctx, "__zcOvf", ZC_OVERFLOW_DECL);
+  emitRuntimeHelper(ctx, "__zcOvd", ZC_OVERFLOW_ERROR_DECL);
+  return { recurses: true };
+}
+
+/** Does `root` recurse anywhere: a `recursiveRef` back to it, or to a target nested in it? */
+function containsRecursion(root: SchemaIR): boolean {
+  const seen = new Set<SchemaIR>();
+  const walk = (ir: SchemaIR): boolean => {
+    if (ir.type === "recursiveRef") return true;
+    if (seen.has(ir)) return false;
+    seen.add(ir);
+    return childIRs(ir).some(walk);
+  };
+  return walk(root);
 }
 
 /**

@@ -123,6 +123,8 @@ export const FAIL_CORE_CLASS_DECL = failClassDecl("__ZcFailC", "__zcCore.$ZodRea
  * (or of the evaluated body, under `jit()`), ahead of the finalizers and of
  * every statement that could run a validator.
  */
+// `_f` and `_i` are read by `__zcOvd` (ZC_OVERFLOW_ERROR_DECL), which wraps a
+// recursive validator's deferred walk.
 function failClassDecl(name: string, errorClass: string): string {
   return (
     `var ${name}=/* @__PURE__ */(function(){` +
@@ -541,6 +543,24 @@ function extractFunctionName(functionDef: string): string {
 }
 
 /**
+ * Does the IIFE bind the retained schema (`var __zs=<expr>;`)? Its fallback
+ * refs are paths into it, a compact validator delegates to it, and a recursive
+ * one answers a reference cycle in its input with its own safeParse. The CLI
+ * emitter imports the source schema on the same test.
+ */
+export function bindsRetainedSchema(schema: CompiledSchemaInfo): boolean {
+  const { codegenResult, refEntries } = schema;
+  return (
+    refEntries.length > 0 ||
+    codegenResult.usesRetainedSchema === true ||
+    codegenResult.recurses === true
+  );
+}
+
+/** Identifier `generateIIFE` binds a recursive validator's schema's own `safeParse` to. */
+const OWN_SAFE_PARSE_VAR = "__zsp";
+
+/**
  * Does the IIFE's preamble DEREFERENCE the retained schema at evaluation time?
  *
  * Only `__rf` does: every entry is `__zs<accessPath>`, and an access path walks
@@ -548,9 +568,9 @@ function extractFunctionName(functionDef: string): string {
  * `.shape` materializes a `z.object()` shape (zod v4 reads every property
  * descriptor, so ONE `.shape` read fires ALL of an object's recursion getters).
  * Binding `__zs` itself does not: constructing the schema leaves deferred
- * callbacks unforced, and `usesRetainedSchema`'s only read is `__zs.safeParse`,
- * a prototype getter that binds the method and installs the bound copy on the
- * instance without touching the schema's structure.
+ * callbacks unforced, and the only read the other reasons to bind it make is
+ * `__zs.safeParse`, a prototype getter that binds the method and installs the
+ * bound copy on the instance without touching the schema's structure.
  *
  * The distinction decides whether the IIFE may be evaluated inside the
  * INITIALIZER of the binding the schema's own deferred callbacks close over —
@@ -584,7 +604,7 @@ export function generateIIFE(
   // delegation names it outright. Capture it once whenever either needs it, so
   // an inline initializer is not reconstructed for each path and again for the
   // identity-preserving __zcMkv target.
-  const bindsSchema = refEntries.length > 0 || codegenResult.usesRetainedSchema === true;
+  const bindsSchema = bindsRetainedSchema(schema);
   const retainedSchema = bindsSchema ? RETAINED_SCHEMA_VAR : schemaExpr;
   const schemaArg = zodCompat ? retainedSchema : "null";
   const fcArg = codegenResult.fastFnName ?? "null";
@@ -599,10 +619,37 @@ export function generateIIFE(
   // Same shape as those closures: the by-reference shortcut where a passing
   // fast check proves `data === input`, the validator otherwise.
   const fast = codegenResult.fastFnName;
+  // A validator that recurses through its input reaches the stack limit on one
+  // with a reference cycle, which zod parses (see ZC_OVERFLOW_DECL). Its
+  // synchronous entry points catch the overflow and answer with zod: `__zr` is
+  // the safeParse every other entry goes through, and `.is()` gets its own
+  // guard. The async ones already retry through zod on any throw. The
+  // validator's function stays bare, because its slow walk calls it by name
+  // for every level of the input, and a guard there would answer at the
+  // deepest one.
+  const guarded = codegenResult.recurses === true;
+  const answer = `__zcOvf(e,${OWN_SAFE_PARSE_VAR},${RETAINED_SCHEMA_VAR},input)`;
+  const entry = guarded ? "__zr" : fnName;
   const parseFn =
     fast === null
-      ? `function __zp(input){return __zcPu(${fnName}(input),__zp);}`
-      : `function __zp(input){return ${fast}(input)?input:__zcPu(${fnName}(input),__zp);}`;
+      ? `function __zp(input){return __zcPu(${entry}(input),__zp);}`
+      : guarded
+        ? `function __zp(input){var r;try{if(${fast}(input))return input;}catch(e){r=${answer};}` +
+          "return __zcPu(r||__zr(input),__zp);}"
+        : `function __zp(input){return ${fast}(input)?input:__zcPu(${fnName}(input),__zp);}`;
+  // A failure's `.error` is collected when it is read, after `__zr` has
+  // returned, so its walk is guarded too (see ZC_OVERFLOW_ERROR_DECL).
+  const guards = guarded
+    ? [
+        `function __zr(input){var r;try{r=${fnName}(input);}catch(e){return ${answer};}` +
+          `return r.success?r:__zcOvd(r,${OWN_SAFE_PARSE_VAR},${RETAINED_SCHEMA_VAR},input);}`,
+        ...(isArg === "null"
+          ? []
+          : [
+              `function __zi(input){try{return ${isArg}(input);}catch(e){return ${answer}.success;}}`,
+            ]),
+      ]
+    : [];
   // The result is mapped INSIDE the try, as zod's own validate maps it: reading
   // `.error` is what builds the issues, and an error map that throws there has
   // to take the same async retry a throwing check does (zod rejects; mapping
@@ -610,20 +657,25 @@ export function generateIIFE(
   // The schema itself once `__zcMkv` has installed the methods on it — and,
   // where the validator may answer for zod too, its `_zod.run` (see
   // ZOD_RUN_DECL). A method bag has no schema for zod to reach.
-  const made = `__zcMkv(${fnName},${schemaArg},${fcArg},${isArg},__zp,__zv)`;
+  const made = `__zcMkv(${entry},${schemaArg},${fcArg},${guarded && isArg !== "null" ? "__zi" : isArg},__zp,__zv)`;
   const runBuild = codegenResult.zodRunBuild;
   const installed = installsZodRun(schema, options)
     ? `${ZOD_RUN_HELPER}(${made},${fnName},${codegenResult.zodRun === "async" ? 1 : 0}` +
       `${runBuild === undefined ? "" : `,${runBuild.build},${runBuild.fail}`})`
     : made;
-  const validated = `__zcVr(${fnName}(input))`;
+  // Guarded, without the by-reference shortcut: an overflow in the fast check
+  // would otherwise take the async retry, where zod's own validate answers
+  // this input synchronously.
+  const validated = `__zcVr(${entry}(input))`;
   const validateFn =
-    `function __zv(input){try{return ${fast === null ? validated : `${fast}(input)?{value:input}:${validated}`};}` +
+    `function __zv(input){try{return ${fast === null || guarded ? validated : `${fast}(input)?{value:input}:${validated}`};}` +
     "catch(e){return __zcVc(e,input,__zv);}}";
 
   return [
     options?.pure === false ? "(() => {" : "/* @__PURE__ */ (() => {",
     ...(bindsSchema ? [`var ${RETAINED_SCHEMA_VAR}=${schemaExpr};`] : []),
+    // Before `__zcMkv` replaces it. A `zod/mini` schema has none (see ZC_OVERFLOW_DECL).
+    ...(guarded ? [`var ${OWN_SAFE_PARSE_VAR}=${RETAINED_SCHEMA_VAR}.safeParse;`] : []),
     // Only fallback refs need the array; a compact validator with none of its
     // own reads `__zs` directly rather than allocating `[__zs]` to index into.
     ...(refEntries.length > 0
@@ -633,6 +685,7 @@ export function generateIIFE(
       .split("\n")
       .filter((l) => l.trim() !== "" && l.trim() !== "/* zod-compiler */"),
     codegenResult.functionDef,
+    ...guards,
     parseFn,
     validateFn,
     `return ${installed};`,

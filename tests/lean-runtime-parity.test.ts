@@ -200,6 +200,20 @@ const CASES: [label: string, schema: z.ZodType, inputs: unknown[]][] = [
     z.array(z.number().catch(0)).transform((value) => value.length),
     [[1, "x"], "not an array"],
   ],
+  // __zcOvf / __zcOvd: registered by every recursive validator, whose entry
+  // points answer an input with a reference cycle with zod. That answer is
+  // pinned in cyclic-input.test.ts, which installs the whole IIFE.
+  [
+    "a recursive schema",
+    (() => {
+      const Node: z.ZodType = z.object({ value: z.number(), next: z.lazy(() => Node).optional() });
+      return Node;
+    })(),
+    [
+      { value: 1, next: { value: "x" } },
+      { value: 1, next: { value: 2, next: 3 } },
+    ],
+  ],
 
   // ── mixed: several issue kinds in one parse, order and all messages ──────
   [

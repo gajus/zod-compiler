@@ -295,6 +295,42 @@ export const ZC_ARRAY_COPY_DECL =
   "function __zcAc(a){for(var n=a.length,c=new Array(n),i=0;i<n;i++)c[i]=a[i];return c;}";
 
 /**
+ * The way back to zod for a validator that recurses through its input, when
+ * that input has a reference cycle (see generateIIFE).
+ *
+ * The compiled walks go one call deeper per level of the input and keep no
+ * record of the values they are in the middle of, so `a.next = a` takes them
+ * to the stack limit. Zod 4.5 parses that input: its memoizer hands a container
+ * still being built back to the reference that closes the cycle. So an
+ * overflow is answered by the schema's own safeParse: `m`, captured before
+ * `__zcMkv` replaced it, or core's for a `zod/mini` schema, which has none.
+ * Every other error is the caller's, rethrown.
+ *
+ * An overflow is what engines throw for one: a RangeError "Maximum call stack
+ * size exceeded" in V8 and JavaScriptCore, an InternalError "too much
+ * recursion" in SpiderMonkey.
+ */
+export const ZC_OVERFLOW_DECL =
+  'function __zcOvf(e,m,s,i){if(e!=null&&(e.name==="RangeError"||e.name==="InternalError")&&' +
+  "/call stack|too much recursion/.test(e.message))return m?m.call(s,i):__zcCore.safeParse(s,i);" +
+  "throw e;}";
+
+/**
+ * {@link ZC_OVERFLOW_DECL} for the `.error` of a failed parse, which the
+ * validator collects only when it is read: an input that fails before its walk
+ * goes round the cycle comes back as a failure, and the issue walk behind its
+ * `.error` then follows the cycle to the stack limit. So the failure handed to
+ * the caller gets its walk (`_f` on `__ZcFail`) wrapped. On an overflow the
+ * walk hands back zod's issues, which `.error` builds into the error as it
+ * builds its own. Only that outermost failure is wrapped. The ones the walk
+ * makes for each level are read inside it, and guarding those would have every
+ * level retry zod from just under the stack limit.
+ */
+export const ZC_OVERFLOW_ERROR_DECL =
+  'function __zcOvd(r,m,s,i){var f=r._f;if(typeof f==="function")r._f=function(x){try{return f(x);}' +
+  "catch(e){return __zcOvf(e,m,s,i).error.issues.slice();}};return r;}";
+
+/**
  * Code points in a string — zod's `util.codePointLength`, verbatim. A surrogate
  * pair counts once and a lone surrogate as itself. The regex probe is the fast
  * exit for a string with no astral characters, and the hand-rolled loop avoids
@@ -582,6 +618,8 @@ export const RUNTIME_HELPER_DECLS: Readonly<Record<string, string>> = {
   __zcUrl: ZC_URL_DECL,
   __zcPs: ZC_PROTO_SCRUB_DECL,
   __zcAc: ZC_ARRAY_COPY_DECL,
+  __zcOvf: ZC_OVERFLOW_DECL,
+  __zcOvd: ZC_OVERFLOW_ERROR_DECL,
   __zcPlain: ZC_PLAIN_DECL,
   __zcPfx: ZC_PFX_DECL,
   __zcPa: ZC_PATH_APPEND_DECL,
