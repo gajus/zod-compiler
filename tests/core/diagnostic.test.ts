@@ -120,6 +120,21 @@ describe("fastPathEligible", () => {
     expect(diagnoseSchema(leaf).fastPathEligible).toBe(true);
   });
 
+  it("ineligible for a superRefine, whose callback has no fast check to run in", () => {
+    expect(
+      diagnoseSchema(
+        extractSchema(
+          z.number().superRefine(() => {}),
+          [],
+        ),
+      ).fastPathBlocker,
+    ).toBe("superRefine");
+    expect(
+      diagnoseSchema(extractSchema(z.object({ s: z.string().superRefine(() => {}) }), []))
+        .fastPathBlocker,
+    ).toBe("superRefine");
+  });
+
   it("ineligible for nested blocker in array", () => {
     const ir: SchemaIR = {
       type: "array",

@@ -60,6 +60,14 @@ function detectFastPathBlocker(ir: SchemaIR): string | null {
   if ("fresh" in ir && ir.fresh === true) {
     return `callback input (${ir.type})`;
   }
+  // A superRefine's callback runs in the walk or the build alone: a verdict on
+  // its node would have to call it, and the walk would call it again.
+  if (
+    "checks" in ir &&
+    (ir.checks as readonly { kind: string }[]).some((c) => c.kind === "super_refine_effect")
+  ) {
+    return "superRefine";
+  }
   // Value-mutating string checks make the schema slow-path only: overwrite
   // effects (.trim()/.toLowerCase()) rewrite the value and url checks trim it,
   // while the fast path returns input unchanged.
