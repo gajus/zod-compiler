@@ -37,7 +37,12 @@ import { discoverSchemas } from "../discovery.js";
 import { ProcessExitDuringLoadError } from "../loader.js";
 import { mayExportSchemas } from "../static-filter.js";
 import { applyEdits, type Edit, EditIndex, type Insertion, moduleHeadOffset } from "./edits.js";
-import { analyzeZodSchemas, type ModuleScopeSchema, type SchemaAnalysis } from "./hoist.js";
+import {
+  analyzeZodSchemas,
+  codeOnly,
+  type ModuleScopeSchema,
+  type SchemaAnalysis,
+} from "./hoist.js";
 import { compileHoistedSchemas } from "./hoist-compile.js";
 import type { TransformOptions, ZodCompilerPluginOptions } from "./types.js";
 import { VIRTUAL_RUNTIME_ID } from "./virtual.js";
@@ -902,7 +907,8 @@ export function rewriteSource(
 
 /**
  * Edits for rewriteSource (compile() call replacements + compile-import
- * removal), collected against pristine `code`. Each schema's declaration is
+ * removal, once no call is left to read it), collected against pristine
+ * `code`. Each schema's declaration is
  * a distinct region and the import statement is distinct from all of them,
  * so the batch is non-overlapping and order-independent.
  */
@@ -937,8 +943,27 @@ function collectCompileRewriteEdits(
     });
     rewritten?.add(schema.exportName);
   }
-  edits.push(...collectRemoveCompileImportEdits(code));
+  // The binding goes with its last use. A call left as written — `const S: T =
+  // compile(…)`, whose annotation the pattern does not get past — still reads
+  // it, and with the import gone the module threw a ReferenceError as it
+  // loaded.
+  const removals = collectRemoveCompileImportEdits(code);
+  if (!mentionedOutside(codeOnly(code), "compile", [...edits, ...removals])) {
+    edits.push(...removals);
+  }
   return edits;
+}
+
+/** Is `name` written in `code` anywhere but inside one of `edits`? */
+function mentionedOutside(code: string, name: string, edits: readonly Edit[]): boolean {
+  const covered = [...edits].sort((a, b) => a.start - b.start);
+  let next = 0;
+  for (const { index } of code.matchAll(new RegExp(wholeIdentifier(name), "gu"))) {
+    while (next < covered.length && (covered[next] as Edit).end <= index) next++;
+    const edit = covered[next];
+    if (edit === undefined || edit.start > index) return true;
+  }
+  return false;
 }
 
 /**

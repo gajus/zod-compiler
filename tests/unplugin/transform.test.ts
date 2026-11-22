@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { z } from "zod";
 import { generateValidator } from "#src/core/codegen/index.js";
 import { extractSchema, type RefEntry } from "#src/core/extract/index.js";
+import { loadSourceFile } from "#src/loader.js";
 import { moduleHeadOffset } from "#src/unplugin/edits.js";
 import { SCHEMA_NAME_PATTERN, ZOD_MODULES } from "#src/unplugin/hoist.js";
 import {
@@ -321,6 +322,40 @@ describe("rewriteSource()", () => {
     expect(result).not.toContain(`import { compile } from "zod-compiler"`);
   });
 
+  it("keeps the compile import while a call it leaves still reads it", () => {
+    // The annotation keeps the pattern from reaching `B`'s call. The import
+    // went all the same, and the module threw a ReferenceError as it loaded.
+    const code = [
+      `import { compile } from "zod-compiler";`,
+      `export const A = compile(ASchema);`,
+      `export const B: CompiledSchema<B> = compile(BSchema);`,
+    ].join("\n");
+
+    const result = rewriteSource(code, [
+      makeCompiledInfo("A", simpleSchema),
+      makeCompiledInfo("B", simpleSchema),
+    ]);
+
+    expect(result).toContain("safeParse_A");
+    expect(result).not.toContain("compile(ASchema)");
+    expect(result).toContain("compile(BSchema)");
+    expect(result).toContain(`import { compile } from "zod-compiler";`);
+  });
+
+  it("removes the compile import when only comments and strings still name it", () => {
+    const code = [
+      `import { compile } from "zod-compiler";`,
+      `// compile() is replaced at build time.`,
+      `export const label = "compile(ASchema)";`,
+      `export const A = compile(ASchema);`,
+    ].join("\n");
+
+    const result = rewriteSource(code, [makeCompiledInfo("A", simpleSchema)]);
+
+    expect(result).not.toContain(`import { compile }`);
+    expect(result).toContain(`export const label = "compile(ASchema)";`);
+  });
+
   it("replaces multiple compile() calls", () => {
     const code = [
       `import { compile } from "zod-compiler";`,
@@ -532,6 +567,34 @@ describe("transformCode() E2E", () => {
     expect(result).not.toBeNull();
     expect(result).toContain("safeParse_validateUser");
     expect(result).toContain("safeParse_validateProduct");
+  });
+
+  it("leaves a module loading whose compile() calls it cannot all rewrite", async () => {
+    // `B`'s annotation keeps its call out of the compile() rewrite, in either
+    // mode, while the import that call reads was removed under it.
+    const dir = fs.mkdtempSync(path.join(fixturesDir, ".typed-compile-"));
+    try {
+      const source = [
+        `import { z } from "zod";`,
+        `import { compile, type CompiledSchema } from "zod-compiler";`,
+        `export const A = compile(z.object({ a: z.string() }));`,
+        `export const B: CompiledSchema<{ b: string }> = compile(z.object({ b: z.string() }));`,
+        `export const run = () => [A.safeParse({ a: 1 }).success, B.safeParse({ b: "x" }).success];`,
+      ].join("\n");
+      const file = path.join(dir, "mod.ts");
+      fs.writeFileSync(file, source);
+      for (const autoDiscover of [false, true]) {
+        const out = await transformCode(source, file, { mode: "inline", autoDiscover });
+        expect(out).toContain("function safeParse_A(input)");
+        expect(out).toContain(`import { compile, type CompiledSchema } from "zod-compiler";`);
+        const outFile = path.join(dir, `out-${String(autoDiscover)}.ts`);
+        fs.writeFileSync(outFile, out as string);
+        const run = (await loadSourceFile(outFile))["run"] as () => unknown;
+        expect(run()).toEqual([false, true]);
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("returns null for files without compile()", async () => {

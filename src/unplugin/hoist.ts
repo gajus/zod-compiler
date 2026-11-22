@@ -481,6 +481,14 @@ function scanSource(code: string, roots: Set<string>): ScanResult {
   return { candidates, stripped };
 }
 
+/**
+ * `code` with its comments, the text of its strings and templates, and its
+ * regex literals blanked to spaces, every offset kept: what is left runs.
+ */
+export function codeOnly(code: string): string {
+  return scanSource(code, new Set()).stripped();
+}
+
 function skipString(code: string, start: number, quote: string): number {
   for (let i = start + 1; i < code.length; i++) {
     if (code[i] === "\\") {
