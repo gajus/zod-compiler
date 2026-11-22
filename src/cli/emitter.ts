@@ -16,6 +16,7 @@ import {
   ZOD_CONFIG_IMPORT,
   ZOD_MSG_DECLARATION,
 } from "../core/iife.js";
+import { isDeclarableName, isIdentifierName } from "../core/identifier.js";
 import type { CompiledSchemaInfo } from "../core/pipeline.js";
 
 /**
@@ -71,9 +72,25 @@ export function generateCompiledFileContent(
   // hand it an empty expression for a schema it decides to bind and the file
   // is a syntax error (`var __zs=;`).
   const needsSource = (s: CompiledSchemaInfo): boolean => zodCompat || bindsRetainedSchema(s);
-  const schemasNeedingImport = schemas.filter(needsSource);
 
-  const exports = schemas.map((schema) => {
+  // An export is declared under its own name where a module can declare that
+  // name. A module exports under any string, though — `export default`,
+  // `export { S as "user-schema" }` — and those are bound locally by position
+  // and exported by specifier, the string spelled as a string.
+  const named = schemas.map((schema, index) => {
+    const declarable = isDeclarableName(schema.exportName);
+    return {
+      schema,
+      local: declarable ? schema.exportName : `__zcExport_${index}`,
+      src: declarable ? `__src_${schema.exportName}` : `__src_${index}`,
+      spelled: isIdentifierName(schema.exportName)
+        ? schema.exportName
+        : JSON.stringify(schema.exportName),
+      declarable,
+    };
+  });
+
+  const exports = named.map(({ schema, local, src, spelled, declarable }) => {
     const needsImport = needsSource(schema);
     // `compile()` returns the schema augmented with a non-enumerable `schema`
     // self-reference; auto-discovery (the default) instead finds plain exported
@@ -81,15 +98,18 @@ export function generateCompiledFileContent(
     // fall through to the export itself — reading `.schema` alone yields
     // undefined there, which silently cost __zcMkv the real schema to augment
     // and hard-crashed every `__rf[]` base at module load.
-    const src = `__src_${schema.exportName}`;
     const schemaExpr = needsImport ? `((${src} as any).schema ?? ${src})` : "";
-    return `export const ${schema.exportName} = ${generateIIFE(schemaExpr, schema, { zodCompat })};`;
+    const iife = generateIIFE(schemaExpr, schema, { zodCompat });
+    return declarable
+      ? `export const ${local} = ${iife};`
+      : `const ${local} = ${iife};\nexport { ${local} as ${spelled} };`;
   });
 
+  const imported = named.filter(({ schema }) => needsSource(schema));
   const importLine =
-    schemasNeedingImport.length > 0
+    imported.length > 0
       ? [
-          `import { ${schemasNeedingImport.map((s) => `${s.exportName} as __src_${s.exportName}`).join(", ")} } from "${importPath}";`,
+          `import { ${imported.map(({ spelled, src }) => `${spelled} as ${src}`).join(", ")} } from "${importPath}";`,
           "",
         ]
       : [];

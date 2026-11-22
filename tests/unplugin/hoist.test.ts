@@ -49,6 +49,45 @@ describe("hoistZodSchemas()", () => {
       expect(refs).toHaveLength(2);
     });
 
+    it("names two schemas apart whose texts hash alike", () => {
+      // FNV-1a gives both of these f6b4f124. One name for the two was two
+      // declarations of it: a SyntaxError for the whole module.
+      const first = `z.object({ by: z.string().min(670), name: z.number().max(17) })`;
+      const second = `z.object({ ref: z.string().min(948), kind: z.number().max(27) })`;
+      const code = [
+        ZOD_IMPORT,
+        `export function a() { return ${first}; }`,
+        `export function b() { return ${second}; }`,
+      ].join("\n");
+
+      const result = hoistZodSchemas(code) ?? "";
+      const declared = [...result.matchAll(/^const (_zh_[0-9a-f]{8}) = (.*);$/gm)].map(
+        ([, name, text]) => [name, text],
+      );
+      expect(declared).toEqual([
+        ["_zh_f6b4f124", first],
+        [expect.stringMatching(/^_zh_[0-9a-f]{8}$/), second],
+      ]);
+      expect(declared[1]?.[0]).not.toBe("_zh_f6b4f124");
+      expect(result).toContain(`export function a() { return _zh_f6b4f124; }`);
+      expect(result).toContain(`export function b() { return ${declared[1]?.[0]}; }`);
+    });
+
+    it("a schema after a `/` that follows a name outside ASCII", () => {
+      // `π / 2` is division. Read as a regex, the `/` inside the string closed
+      // it, and the scanner went on with code and strings swapped to the end
+      // of the line: the text of `label` hoisted, the schema left in place.
+      const code = [
+        ZOD_IMPORT,
+        `export function f(π: number) { const half = π / 2, slash = "/", label = "z.string()"; return [half, slash, label, z.number()]; }`,
+      ].join("\n");
+
+      const result = hoistZodSchemas(code) ?? "";
+      expect(result).toContain(`label = "z.string()"; return [half, slash, label, _zh_`);
+      expect(result).toMatch(/^const _zh_[0-9a-f]{8} = z\.number\(\);$/m);
+      expect(result.match(/^const _zh_/gm)).toHaveLength(1);
+    });
+
     it("whole combinator chains", () => {
       const code = [
         ZOD_IMPORT,
@@ -424,6 +463,24 @@ describe("hoistZodSchemas()", () => {
   });
 
   describe("does not hoist", () => {
+    it("a call on a name that ends in the one zod is imported as", () => {
+      // Read in ASCII, `éz` was an `é` and then zod's `z`: the hoist left
+      // `é_zh_…` where the call stood, a name nothing declares. What it builds
+      // with zod is still hoisted.
+      const code = [
+        ZOD_IMPORT,
+        `import { éz, 名z, 𝒳z, aéz } from "./lib";`,
+        `export function f() { return éz.object({ a: z.string() }); }`,
+        `export function g() { return [名z.string(), 𝒳z.string(), aéz.string()]; }`,
+      ].join("\n");
+
+      const result = hoistZodSchemas(code) ?? "";
+      expect(result).toContain(`return éz.object({ a: _zh_`);
+      expect(result).toContain(`return [名z.string(), 𝒳z.string(), aéz.string()];`);
+      expect(result).toMatch(/^const _zh_[0-9a-f]{8} = z\.string\(\);$/m);
+      expect(result.match(/^const _zh_/gm)).toHaveLength(1);
+    });
+
     it("top-level schema declarations (already module scope)", () => {
       const code = [ZOD_IMPORT, `export const UserSchema = z.object({ name: z.string() });`].join(
         "\n",

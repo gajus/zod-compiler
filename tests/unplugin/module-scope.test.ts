@@ -213,6 +213,17 @@ describe("analyzeZodSchemas() — not an argument that runs more than once, or m
     ).toEqual([]);
   });
 
+  it("a body or a class body after a name outside ASCII", () => {
+    expect(
+      reported([
+        `app.post("/a", function (c: unknown): Résultat { return app.check(z.string(), c); });`,
+        `app.post("/b", (schema = z.number()): Résultat => schema);`,
+        `app.define({ make(schema = z.null()): Résultat { return schema; } });`,
+        `app.define({ holder: class Ñandú { static s = z.boolean(); } });`,
+      ]),
+    ).toEqual([]);
+  });
+
   it("a parameter's default value, whatever the function's return type", () => {
     expect(
       reported([
@@ -400,6 +411,15 @@ describe("analyzeZodSchemas() — not a binding nothing uses for itself", () => 
         `export const Loose = Base2.partial();`,
         `export const Shape = z.object({ ...Base2.shape });`,
         `export const Described = Tag.describe("a tag");`,
+      ]),
+    ).toEqual([]);
+  });
+
+  it("one whose member is read past ASCII: `parseé` is not `parse`", () => {
+    expect(
+      bindings([
+        `const Body = z.object({ id: z.number() });`,
+        `export const read = () => Body.parseé;`,
       ]),
     ).toEqual([]);
   });

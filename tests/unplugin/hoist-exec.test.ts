@@ -283,6 +283,31 @@ export function run() {
     expectTransformed: true,
   },
   {
+    // Different texts with one 32-bit hash: hoisted under one name, they were
+    // declared twice, and the module did not parse.
+    name: "two schemas whose texts hash alike",
+    source: `
+import { z } from "zod";
+
+export function a() {
+  return z.object({ by: z.string().min(670), name: z.number().max(17) });
+}
+export function b() {
+  return z.object({ ref: z.string().min(948), kind: z.number().max(27) });
+}
+
+export function run() {
+  return {
+    a_ok: a().safeParse({ by: "x".repeat(670), name: 17 }).success,
+    a_bad: a().safeParse({ ref: "x".repeat(948), kind: 27 }).success,
+    b_ok: b().safeParse({ ref: "x".repeat(948), kind: 27 }).success,
+    b_bad: b().safeParse({ by: "x".repeat(670), name: 17 }).success,
+  };
+}
+`,
+    expectTransformed: true,
+  },
+  {
     // The recursive schema defers its self-reference through the lazy getter,
     // which the IIFE's `__rf` preamble forces. Emitted as the declaration's
     // initializer, that read re-enters a binding still under initialization:

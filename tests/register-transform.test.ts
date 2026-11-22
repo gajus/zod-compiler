@@ -115,4 +115,14 @@ export function validate(value) {
     const output = instrumentModule(source, "/app/s.mjs", "module", { hoist: false });
     expect(output).not.toContain("zod-compiler:register");
   });
+
+  it("registers an export named with a letter outside ASCII", () => {
+    const source = `import { z } from "zod";\nexport const Schéma = z.string();\nexport const 𝒳 = z.number();\n`;
+    const output = instrumentModule(source, "/app/schemas.ts", "module-typescript", {
+      hoist: false,
+    });
+
+    expect(output).toContain(`try{${REGISTER}(Schéma)}catch{}`);
+    expect(output).toContain(`try{${REGISTER}(𝒳)}catch{}`);
+  });
 });

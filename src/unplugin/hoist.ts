@@ -1,5 +1,6 @@
 import type { AnyNode, Expression, Options } from "acorn";
 import { Parser } from "acorn";
+import { IDENTIFIER, IDENTIFIER_PART, IDENTIFIER_START } from "../core/identifier.js";
 import { applyEdits, type Edit, type Insertion, moduleHeadOffset } from "./edits.js";
 
 /**
@@ -169,6 +170,18 @@ function fnv1a(text: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+/**
+ * The declaration name of a hoisted construction: `_zh_` and a hash of its
+ * text, hashed again with a counter while a different text holds that name.
+ * Two texts can share 32 bits, and two declarations of one name are a
+ * SyntaxError — for a file of 4,000 hoists, about one in 500.
+ */
+function hoistedName(text: string, taken: ReadonlySet<string>): string {
+  let name = `_zh_${fnv1a(text)}`;
+  for (let n = 1; taken.has(name); n++) name = `_zh_${fnv1a(`${n}\0${text}`)}`;
+  return name;
+}
+
 interface Candidate {
   /** Offset of the root identifier. */
   index: number;
@@ -240,18 +253,31 @@ function beginsStatement(code: string, index: number, word: string, lastToken: s
 /**
  * Char-code identifier/whitespace classes for the scanner hot loops — a
  * regex `.test()` per character dominated scan time once the acorn parses
- * were gone. The ident classes are deliberately ASCII-only (`[A-Za-z_$]` /
- * `[\w$]`, matching the scanner's historical regexes); the space check falls
- * back to `/\s/` for the rare non-ASCII code points it matches (NBSP, BOM,
- * U+2028...).
+ * were gone. ASCII is decided by range; a code point past it, rare in code
+ * outside strings and comments, by the classes identifiers are defined by.
+ * Read as ASCII alone, `éz.object(…)` was an `é` and then a `z`, and the `z`
+ * zod is imported as had the call hoisted off a binding of the user's, leaving
+ * `é_zh_…` where it stood. Either half of a surrogate pair counts: outside a
+ * string or a comment, a character past the BMP can only be part of a name.
+ * The space check falls back to `/\s/` for the rare non-ASCII code points it
+ * matches (NBSP, BOM, U+2028...).
  */
+const IDENT_START_CHARACTER = new RegExp(`^${IDENTIFIER_START}$`, "u");
+const IDENT_PART_CHARACTER = new RegExp(`^${IDENTIFIER_PART}$`, "u");
+function isSurrogateCode(c: number): boolean {
+  return c >= 0xd800 && c <= 0xdfff;
+}
 function isIdentStartCode(c: number): boolean {
-  return (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c === 95 || c === 36;
+  if (c < 128) return (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c === 95 || c === 36;
+  return c >= 128 && (isSurrogateCode(c) || IDENT_START_CHARACTER.test(String.fromCharCode(c)));
 }
 function isIdentPartCode(c: number): boolean {
-  return (
-    (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 95 || c === 36
-  );
+  if (c < 128) {
+    return (
+      (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 95 || c === 36
+    );
+  }
+  return c >= 128 && (isSurrogateCode(c) || IDENT_PART_CHARACTER.test(String.fromCharCode(c)));
 }
 function isSpaceCode(c: number): boolean {
   if (c === 32 || (c >= 9 && c <= 13)) return true;
@@ -276,11 +302,14 @@ const REGEX_PRECEDING_KEYWORDS = new Set([
   "await",
 ]);
 
+/** A name, a keyword or a number: a token the scanners read with the classes above. */
+const WORD_TOKEN = new RegExp(`^${IDENTIFIER_PART}+$`, "u");
+
 /** Is `/` after this token division (true) or a regex literal (false)? */
 function isDivisionContext(lastToken: string): boolean {
   if (lastToken === ")" || lastToken === "]") return true;
   if (/^["'`]$/.test(lastToken)) return true;
-  if (/^[\w$]+$/.test(lastToken)) return !REGEX_PRECEDING_KEYWORDS.has(lastToken);
+  if (WORD_TOKEN.test(lastToken)) return !REGEX_PRECEDING_KEYWORDS.has(lastToken);
   return false;
 }
 
@@ -1203,7 +1232,7 @@ const LITERAL_BRACE_KEYWORDS = new Set([
 /** Does a `{` after `lastToken` open an object literal, as opposed to a body or a block? */
 function opensObjectLiteral(lastToken: string): boolean {
   if (lastToken === "" || lastToken === "=>") return false;
-  if (/^[\w$]+$/.test(lastToken)) return LITERAL_BRACE_KEYWORDS.has(lastToken);
+  if (WORD_TOKEN.test(lastToken)) return LITERAL_BRACE_KEYWORDS.has(lastToken);
   // After an operator or an opening bracket a value is due. After `)` it is
   // a function body or a controlled block; after `}` or `;`, a block.
   return !/^[)\]};"'`]$/.test(lastToken);
@@ -1214,7 +1243,7 @@ function opensObjectLiteral(lastToken: string): boolean {
  * name, the close of a generic, an array, an object type or a parenthesized
  * one, a literal. (After `:`, `|`, `<` and the like the type is still going.)
  */
-const ENDS_TYPE = /^(?:[\w$]+|[>\]})"'`])$/;
+const ENDS_TYPE = new RegExp(`^(?:${IDENTIFIER_PART}+|[>\\]})"'\`])$`, "u");
 
 /** What the scanner knows about one open bracket. */
 interface Frame {
@@ -1569,7 +1598,16 @@ function scanInterior(
 const VALIDATOR_METHODS = new Set(["parse", "safeParse", "parseAsync", "safeParseAsync", "is"]);
 
 /** A statement that declares a binding and has reached its initializer. */
-const DECLARATION = /^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*)?=/;
+const DECLARATION = new RegExp(
+  String.raw`^(?:export\s+)?(?:const|let|var)\s+(${IDENTIFIER})\s*(?::[^=]*)?=`,
+  "u",
+);
+
+/** The member a `.` or `?.` reads, from the start of the text. */
+const MEMBER = new RegExp(String.raw`^\??\.\s*(${IDENTIFIER})`, "u");
+
+/** The first member read off the name the text starts with: `extend`, for `Base.extend(…)`. */
+const ROOT_MEMBER = new RegExp(String.raw`^${IDENTIFIER_PART}+\s*\??\.\s*(${IDENTIFIER})`, "u");
 
 /** Words after which a name is being declared or queried for its type, not used. */
 const NON_USE_PRECEDING = new Set([
@@ -1606,7 +1644,7 @@ function classifyReference(
     return { name, kind: "none" };
 
   if (code[after] === "." || (code[after] === "?" && code[after + 1] === ".")) {
-    const member = /^\??\.\s*([A-Za-z_$][\w$]*)/.exec(code.slice(after, after + 80));
+    const member = MEMBER.exec(code.slice(after, after + 80));
     // `X.parse(…)` is the same call wherever it is written; any other member
     // is read off the schema, and most of them derive a new one from it.
     return {
@@ -1890,6 +1928,7 @@ export function analyzeZodSchemas(code: string, options?: AnalyzeOptions): Schem
   }
   const hoists: Hoist[] = [];
   const declByText = new Map<string, string>();
+  const declNames = new Set<string>();
   let consumedUntil = 0;
 
   const moduleScope: ModuleScopeSchema[] = [];
@@ -1949,9 +1988,7 @@ export function analyzeZodSchemas(code: string, options?: AnalyzeOptions): Schem
       if (declared !== null) bindings.push({ name: declared[1] as string, index: candidate.index });
       return;
     }
-    const member = /^[\w$]+\s*\??\.\s*([A-Za-z_$][\w$]*)/.exec(
-      code.slice(candidate.index, candidate.index + 120),
-    );
+    const member = ROOT_MEMBER.exec(code.slice(candidate.index, candidate.index + 120));
     // A schema derived from an imported one (`Base.extend(…)`): what it is
     // given are its parts, and if it is exported, discovery has all of it.
     if (builds(candidate.name, member === null ? null : (member[1] as string))) return;
@@ -2096,8 +2133,9 @@ export function analyzeZodSchemas(code: string, options?: AnalyzeOptions): Schem
     const text = code.slice(candidate.index, chain.end);
     let declName = declByText.get(text);
     if (!declName) {
-      declName = `_zh_${fnv1a(text)}`;
+      declName = hoistedName(text, declNames);
       declByText.set(text, declName);
+      declNames.add(declName);
     }
     hoists.push({ start: candidate.index, end: chain.end, name: declName });
     // Non-zod-rooted chains mask their interior only on success — the inner
@@ -2133,9 +2171,7 @@ export function analyzeZodSchemas(code: string, options?: AnalyzeOptions): Schem
       }
       moduleScope.push({
         ...schema,
-        // (The generated function is named after it, and a `$` is one
-        // character more than that name's reader allows.)
-        label: /^\w+$/.test(name) ? name : schema.label,
+        label: name,
         name,
         within: [...new Set(mentions.flatMap((m) => (m.within === undefined ? [] : [m.within])))],
         contained:

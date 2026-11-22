@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vite-plus/test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import { z } from "zod";
 import * as zm from "zod/mini";
 import { generateCompiledFileContent, resolveOutputPath } from "#src/cli/emitter.js";
 import { expectParses } from "../expect-parses.js";
 import type { CodeGenResult } from "#src/core/codegen/index.js";
 import { compileSchemas } from "#src/core/pipeline.js";
+import { discoverSchemas } from "#src/discovery.js";
+import { loadSourceFile } from "#src/loader.js";
 
 describe("generateCompiledFileContent()", () => {
   it("generates a valid compiled file with header and __zcMkv wrapper", () => {
@@ -273,5 +278,76 @@ describe("resolveOutputPath()", () => {
     const result = resolveOutputPath("src/schemas.ts", "out/");
     expect(result).toContain("out/");
     expect(result).toContain("schemas.compiled.ts");
+  });
+});
+
+describe("generateCompiledFileContent() — export names", () => {
+  // Inside the repo tree, so that `zod` resolves for discovery (which executes
+  // the file) and for executing the output.
+  const root = mkdtempSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "fixtures", ".emitter-names-"),
+  );
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("declares an export under its own name, and one no declaration can take by specifier", async () => {
+    const file = path.join(root, "schemas.ts");
+    writeFileSync(
+      file,
+      `import { z } from "zod";
+export const $Schema = z.object({ a: z.string() });
+export const Schéma = z.string().min(2);
+const Local = z.number().int();
+export { Local as "user-schema" };
+`,
+    );
+    const schemas = await discoverSchemas(file, { autoDiscover: true });
+    expect(schemas.map((s) => s.exportName).sort()).toEqual(
+      ["$Schema", "Schéma", "user-schema"].sort(),
+    );
+    const { schemas: infos, shared } = compileSchemas(schemas, { mode: "inline" });
+    const content = generateCompiledFileContent(infos, "./schemas.ts", {
+      sharedCode: shared.code,
+    });
+    expectParses(content);
+    expect(content).toContain("export const $Schema = ");
+    expect(content).toContain("export const Schéma = ");
+    expect(content).toMatch(/\nexport \{ __zcExport_\d+ as "user-schema" \};/);
+    expect(content).toMatch(/import \{ [^}]*"user-schema" as __src_\d+[^}]*\} from "\.\/schemas";/);
+
+    const compiledFile = path.join(root, "schemas.compiled.ts");
+    writeFileSync(compiledFile, content);
+    const compiled = await loadSourceFile(compiledFile);
+    const cases: [string, z.ZodType, unknown[]][] = [
+      ["$Schema", z.object({ a: z.string() }), [{ a: "x" }, { a: 1 }]],
+      ["Schéma", z.string().min(2), ["ab", "a"]],
+      ["user-schema", z.number().int(), [1, 1.5]],
+    ];
+    for (const [name, reference, inputs] of cases) {
+      const schema = compiled[name] as z.ZodType & { is?: unknown };
+      expect(typeof schema.is, name).toBe("function");
+      for (const input of inputs) {
+        expect(schema.safeParse(input).success, `${name}: ${JSON.stringify(input)}`).toBe(
+          reference.safeParse(input).success,
+        );
+      }
+    }
+  });
+
+  it("exports a schema discovered as the default export as the default", () => {
+    // Discovery reports one this way for `export default compile(…)` as module
+    // interop can hand it over: `{ default: <compiled> }`. `export const
+    // default` is a SyntaxError.
+    const { schemas, shared } = compileSchemas([{ exportName: "default", schema: z.boolean() }], {
+      mode: "inline",
+    });
+    const content = generateCompiledFileContent(schemas, "./schemas.ts", {
+      sharedCode: shared.code,
+    });
+    expectParses(content);
+    expect(content).not.toContain("export const default");
+    expect(content).toContain(`import { default as __src_0 } from "./schemas";`);
+    expect(content).toContain("\nexport { __zcExport_0 as default };");
   });
 });

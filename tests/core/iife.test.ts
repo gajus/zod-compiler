@@ -11,6 +11,7 @@ import {
   MK_VALIDATOR_DECL,
 } from "#src/core/iife.js";
 import type { CompiledSchemaInfo } from "#src/core/pipeline.js";
+import { expectParses } from "../expect-parses.js";
 import { zcMsg } from "../parity-harness.js";
 
 /**
@@ -247,6 +248,31 @@ describe("generateIIFE() — error handling", () => {
     expect(() => generateIIFE("Schema", info)).toThrow(
       "Cannot extract function name from generated code",
     );
+  });
+});
+
+describe("generateIIFE() — an export's name", () => {
+  it("names the validator with what of it an identifier can carry", () => {
+    // A module can export under any string (`export { S as "user-schema" }`).
+    // The name the IIFE reads back off the function was read with `\w+`, so
+    // a `$` or an `é` threw, and with it the transform of the whole file.
+    const ir = extractSchema(z.string());
+    const names: [string, string][] = [
+      ["$Schema", "safeParse_$Schema"],
+      ["Schéma", "safeParse_Schéma"],
+      ["𝒳", "safeParse_𝒳"],
+      ["user-schema", "safeParse_user_schema"],
+      ["2x", "safeParse_2x"],
+      ["a b", "safeParse_a_b"],
+      ["😀", "safeParse__"],
+    ];
+    for (const [exportName, fnName] of names) {
+      const codegenResult = generateValidator(ir, exportName);
+      expect(codegenResult.functionDef.startsWith(`function ${fnName}(input){`)).toBe(true);
+      const iife = generateIIFE("schema", { exportName, codegenResult, refEntries: [] });
+      expect(iife).toContain(`__zcMkv(${fnName},schema,`);
+      expectParses(`declare const schema: any;\nexport const value = ${iife};`, exportName);
+    }
   });
 });
 

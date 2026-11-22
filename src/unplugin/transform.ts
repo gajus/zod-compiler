@@ -9,6 +9,12 @@ import {
   warnUnsupportedZodOnce,
 } from "../core/extract/zod-version.js";
 import {
+  IDENTIFIER,
+  IDENTIFIER_PART,
+  isIdentifierName,
+  wholeIdentifier,
+} from "../core/identifier.js";
+import {
   FAIL_CLASS_DECL,
   FAIL_CORE_CLASS_DECL,
   FAILZ_CLASS_DECL,
@@ -908,11 +914,10 @@ function collectCompileRewriteEdits(
 ): Edit[] {
   const edits: Edit[] = [];
   for (const schema of schemas) {
-    // Match: <exportName> = compile<...>( with word boundary to prevent substring matches
-    const prefixPattern = new RegExp(
-      `(\\b${schema.exportName}\\s*=\\s*)compile\\s*(?:<[^>]*(?:<[^>]*>[^>]*)?>)?\\s*\\(`,
-    );
-    const match = prefixPattern.exec(code);
+    // A name no binding can have (`export { S as "user-schema" }`) is not
+    // assigned anywhere.
+    if (!isIdentifierName(schema.exportName)) continue;
+    const match = findCompileAssignment(code, schema.exportName);
     if (!match) continue;
 
     // Find the matching closing paren (handles nested parens)
@@ -934,6 +939,25 @@ function collectCompileRewriteEdits(
   }
   edits.push(...collectRemoveCompileImportEdits(code));
   return edits;
+}
+
+/**
+ * The first `<name> = compile<…>(` in `code` that assigns `name` itself, not a
+ * longer name it ends (`$User` for `User`). The boundary is checked where a
+ * match is found: a lookbehind for an identifier character, at the head of the
+ * pattern, slowed the search for its literal name enough to cost a file of
+ * 4,000 `compile()` exports a tenth of its transform.
+ */
+function findCompileAssignment(code: string, name: string): RegExpExecArray | null {
+  const pattern = new RegExp(
+    `(${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*=\\s*)compile\\s*(?:<[^>]*(?:<[^>]*>[^>]*)?>)?\\s*\\(`,
+    "g",
+  );
+  for (let match = pattern.exec(code); match !== null; match = pattern.exec(code)) {
+    if (identifierStartBefore(code, match.index) === match.index) return match;
+    pattern.lastIndex = match.index + 1;
+  }
+  return null;
 }
 
 /**
@@ -975,39 +999,56 @@ export function rewriteSourceAutoDiscover(
  * costs one export its `@__PURE__` annotation; a false negative emits an IIFE
  * that dereferences a binding still under initialization. The expression text
  * is often TypeScript (`z.custom<T>(...)`), which no JS parser here can be
- * trusted to walk, so a word-boundary scan — which cannot miss a real
- * identifier reference — is the sound direction to be wrong in.
+ * trusted to walk, so a lexical scan for the whole name — which cannot miss a
+ * real identifier reference — is the sound direction to be wrong in. (`\b`
+ * could: it sees no edge at a `$` or a letter outside ASCII, so `$Node` and
+ * `Nodé` were never found in their own getters.)
  */
 function mentionsIdentifier(expr: string, name: string): boolean {
-  return new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(expr);
+  return new RegExp(wholeIdentifier(name), "u").test(expr);
+}
+
+/** One character, or one surrogate pair, that an identifier can continue with. */
+const IDENTIFIER_CHARACTER = new RegExp(`^${IDENTIFIER_PART}$`, "u");
+
+/** Where the run of identifier characters that ends at `end` begins. */
+function identifierStartBefore(code: string, end: number): number {
+  let start = end;
+  while (start > 0) {
+    const last = code.charCodeAt(start - 1);
+    const width =
+      last >= 0xdc00 &&
+      last <= 0xdfff &&
+      start > 1 &&
+      (code.charCodeAt(start - 2) & 0xfc00) === 0xd800
+        ? 2
+        : 1;
+    if (!IDENTIFIER_CHARACTER.test(code.slice(start - width, start))) break;
+    start -= width;
+  }
+  return start;
 }
 
 /**
- * Which of `names` are assigned a `compile(…)` call in `code`: those for which
- * `\b<name>\s*=\s*compile[\s<(]` matches.
+ * Which of `names` are assigned a `compile(…)` call in `code`: those written,
+ * whole, in front of a `= compile(`.
  *
- * The assignments are found once, and the word in front of each is read off.
- * Building that pattern per name and running it over the whole file was
+ * The assignments are found once, and the name in front of each is read off.
+ * Building a pattern per name and running it over the whole file was
  * quadratic in the schemas a file exports, most of which have no `compile(` to
- * find. A name with a character outside `\w` still gets the pattern itself, as
- * it always has (where a `$` in it is an anchor, so it never matched).
+ * find.
  */
 function compileAssignedNames(code: string, names: readonly string[]): Set<string> {
   const assigned = new Set<string>();
   for (const site of code.matchAll(/=\s*compile[\s<(]/g)) {
     let end = site.index;
     while (end > 0 && /\s/.test(code[end - 1] as string)) end--;
-    let start = end;
-    while (start > 0 && /\w/.test(code[start - 1] as string)) start--;
-    assigned.add(code.slice(start, end));
+    assigned.add(code.slice(identifierStartBefore(code, end), end));
   }
   const found = new Set<string>();
   if (assigned.size === 0) return found;
   for (const name of names) {
-    const matches = /^\w+$/.test(name)
-      ? assigned.has(name)
-      : new RegExp(`\\b${name}\\s*=\\s*compile[\\s<(]`).test(code);
-    if (matches) found.add(name);
+    if (assigned.has(name)) found.add(name);
   }
   return found;
 }
@@ -1027,7 +1068,7 @@ function compileAssignedNames(code: string, names: readonly string[]): Set<strin
 function findInitializers(code: string, names: ReadonlySet<string>): Map<string, number> {
   const starts = new Map<string, number>();
   const keyword = /(?:const|let|var)\s+/g;
-  const binding = /[\p{ID_Start}$_][\p{ID_Continue}$\u200C\u200D]*/uy;
+  const binding = new RegExp(IDENTIFIER, "uy");
   const equals = /(?:\s*:[^=]*)?\s*=\s*/y;
   while (starts.size < names.size && keyword.exec(code) !== null) {
     binding.lastIndex = keyword.lastIndex;

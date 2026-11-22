@@ -5,6 +5,7 @@
 
 import { FINALIZERS, RETAINED_SCHEMA_VAR } from "./codegen/context.js";
 import { ZOD_FALLBACK_FLAG } from "./codegen/issue-decls.js";
+import { IDENTIFIER } from "./identifier.js";
 import type { CompiledSchemaInfo } from "./pipeline.js";
 
 /**
@@ -534,8 +535,11 @@ export const MK_VALIDATOR_DECL =
   Object.values(ENTRY_POINT_HELPER_DECLS).join("") +
   ZOD_RUN_DECL;
 
+/** The validator's own name: `safeParse_` and the export's, as generateValidator spells it. */
+const FUNCTION_NAME = new RegExp(String.raw`^function\s+(${IDENTIFIER})\s*\(`, "u");
+
 function extractFunctionName(functionDef: string): string {
-  const match = /^function\s+(\w+)\s*\(/.exec(functionDef);
+  const match = FUNCTION_NAME.exec(functionDef);
   if (!match?.[1]) {
     throw new Error("Cannot extract function name from generated code");
   }

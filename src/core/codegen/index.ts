@@ -1,4 +1,5 @@
 import type { ZodErrorClass } from "../extract/error-class.js";
+import { asIdentifierPart } from "../identifier.js";
 import type { SchemaIR } from "../types.js";
 import type {
   CodeGenContext,
@@ -84,7 +85,7 @@ export function generateValidator(
   name: string,
   options?: GenerateValidatorOptions,
 ): CodeGenResult {
-  const fnName = `safeParse_${name}`;
+  const fnName = `safeParse_${asIdentifierPart(name)}`;
   const mode: CodegenMode = options?.mode ?? "inline";
   // Every failure the compiled walk reports goes through one of these two, so
   // they decide the class `.error` is built with. (Compact and root-fallback

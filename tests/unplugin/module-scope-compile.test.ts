@@ -96,8 +96,8 @@ function compiledInPlace(out: string | null, before: string, expression: string)
   // is bound to that same text).
   const body = (out ?? "").slice((out ?? "").indexOf(start) + start.length);
   const iife = body.slice(0, body.indexOf("\n})()"));
-  expect(iife).toMatch(/return (?:__zcZr\()?__zcMkv\(safeParse_\w+,/);
-  expect(iife.includes(`__zcMkv(${/safeParse_\w+/.exec(iife)?.[0]},${expression},`)).toBe(
+  expect(iife).toMatch(/return (?:__zcZr\()?__zcMkv\(safeParse_[\w$]+,/);
+  expect(iife.includes(`__zcMkv(${/safeParse_[\w$]+/.exec(iife)?.[0]},${expression},`)).toBe(
     !iife.includes(`var __zs=${expression};`),
   );
 }
@@ -197,9 +197,7 @@ describe("module-scope schemas no export reaches are compiled where they stand",
     expect(out).toContain(`export function handler(input: unknown) { return Body.parse(input); }`);
   });
 
-  it("a private binding whose name a generated function cannot carry", async () => {
-    // The validator's functions are named after the binding, by a reader that
-    // stops at `$`. The name is only a label: any other serves.
+  it("a private binding named with a `$`, after which its validator is named", async () => {
     const out = await transform([
       ZOD,
       `const $Body = z.object({ id: z.number() });`,
@@ -208,7 +206,7 @@ describe("module-scope schemas no export reaches are compiled where they stand",
 
     expect(validators(out)).toBe(1);
     compiledInPlace(out, "const $Body = ", "z.object({ id: z.number() })");
-    expect(out).toMatch(/function safeParse__zi_[0-9a-f]{8}\(input\)/);
+    expect(out).toContain("function safeParse_$Body(input)");
   });
 
   it("the same schema written twice, each where it is", async () => {
@@ -340,6 +338,21 @@ describe("a schema is compiled once", () => {
     expect(validators(out)).toBe(1);
     expect(out).toContain(`const Body = z.object({ id: z.number() });`);
     expect(out).toContain(`export const BodySchema = /* @__PURE__ */ (() => {`);
+  });
+
+  it("a binding exported under a name outside ASCII is compiled through that export", async () => {
+    // The declaration the binding is mentioned in has to be read whole, or
+    // the schema is compiled where it stands AND through the export.
+    const out = await transform([
+      ZOD,
+      `const Body = z.object({ id: z.number() });`,
+      `export const CuerpoÚnico = Body;`,
+      `export const check = (v: unknown) => Body.safeParse(v);`,
+    ]);
+
+    expect(validators(out)).toBe(1);
+    expect(out).toContain(`const Body = z.object({ id: z.number() });`);
+    expect(out).toContain(`export const CuerpoÚnico = /* @__PURE__ */ (() => {`);
   });
 
   it("a binding handed to compile() is compiled through that call", async () => {

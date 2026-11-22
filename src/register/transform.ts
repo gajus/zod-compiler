@@ -1,4 +1,5 @@
 import { parse, type ExportSpecifier } from "es-module-lexer";
+import { isIdentifierName } from "../core/identifier.js";
 import { hoistZodSchemasMeta, type HoistOptions } from "../unplugin/hoist.js";
 import { shouldTransform } from "../unplugin/transform.js";
 import type { ZodCompilerRegisterConfig } from "./config.js";
@@ -124,7 +125,7 @@ const RESERVED_WORDS = new Set([
 
 /** Can this text be emitted as a bare identifier reference? */
 function isEmittableIdentifier(name: string): boolean {
-  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) && !RESERVED_WORDS.has(name);
+  return isIdentifierName(name) && !RESERVED_WORDS.has(name);
 }
 
 /**
