@@ -290,6 +290,12 @@ export function slowString(ir: StringIR, g: SlowGen): string {
 
   if (ir.checks.length > 0) {
     code += `else{`;
+    // The issue count as the checks start: a superRefine's payload holds what
+    // the checks before it raised (see superRefineCheck).
+    const issueMark = ir.checks.some((check) => check.kind === "super_refine_effect")
+      ? g.temp("rm")
+      : "";
+    if (issueMark) code += `var ${issueMark}=${g.issues}.length;`;
     // Insertion order mirrors zod's issue order for multi-failure inputs;
     // the slow path collects all issues with no short-circuit.
     for (const check of ir.checks) {
@@ -346,7 +352,7 @@ export function slowString(ir: StringIR, g: SlowGen): string {
           code += refineCheck(check, g.input, g);
           break;
         case "super_refine_effect":
-          code += superRefineCheck(check, g.input, g);
+          code += superRefineCheck(check, g.input, g, issueMark);
           break;
         case "overwrite_effect":
           // $ZodCheckOverwrite: value = tx(value). Later checks read the

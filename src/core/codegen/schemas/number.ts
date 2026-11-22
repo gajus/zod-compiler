@@ -35,6 +35,12 @@ export function slowNumber(ir: NumberIR, g: SlowGen): string {
 
   if (ir.checks.length > 0) {
     code += `else{`;
+    // The issue count as the checks start: a superRefine's payload holds what
+    // the checks before it raised (see superRefineCheck).
+    const issueMark = ir.checks.some((check) => check.kind === "super_refine_effect")
+      ? g.temp("rm")
+      : "";
+    if (issueMark) code += `var ${issueMark}=${g.issues}.length;`;
     // An integer FORMAT check (`.int()`, `.int32()`, `.uint32()`) is the one
     // check here that can report `invalid_type` — non-continuable — and zod's
     // `runChecks` then skips every check after it (`else if (isAborted)
@@ -155,7 +161,7 @@ export function slowNumber(ir: NumberIR, g: SlowGen): string {
           code += refineCheck(check, g.input, g);
           break;
         case "super_refine_effect":
-          code += superRefineCheck(check, g.input, g);
+          code += superRefineCheck(check, g.input, g, issueMark);
           break;
       }
       if (opensIntGuard(check)) seenIntFormat = true;

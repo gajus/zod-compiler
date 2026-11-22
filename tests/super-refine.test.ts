@@ -21,7 +21,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { core, z } from "zod";
 import { extractSchema, type RefEntry } from "#src/core/extract/index.js";
 import type { ArrayIR, ObjectIR, SchemaIR, StringIR } from "#src/core/types.js";
-import { compileLikeProduction, expectParity } from "./parity-harness.js";
+import { compileLikeProduction, expectLeanParity, expectParity } from "./parity-harness.js";
 
 const irOf = (schema: unknown): { ir: SchemaIR; refs: RefEntry[] } => {
   const refs: RefEntry[] = [];
@@ -262,5 +262,143 @@ describe("superRefine — compiles by calling zod's payload wrapper", () => {
       const ir = extractSchema(z.string().superRefine(() => {}));
       expect(ir.type).toBe("fallback");
     });
+  });
+});
+
+describe("superRefine — the issues its node already has", () => {
+  // zod hands the callback the node's own payload. When a member or an earlier
+  // check failed without aborting (a `.min()`, a `.refine()`), the check still
+  // runs, and `ctx.issues` holds those issues with paths relative to the node.
+  // The compiled walk handed the callback an empty list, so one that skips its
+  // cross-field rule while the fields are invalid reported an issue zod never
+  // does.
+
+  type Ctx = { issues: { code: string; path: PropertyKey[] }[] };
+  const view = (ctx: Ctx): string =>
+    JSON.stringify(ctx.issues.map(({ code, path }) => ({ code, path })));
+
+  /**
+   * Build the schema twice, each recording what its callback is shown, and hold
+   * the compiled one to zod's view as well as to zod's results.
+   */
+  function expectZodsView(make: (record: (ctx: Ctx) => void) => z.ZodType, inputs: unknown[]) {
+    const zodSaw: string[] = [];
+    const compiledSaw: string[] = [];
+    const reference = make((ctx) => zodSaw.push(view(ctx)));
+    const compiled = compileLikeProduction(
+      make((ctx) => compiledSaw.push(view(ctx))),
+      "srView",
+    );
+    for (const input of inputs) {
+      reference.safeParse(input);
+      compiled(input);
+    }
+    expect(compiledSaw).toEqual(zodSaw);
+    // Inline output declares the helpers in its own preamble; lean output
+    // imports them from the runtime module, where `__zcSrP` stays module-local.
+    expectParity(
+      make(() => {}),
+      inputs,
+    );
+    expectLeanParity(
+      make(() => {}),
+      inputs,
+    );
+  }
+
+  /** A cross-field rule that waits until the fields themselves are valid. */
+  const sameGuarded =
+    (record: (ctx: Ctx) => void) =>
+    (v: { a: string; b: string }, ctx: z.core.$RefinementCtx<{ a: string; b: string }>) => {
+      record(ctx as unknown as Ctx);
+      if (ctx.issues.length > 0) return;
+      if (v.a === v.b) ctx.addIssue({ code: "custom", message: "same", path: ["b"] });
+    };
+
+  it("after a member failed a check that does not abort", () => {
+    expectZodsView(
+      (record) =>
+        z.object({ a: z.string().min(3), b: z.string() }).superRefine(sameGuarded(record)),
+      [
+        { a: "x", b: "x" },
+        { a: "xyz", b: "xyz" },
+        { a: "xyz", b: "abc" },
+        { a: 1, b: "x" },
+      ],
+    );
+  });
+
+  it("after an earlier refine on the same node", () => {
+    expectZodsView(
+      (record) =>
+        z
+          .object({ a: z.string(), b: z.string() })
+          .refine((v) => v.a !== "bad", "bad a")
+          .superRefine(sameGuarded(record)),
+      [
+        { a: "bad", b: "bad" },
+        { a: "ok", b: "ok" },
+      ],
+    );
+  });
+
+  it("with paths relative to a nested node", () => {
+    expectZodsView(
+      (record) =>
+        z.object({
+          outer: z.string().min(2),
+          inner: z.object({ a: z.string().min(3), b: z.string() }).superRefine(sameGuarded(record)),
+        }),
+      [
+        { outer: "x", inner: { a: "x", b: "x" } },
+        { outer: "xy", inner: { a: "xyz", b: "xyz" } },
+      ],
+    );
+  });
+
+  it("on a string, a number and an array", () => {
+    // The callback adds an issue only where the node has one already. One that
+    // rejected a value the checks before it accepted would run twice on a root
+    // primitive: its fast check calls the callback too, and the walk calls it
+    // again for the issues.
+    const recordAndEcho =
+      (record: (ctx: Ctx) => void) => (_v: unknown, ctx: z.core.$RefinementCtx<unknown>) => {
+        record(ctx as unknown as Ctx);
+        if (ctx.issues.length > 0) ctx.addIssue("echo");
+      };
+    expectZodsView(
+      (record) => z.object({ s: z.string().min(3).superRefine(recordAndEcho(record)) }),
+      [{ s: "x" }, { s: "xyz" }],
+    );
+    expectZodsView((record) => z.number().min(5).superRefine(recordAndEcho(record)), [1, 7]);
+    expectZodsView(
+      (record) => z.array(z.string().min(2)).min(3).superRefine(recordAndEcho(record)),
+      [["a", "bb", "c"], ["aa", "bb", "cc"], ["a"]],
+    );
+  });
+
+  it("that the callback clears or rewrites", () => {
+    // The list is the node's: what the callback leaves in it is what the node
+    // reports.
+    expectZodsView(
+      (record) =>
+        z.object({ a: z.string().min(3), b: z.string().min(3) }).superRefine((_v, ctx) => {
+          record(ctx as unknown as Ctx);
+          ctx.issues.splice(0, 1);
+        }),
+      [
+        { a: "x", b: "y" },
+        { a: "x", b: "yyy" },
+        { a: "xxx", b: "yyy" },
+      ],
+    );
+    expectZodsView(
+      (record) =>
+        z.object({ a: z.string().min(3) }).superRefine((_v, ctx) => {
+          record(ctx as unknown as Ctx);
+          for (const issue of ctx.issues) issue.message = "rewritten";
+        }),
+      [{ a: "x" }, { a: "xxx" }],
+    );
   });
 });

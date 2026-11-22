@@ -159,11 +159,15 @@ export function superRefineFastTest(
  * output slot the way an overwrite effect is. This walk is always the eager one
  * (the node reports as mutating, see hasMutation), so the write-back lands on
  * every parse that reaches it — not only on failures.
+ *
+ * `start` names the local holding the issue count when the node was entered:
+ * the payload's `issues` holds what the node raised since (see ZC_SR_DECL).
  */
 export function superRefineCheck(
   check: SuperRefineEffectCheckIR,
   expr: string,
   g: SlowGen,
+  start: string,
 ): string {
   emitSuperRefineRunner(g.ctx);
   const helper = emitRuntimeHelper(g.ctx, "__zcSr", ZC_SR_DECL);
@@ -172,7 +176,7 @@ export function superRefineCheck(
   // The owning schema's message covers an added issue that carries none of its
   // own, as it does for a refine (see refineCheck); the helper applies it.
   const msgArg = g.typeMsg === undefined ? "" : `,${JSON.stringify(g.typeMsg)}`;
-  let code = `var ${p}=${helper}(${fn},${expr},${g.path},${g.issues}${msgArg});${g.output}=${p}.value;`;
+  let code = `var ${p}=${helper}(${fn},${expr},${g.path},${g.issues},${start}${msgArg});${g.output}=${p}.value;`;
   // Inside a union option, an aborting issue must mark the option aborted so
   // pruning matches zod (see ZC_SR_DECL); elsewhere the flag is unobserved.
   if (g.aborted) code += `if(${p}.aborted){${g.aborted}=true;}`;

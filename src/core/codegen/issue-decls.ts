@@ -584,6 +584,31 @@ export const ZC_DELEGATE_ISSUES_DECL =
  * and the owning schema's static message `m` applied to an issue that carries
  * none of its own, since zod stamps the owner onto every issue a check raises.
  *
+ * The payload zod hands the callback is the node's own, so its `issues` already
+ * holds what the node raised before the check ran — a member's failed `.min()`,
+ * an earlier `.refine()`: whatever did not abort, or the check would not run.
+ * Those are the validator's issues from index `b` on. The callback is handed
+ * the issue objects themselves, each path made relative to the node as zod's
+ * payload has it, so `if (ctx.issues.length) return` holds back a cross-field
+ * rule as it does in zod. (An issue of the node's own has no path yet in zod,
+ * since no parent has prefixed one, unless a refine raised it: those are
+ * `custom` and carry the `path` their check declares. `undefined` stands in
+ * for the missing key, keeping the others where they are, which the error's
+ * message prints in order.) What the callback leaves in the list is what the
+ * node reports: those issues go back with their whole path again (cleared,
+ * reordered or edited if it did that), and anything else is new, merged as
+ * above. Handing over copies instead put a regular failure (a field's `.min()`
+ * beside the cross-field rule) at 290 ns where it had been 45, every copy a
+ * `for…in` and a `delete`. That work is `__zcSrP`'s, reached only when the node
+ * has issues already: kept in `__zcSr`, it doubled a valid parse, the helper
+ * grown too large for V8 to inline into the validator. It rebuilds the list
+ * only when the callback took something out of it or moved it; one that read
+ * it, or added to it, has the paths put back where the issues stand. At the
+ * root, where a relative path is the whole path, nothing is copied at all.
+ * `__zcSrI` merges one issue the callback added, for both, and `__zcSrJ` joins
+ * the node's path to an issue's: a copy loop, where `concat` — a C++ builtin
+ * in V8 — cost a nested failure about 55 ns a path (see ZC_PATH_APPEND_DECL).
+ *
  * Returns the payload, so the caller can write `.value` back (the callback may
  * have rewritten it) and read `.aborted`. Aborted is set when any issue aborts
  * in zod's sense (`continue !== true`, which covers `fatal: true` and the string
@@ -598,12 +623,25 @@ export const ZC_DELEGATE_ISSUES_DECL =
  * `finalizeIssue` does, so no user-visible issue carries it.
  */
 export const ZC_SR_DECL =
-  "function __zcSr(f,v,p,e,m){var q={value:v,issues:[]};__zcSrRun(f,q);" +
-  "for(var i=0;i<q.issues.length;i++){var s=q.issues[i],t={};" +
-  'for(var k in s){if(k!=="inst"&&k!=="continue")t[k]=s[k];}' +
+  "function __zcSr(f,v,p,e,b,m){if(b<e.length)return __zcSrP(f,v,p,e,b,m);" +
+  "var q={value:v,issues:[]};__zcSrRun(f,q);" +
+  "for(var i=0;i<q.issues.length;i++)__zcSrI(q,q.issues[i],p,e,m);return q;}" +
+  "function __zcSrP(f,v,p,e,b,m){var n=e.length,l=p.length,q={value:v,issues:e.slice(b)},c,o,i,s;" +
+  "for(i=b;i<n;i++){s=e[i];" +
+  's.path=s.path.length>l||s.code==="custom"?(l?s.path.slice(l):s.path):undefined;}' +
+  "__zcSrRun(f,q);c=q.issues;for(i=0;i<n-b&&c[i]===e[b+i];i++);" +
+  "if(i===n-b){for(i=b;i<n;i++){s=e[i];s.path=__zcSrJ(p,s.path);}" +
+  "for(i=n-b;i<c.length;i++)__zcSrI(q,c[i],p,e,m);return q;}" +
+  "o=e.slice(b);e.length=b;for(i=0;i<c.length;i++){s=c[i];" +
+  "if(o.indexOf(s)!==-1){s.path=__zcSrJ(p,s.path);e.push(s);}" +
+  "else __zcSrI(q,s,p,e,m);}return q;}" +
+  "function __zcSrI(q,s,p,e,m){var t={},k;" +
+  'for(k in s){if(k!=="inst"&&k!=="continue")t[k]=s[k];}' +
   "if(s.continue!==true){q.aborted=true;t.continue=false;}" +
-  "t.path=s.path&&s.path.length?p.concat(s.path):p;" +
-  "if(t.message===undefined&&m!==undefined)t.message=m;e.push(t);}return q;}";
+  "t.path=__zcSrJ(p,s.path);" +
+  "if(t.message===undefined&&m!==undefined)t.message=m;e.push(t);}" +
+  "function __zcSrJ(p,r){var n=p.length,k=r?r.length:0,o,i;if(k===0)return p;if(n===0)return r;" +
+  "o=new Array(n+k);for(i=0;i<n;i++)o[i]=p[i];for(i=0;i<k;i++)o[n+i]=r[i];return o;}";
 
 /** Non-issue runtime helper declarations hosted in the virtual module. */
 export const RUNTIME_HELPER_DECLS: Readonly<Record<string, string>> = {

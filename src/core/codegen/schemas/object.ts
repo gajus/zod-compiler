@@ -295,7 +295,7 @@ export function slowObject(ir: SchemaIR & { type: "object" }, g: SlowGen): strin
     for (const check of ir.checks) {
       refines +=
         check.kind === "super_refine_effect"
-          ? superRefineCheck(check, objVar, g)
+          ? superRefineCheck(check, objVar, g, refineMark)
           : refineCheck(check, objVar, g);
     }
     const aborted = emitRuntimeHelper(g.ctx, "__zcAb", ZC_AB_DECL);

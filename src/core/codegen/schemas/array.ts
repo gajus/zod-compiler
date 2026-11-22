@@ -110,7 +110,7 @@ export function slowArray(ir: SchemaIR & { type: "array" }, g: SlowGen): string 
         code += gated(refineCheck(check, parsed, g));
         break;
       case "super_refine_effect":
-        code += gated(superRefineCheck(check, parsed, g));
+        code += gated(superRefineCheck(check, parsed, g, refineMark));
         break;
     }
   }
