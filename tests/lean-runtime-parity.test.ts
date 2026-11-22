@@ -161,7 +161,7 @@ const CASES: [label: string, schema: z.ZodType, inputs: unknown[]][] = [
 
   // ── custom (refine) and the non-issue runtime helpers ────────────────────
   // __zcFsr — float-safe remainder; __zcHop — record key guard;
-  // __zcAb — abort gating; __zcSr / __zcSrOk — superRefine;
+  // __zcAb — abort gating; __zcSr — superRefine;
   // __zcCu — z.custom predicate; __zcPfx — map entry path prefixing.
   ["not_multiple_of float", z.number().multipleOf(0.1), [0.15]],
   ["record value", z.record(z.string(), z.number()), [{ a: "x" }]],
@@ -175,10 +175,10 @@ const CASES: [label: string, schema: z.ZodType, inputs: unknown[]][] = [
   ],
   ["custom refine", z.string().refine((s) => s.length > 3, "too short"), ["a"]],
   ["custom refine with params", z.string().refine(() => false, { params: { tag: "t" } }), ["a"]],
-  // A fast-path-eligible node routes its superRefine through __zcSrOk first
-  // (the verdict-only probe); the string form above only ever reaches __zcSr.
+  // A number reaches __zcSr as the string below does: a node carrying a
+  // superRefine has no fast check (see hasSuperRefine).
   [
-    "superRefine fast-eligible",
+    "superRefine on a number",
     z.number().superRefine((n, ctx) => {
       if (n < 3) ctx.addIssue({ code: "custom", input: n, message: "srf" });
     }),

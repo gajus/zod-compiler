@@ -13,7 +13,7 @@ import {
   extendStaticPathIndex,
 } from "../context.js";
 import { emit } from "../emit.js";
-import { ZC_ASYNC_DECL, ZC_SR_DECL, ZC_SR_OK_DECL, ZC_SR_RUN_DECL } from "../issue-decls.js";
+import { ZC_ASYNC_DECL, ZC_SR_DECL, ZC_SR_RUN_DECL } from "../issue-decls.js";
 
 /**
  * Generate code for a TransformEffectIR node.
@@ -124,28 +124,14 @@ export function fastRefineTest(check: RefineEffectCheckIR, expr: string, g: Fast
 }
 
 /**
- * Declare the shared invoker both superRefine helpers call. It is module-local
- * rather than an imported helper (lean mode declares it in the runtime module
- * beside them), so inline mode must place it in the preamble itself.
+ * Declare the invoker the superRefine helper calls. It is module-local rather
+ * than an imported helper (lean mode declares it in the runtime module beside
+ * it), so inline mode must place it in the preamble itself.
  */
 function emitSuperRefineRunner(ctx: SlowGen["ctx"]): void {
   if (ctx.mode !== "lean" && !ctx.preamble.includes(ZC_SR_RUN_DECL)) {
     ctx.preamble.push(ZC_SR_RUN_DECL);
   }
-}
-
-/**
- * Fast-path test for a SuperRefineEffectCheckIR: a boolean term reporting that
- * the callback added no issue and left the value alone (see ZC_SR_OK_DECL).
- */
-export function superRefineFastTest(
-  check: SuperRefineEffectCheckIR,
-  expr: string,
-  g: FastGen,
-): string {
-  emitSuperRefineRunner(g.ctx);
-  const ok = emitRuntimeHelper(g.ctx, "__zcSrOk", ZC_SR_OK_DECL);
-  return `${ok}(${emitEffectCallable(g.ctx, check)},${expr})`;
 }
 
 /**

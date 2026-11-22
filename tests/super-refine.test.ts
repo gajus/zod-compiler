@@ -14,14 +14,20 @@
  *
  * Two semantics constrain when this is legal, both covered below: an issue that
  * ABORTS truncates zod's remaining check chain (so only a LAST check compiles),
- * and `payload.value` is writable public API (so the value is written back, and
- * the fast path refuses when it moved).
+ * and `payload.value` is writable public API (so the value is written back, by
+ * the walk: a node carrying a superRefine has no fast check, see the last
+ * block below).
  */
 import { describe, expect, it } from "vite-plus/test";
 import { core, z } from "zod";
 import { extractSchema, type RefEntry } from "#src/core/extract/index.js";
 import type { ArrayIR, ObjectIR, SchemaIR, StringIR } from "#src/core/types.js";
-import { compileLikeProduction, expectLeanParity, expectParity } from "./parity-harness.js";
+import {
+  compileLikeProduction,
+  expectLeanParity,
+  expectParity,
+  installOnto,
+} from "./parity-harness.js";
 
 const irOf = (schema: unknown): { ir: SchemaIR; refs: RefEntry[] } => {
   const refs: RefEntry[] = [];
@@ -400,5 +406,103 @@ describe("superRefine — the issues its node already has", () => {
         }),
       [{ a: "x" }, { a: "xxx" }],
     );
+  });
+});
+
+describe("superRefine — the callback runs as often as zod runs it", () => {
+  // A node carrying one has no fast check (see hasSuperRefine). A verdict on it
+  // could only come from calling the callback, and one that rejected the value,
+  // or rewrote `ctx.value`, sent the parse on to the walk, which called it
+  // again: twice through `safeParse` and `.is()`, three times through
+  // `parse()`, and on every array element ahead of the one rejected.
+  let calls = 0;
+  const reject = (v: unknown, ctx: z.core.$RefinementCtx<unknown>) => {
+    calls++;
+    if (v === 13) ctx.addIssue("rejected");
+  };
+  const SHAPES: [string, () => z.ZodType, unknown[]][] = [
+    ["a number", () => z.number().min(5).superRefine(reject), [7, 13]],
+    [
+      "a number whose callback rewrites ctx.value",
+      () =>
+        z.number().superRefine((v, ctx) => {
+          calls++;
+          ctx.value = v + 1;
+        }),
+      [1],
+    ],
+    ["an optional number", () => z.number().superRefine(reject).optional(), [7, 13, undefined]],
+    ["a nullable number", () => z.number().min(1).superRefine(reject).nullable(), [7, 13, null]],
+    [
+      "an array of numbers",
+      () => z.array(z.number().superRefine(reject)),
+      [
+        [1, 2],
+        [1, 13, 2],
+      ],
+    ],
+    [
+      "a tuple",
+      () => z.tuple([z.number().superRefine(reject), z.string()]),
+      [
+        [1, "a"],
+        [13, "a"],
+      ],
+    ],
+    [
+      "a strict object",
+      () => z.strictObject({ n: z.number().superRefine(reject) }),
+      [{ n: 1 }, { n: 13 }],
+    ],
+  ];
+  const ENTRY_POINTS: [string, (schema: z.ZodType, input: unknown) => unknown][] = [
+    ["safeParse", (schema, input) => schema.safeParse(input)],
+    [
+      "parse",
+      (schema, input) => {
+        try {
+          return schema.parse(input);
+        } catch {
+          return "threw";
+        }
+      },
+    ],
+    ["~standard.validate", (schema, input) => schema["~standard"].validate(input)],
+  ];
+
+  for (const [label, make, inputs] of SHAPES) {
+    it(label, () => {
+      for (const [entry, run] of ENTRY_POINTS) {
+        for (const input of inputs) {
+          calls = 0;
+          run(make(), input);
+          const zod = calls;
+          calls = 0;
+          run(installOnto(make()), input);
+          expect(calls, `${entry}(${JSON.stringify(input)})`).toBe(zod);
+        }
+      }
+      // `.is()` is the compiled schema's own; zod's verdict costs a safeParse.
+      for (const input of inputs) {
+        calls = 0;
+        make().safeParse(input);
+        const zod = calls;
+        calls = 0;
+        (installOnto(make()) as unknown as { is(x: unknown): boolean }).is(input);
+        expect(calls, `is(${JSON.stringify(input)})`).toBe(zod);
+      }
+      expectParity(make(), inputs);
+    });
+  }
+
+  it("returns the value a callback rewrote, from every entry point", () => {
+    const compiled = installOnto(
+      z.number().superRefine((v, ctx) => {
+        ctx.value = v + 1;
+      }),
+    );
+    expect(compiled.parse(1)).toBe(2);
+    expect(compiled.safeParse(1)).toEqual({ success: true, data: 2 });
+    expect(compiled["~standard"].validate(1)).toEqual({ value: 2 });
   });
 });

@@ -6,13 +6,14 @@ import {
   emitRuntimeHelper,
   extendPath,
   hasMutation,
+  hasSuperRefine,
   isFresh,
   visitMember,
 } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType, tooBig, tooSmall } from "../emit-issue.js";
 import { ZC_AB_DECL, ZC_ARRAY_COPY_DECL } from "../issue-decls.js";
-import { fastRefineTest, refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
+import { fastRefineTest, refineCheck, superRefineCheck } from "./effect.js";
 import { whenGatedSizeChecks } from "./sizeable.js";
 
 export function slowArray(ir: SchemaIR & { type: "array" }, g: SlowGen): string {
@@ -120,6 +121,8 @@ export function slowArray(ir: SchemaIR & { type: "array" }, g: SlowGen): string 
 }
 
 export function fastArray(ir: ArrayIR, g: FastGen): string | null {
+  // A superRefine's callback runs in the walk alone (see hasSuperRefine).
+  if (hasSuperRefine(ir.checks)) return null;
   const x = g.input;
   const parts: string[] = [`Array.isArray(${x})`];
   const checks = ir.checks.filter((c): c is CheckIR => c.kind !== "refine_effect");
@@ -155,11 +158,7 @@ export function fastArray(ir: ArrayIR, g: FastGen): string | null {
 
   // Refine effect checks (appended last — run after cheap checks short-circuit)
   for (const check of ir.checks) {
-    if (check.kind === "refine_effect") {
-      parts.push(fastRefineTest(check, x, g));
-    } else if (check.kind === "super_refine_effect") {
-      parts.push(superRefineFastTest(check, x, g));
-    }
+    if (check.kind === "refine_effect") parts.push(fastRefineTest(check, x, g));
   }
 
   return parts.join("&&");

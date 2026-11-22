@@ -7,6 +7,7 @@ import {
   emitRegexSourceString,
   emitRuntimeHelper,
   escapeString,
+  hasSuperRefine,
 } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidFormat, invalidType, tooBig, tooSmall } from "../emit-issue.js";
@@ -17,7 +18,7 @@ import {
   isDefaultEmailPattern,
   UUID_REGEX_SOURCE,
 } from "../well-known-regex.js";
-import { fastRefineTest, refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
+import { fastRefineTest, refineCheck, superRefineCheck } from "./effect.js";
 import { stringLengthTests, whenGatedSizeChecks } from "./sizeable.js";
 
 /** `re.lastIndex=0;` reset statement for stateful (g/y-flagged) regexes. */
@@ -506,6 +507,8 @@ export function fastString(ir: StringIR, g: FastGen): string | null {
   // Overwrite effects rewrite the value — the fast path returns input
   // unchanged, so any mutation makes it ineligible.
   if (ir.checks.some((c) => c.kind === "overwrite_effect")) return null;
+  // A superRefine's callback runs in the walk alone (see hasSuperRefine).
+  if (hasSuperRefine(ir.checks)) return null;
 
   const x = g.input;
   const parts: string[] = [`typeof ${x}==="string"`];
@@ -521,11 +524,7 @@ export function fastString(ir: StringIR, g: FastGen): string | null {
 
   // Refine effect checks (appended last — run after cheap checks short-circuit)
   for (const check of ir.checks) {
-    if (check.kind === "refine_effect") {
-      parts.push(fastRefineTest(check, x, g));
-    } else if (check.kind === "super_refine_effect") {
-      parts.push(superRefineFastTest(check, x, g));
-    }
+    if (check.kind === "refine_effect") parts.push(fastRefineTest(check, x, g));
   }
 
   return parts.join("&&");

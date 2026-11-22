@@ -1038,11 +1038,17 @@ export function visitMember(
  * A superRefine callback receives zod's payload, whose `value` is public,
  * typed, writable API ($RefinementCtx extends ParsePayload) — so any node
  * carrying one MAY rewrite its value and must be treated as mutating. Which
- * callbacks actually do is undecidable here; the emitted fast check settles it
- * at runtime by refusing when the value changed (see ZC_SR_OK_DECL), so a
- * non-mutating callback still exits through the fast path.
+ * callbacks actually do is undecidable here.
+ *
+ * Such a node has no fast check either. A verdict on it can only come from
+ * calling the callback, and a callback that rejects the value, or rewrites
+ * it, sends the parse on to the walk, which calls it again for the issues or
+ * the new value. zod calls it once; through a fast check it ran twice in
+ * `safeParse` and `.is()` and three times in `parse()`, which consults the
+ * check itself before `safeParse` does, and on every array element ahead of
+ * the one rejected. The eager walk calls it once.
  */
-function hasSuperRefine(checks: readonly { kind: string }[] | undefined): boolean {
+export function hasSuperRefine(checks: readonly { kind: string }[] | undefined): boolean {
   return checks !== undefined && checks.some((c) => c.kind === "super_refine_effect");
 }
 

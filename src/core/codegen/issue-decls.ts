@@ -448,26 +448,7 @@ export function propertyKeyTest(keyExpr: string): string {
 }
 
 /**
- * superRefine fast-check: run the payload callback on a throwaway payload and
- * report whether it both added nothing AND left the value alone. zod's own
- * wrapper (the referenced function) installs `addIssue` and normalizes what the
- * user adds, so the verdict is zod's; the issues themselves are re-collected by
- * the slow walk.
- *
- * The `p.value===v` half is what lets a superRefine node keep a fast path at
- * all. `value` is writable public API ($RefinementCtx extends ParsePayload), so
- * a callback may rewrite it, and the fast path's caller returns the ORIGINAL
- * input on success — which would then be stale. Reporting false when the value
- * moved routes those parses into the slow walk, which propagates the new value
- * (see ZC_SR_DECL). Callbacks that only validate — effectively all of them —
- * still take the fast exit.
- */
-export const ZC_SR_OK_DECL =
-  "function __zcSrOk(f,v){var p={value:v,issues:[]};__zcSrRun(f,p);" +
-  "return p.issues.length===0&&p.value===v;}";
-
-/**
- * Module-local (never imported by generated code) — __zcSr/__zcSrOk call it.
+ * Module-local (never imported by generated code) — __zcSr calls it.
  * Lean mode declares it in the runtime module beside them; inline mode pushes it
  * into the preamble alongside whichever of the two is used.
  *
@@ -663,7 +644,6 @@ export const RUNTIME_HELPER_DECLS: Readonly<Record<string, string>> = {
   __zcPa: ZC_PATH_APPEND_DECL,
   __zcCu: ZC_CUSTOM_OK_DECL,
   __zcSr: ZC_SR_DECL,
-  __zcSrOk: ZC_SR_OK_DECL,
   __zcAsy: ZC_ASYNC_DECL,
   __zcRd: ZC_RUN_DELEGATE_DECL,
   __zcRf: ZC_DELEGATE_ISSUES_DECL,

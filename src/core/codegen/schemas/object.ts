@@ -8,6 +8,7 @@ import {
   extendStaticPath,
   fastMember,
   hasMutation,
+  hasSuperRefine,
   isFresh,
   keyMembershipTest,
   outputAlwaysDefined,
@@ -16,7 +17,7 @@ import { emit } from "../emit.js";
 import { invalidType, unrecognizedKeys } from "../emit-issue.js";
 import { ZC_AB_DECL, ZC_PROTO_SCRUB_DECL } from "../issue-decls.js";
 import { orderByRuntimeCost } from "../fast-size.js";
-import { fastRefineTest, refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
+import { fastRefineTest, refineCheck, superRefineCheck } from "./effect.js";
 
 /**
  * The shape entries whose schemas actually RUN. `$ZodObject` skips a declared
@@ -330,6 +331,8 @@ function orderedProperties(ir: ObjectIR, g: FastGen): [string, SchemaIR][] {
  * has already matched the discriminator's value, so re-checking it is redundant.
  */
 function fastObjectBody(ir: ObjectIR, g: FastGen, skipKey?: string): string[] | null {
+  // A superRefine's callback runs in the walk alone (see hasSuperRefine).
+  if (hasSuperRefine(ir.checks)) return null;
   const x = g.input;
   const parts: string[] = [];
   const absentAccepts = new Set([...(ir.skipAbsentKeys ?? []), ...(ir.suppressAbsentKeys ?? [])]);
@@ -391,11 +394,7 @@ function fastObjectBody(ir: ObjectIR, g: FastGen, skipKey?: string): string[] | 
   // Object-level refine effects (appended last — run after property checks short-circuit)
   if (ir.checks) {
     for (const check of ir.checks) {
-      if (check.kind === "refine_effect") {
-        parts.push(fastRefineTest(check, x, g));
-      } else if (check.kind === "super_refine_effect") {
-        parts.push(superRefineFastTest(check, x, g));
-      }
+      if (check.kind === "refine_effect") parts.push(fastRefineTest(check, x, g));
     }
   }
 

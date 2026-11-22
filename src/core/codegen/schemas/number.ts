@@ -1,10 +1,10 @@
 import type { CheckIR, NumberIR } from "../../types.js";
 import type { FastGen, SlowGen } from "../context.js";
-import { checkPriority, emitRuntimeHelper } from "../context.js";
+import { checkPriority, emitRuntimeHelper, hasSuperRefine } from "../context.js";
 import { emit } from "../emit.js";
 import { invalidType, tooBig, tooSmall } from "../emit-issue.js";
 import { ZC_FSR_DECL } from "../issue-decls.js";
-import { fastRefineTest, refineCheck, superRefineCheck, superRefineFastTest } from "./effect.js";
+import { fastRefineTest, refineCheck, superRefineCheck } from "./effect.js";
 
 /**
  * The integer number formats, each with the range zod's `NUMBER_FORMAT_RANGES`
@@ -175,6 +175,8 @@ export function slowNumber(ir: NumberIR, g: SlowGen): string {
 
 export function fastNumber(ir: NumberIR, g: FastGen): string | null {
   if (ir.coerce) return null;
+  // A superRefine's callback runs in the walk alone (see hasSuperRefine).
+  if (hasSuperRefine(ir.checks)) return null;
 
   const x = g.input;
   const checks = ir.checks.filter((c): c is CheckIR => c.kind !== "refine_effect");
@@ -246,11 +248,7 @@ export function fastNumber(ir: NumberIR, g: FastGen): string | null {
 
   // Refine effect checks (appended last — run after cheap checks short-circuit)
   for (const check of ir.checks) {
-    if (check.kind === "refine_effect") {
-      parts.push(fastRefineTest(check, x, g));
-    } else if (check.kind === "super_refine_effect") {
-      parts.push(superRefineFastTest(check, x, g));
-    }
+    if (check.kind === "refine_effect") parts.push(fastRefineTest(check, x, g));
   }
 
   return parts.join("&&");

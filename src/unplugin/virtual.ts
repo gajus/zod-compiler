@@ -89,7 +89,7 @@ function buildRuntimeSource(): string {
     `export ${FIN_CORE_DECL}`,
     `export ${FIN_DEFERRED_CORE_DECL}`,
     `export ${FINZ_DECL}`,
-    // Module-local (never imported by generated code) — __zcSr/__zcSrOk call it.
+    // Module-local (never imported by generated code) — __zcSr calls it.
     ZC_SR_RUN_DECL,
     ...Object.values(ISSUE_DECLS).map((decl) => `export ${decl}`),
     ...Object.values(RUNTIME_HELPER_DECLS).map((decl) => `export ${decl}`),
