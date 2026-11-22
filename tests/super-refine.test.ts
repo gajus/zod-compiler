@@ -284,22 +284,32 @@ describe("superRefine — the issues its node already has", () => {
     JSON.stringify(ctx.issues.map(({ code, path }) => ({ code, path })));
 
   /**
-   * Build the schema twice, each recording what its callback is shown, and hold
-   * the compiled one to zod's view as well as to zod's results.
+   * Build the schema twice, each recording what its callback is shown, and
+   * hold the compiled one to zod's view as well as to zod's results. The
+   * compiled callback may run twice where zod runs it once — in the build,
+   * then in the walk the issues are read from — and sees zod's view each
+   * time: the build reaches the check only where zod's payload holds no
+   * issues, and the walk hands over the node's own.
    */
   function expectZodsView(make: (record: (ctx: Ctx) => void) => z.ZodType, inputs: unknown[]) {
-    const zodSaw: string[] = [];
-    const compiledSaw: string[] = [];
+    let zodSaw: string[] = [];
+    let compiledSaw: string[] = [];
     const reference = make((ctx) => zodSaw.push(view(ctx)));
     const compiled = compileLikeProduction(
       make((ctx) => compiledSaw.push(view(ctx))),
       "srView",
     );
     for (const input of inputs) {
+      zodSaw = [];
+      compiledSaw = [];
       reference.safeParse(input);
-      compiled(input);
+      const result = compiled(input);
+      if (!result.success) void result.error.issues;
+      const label = JSON.stringify(input);
+      for (const seen of compiledSaw) expect(zodSaw, label).toContain(seen);
+      expect(compiledSaw.length, label).toBeGreaterThanOrEqual(zodSaw.length);
+      expect(compiledSaw.length, label).toBeLessThanOrEqual(2 * zodSaw.length);
     }
-    expect(compiledSaw).toEqual(zodSaw);
     // Inline output declares the helpers in its own preamble; lean output
     // imports them from the runtime module, where `__zcSrP` stays module-local.
     expectParity(
@@ -409,19 +419,27 @@ describe("superRefine — the issues its node already has", () => {
   });
 });
 
-describe("superRefine — the callback runs as often as zod runs it", () => {
-  // A node carrying one has no fast check (see hasSuperRefine). A verdict on it
-  // could only come from calling the callback, and one that rejected the value,
-  // or rewrote `ctx.value`, sent the parse on to the walk, which called it
-  // again: twice through `safeParse` and `.is()`, three times through
-  // `parse()`, and on every array element ahead of the one rejected.
+describe("superRefine — how often the callback runs", () => {
+  // A node carrying one has no fast check (see hasSuperRefine): a verdict there
+  // could only come from calling the callback, and the walk called it again.
+  // On the build path, a superRefine on the ROOT runs exactly as often as zod's,
+  // whatever the input: nothing is left to validate after it, so what it raises
+  // is the whole error, built from that one call (see ZC_SR_BUILD_DECL), and a
+  // build that failed before reaching it is settled on the walk, which calls it
+  // once. One further down runs as zod's does on valid input; on rejected input
+  // the walk calls it again after the build did, as with `.refine()`: at most
+  // twice zod's count.
   let calls = 0;
   const reject = (v: unknown, ctx: z.core.$RefinementCtx<unknown>) => {
     calls++;
-    if (v === 13) ctx.addIssue("rejected");
+    if (v === 13 || (Array.isArray(v) && v.length > 2)) ctx.addIssue("rejected");
   };
-  const SHAPES: [string, () => z.ZodType, unknown[]][] = [
-    ["a number", () => z.number().min(5).superRefine(reject), [7, 13]],
+  const rejectObject = (v: { n: unknown }, ctx: z.core.$RefinementCtx<{ n: unknown }>) => {
+    calls++;
+    if (v.n === 13) ctx.addIssue("rejected");
+  };
+  const ROOT: [string, () => z.ZodType, unknown[]][] = [
+    ["a number", () => z.number().min(5).superRefine(reject), [7, 13, 1, "x"]],
     [
       "a number whose callback rewrites ctx.value",
       () =>
@@ -429,34 +447,65 @@ describe("superRefine — the callback runs as often as zod runs it", () => {
           calls++;
           ctx.value = v + 1;
         }),
-      [1],
+      [1, "x"],
     ],
-    ["an optional number", () => z.number().superRefine(reject).optional(), [7, 13, undefined]],
-    ["a nullable number", () => z.number().min(1).superRefine(reject).nullable(), [7, 13, null]],
+    ["a string", () => z.string().min(1).superRefine(reject), ["ok", "", 1]],
+    ["an array", () => z.array(z.number()).superRefine(reject), [[1], [1, 2, 3], ["x"]]],
     [
-      "an array of numbers",
-      () => z.array(z.number().superRefine(reject)),
-      [
-        [1, 2],
-        [1, 13, 2],
-      ],
-    ],
-    [
-      "a tuple",
-      () => z.tuple([z.number().superRefine(reject), z.string()]),
-      [
-        [1, "a"],
-        [13, "a"],
-      ],
+      "an object",
+      () => z.object({ n: z.number(), s: z.string() }).superRefine(rejectObject),
+      [{ n: 1, s: "a" }, { n: 13, s: "a" }, { n: 1, s: 2 }, null],
     ],
     [
       "a strict object",
-      () => z.strictObject({ n: z.number().superRefine(reject) }),
-      [{ n: 1 }, { n: 13 }],
+      () => z.strictObject({ n: z.number() }).superRefine(rejectObject),
+      [{ n: 1 }, { n: 13 }, { n: 1, extra: true }],
     ],
   ];
+  const NESTED: [string, () => z.ZodType, valid: unknown[], rejected: unknown[]][] = [
+    ["an optional number", () => z.number().superRefine(reject).optional(), [7, undefined], [13]],
+    [
+      "a nullable number",
+      () => z.number().min(1).superRefine(reject).nullable(),
+      [7, null],
+      [13, 0],
+    ],
+    ["array elements", () => z.array(z.number().superRefine(reject)), [[1, 2]], [[1, 13, 2], [13]]],
+    [
+      "a tuple item",
+      () => z.tuple([z.number().superRefine(reject), z.string()]),
+      [[1, "a"]],
+      [
+        [13, "a"],
+        [1, 2],
+      ],
+    ],
+    [
+      "a strict object member",
+      () => z.strictObject({ n: z.number().superRefine(reject) }),
+      [{ n: 1 }],
+      [{ n: 13 }],
+    ],
+    [
+      "an object member",
+      () =>
+        z.object({ id: z.string(), inner: z.object({ n: z.number() }).superRefine(rejectObject) }),
+      [{ id: "1", inner: { n: 1 } }],
+      [
+        { id: "1", inner: { n: 13 } },
+        { id: 1, inner: { n: 13 } },
+      ],
+    ],
+    ["a union option", () => z.union([z.number().superRefine(reject), z.string()]), [1, "a"], [13]],
+  ];
   const ENTRY_POINTS: [string, (schema: z.ZodType, input: unknown) => unknown][] = [
-    ["safeParse", (schema, input) => schema.safeParse(input)],
+    [
+      "safeParse",
+      (schema, input) => {
+        const result = schema.safeParse(input);
+        return result.success ? result.data : result.error.issues;
+      },
+    ],
     [
       "parse",
       (schema, input) => {
@@ -468,32 +517,118 @@ describe("superRefine — the callback runs as often as zod runs it", () => {
       },
     ],
     ["~standard.validate", (schema, input) => schema["~standard"].validate(input)],
+    [
+      ".is()",
+      (schema, input) =>
+        // zod's own verdict costs a safeParse; `.is()` is the compiled schema's.
+        "is" in schema
+          ? (schema as unknown as { is(x: unknown): boolean }).is(input)
+          : schema.safeParse(input).success,
+    ],
   ];
 
-  for (const [label, make, inputs] of SHAPES) {
-    it(label, () => {
+  /** Calls the callback made through `run`, zod's first and the compiled schema's second. */
+  function count(
+    make: () => z.ZodType,
+    run: (s: z.ZodType, x: unknown) => unknown,
+    input: unknown,
+  ) {
+    calls = 0;
+    run(make(), input);
+    const zod = calls;
+    calls = 0;
+    run(installOnto(make()), input);
+    return [zod, calls] as const;
+  }
+
+  for (const [label, make, inputs] of ROOT) {
+    it(`on the root, as often as zod's: ${label}`, () => {
       for (const [entry, run] of ENTRY_POINTS) {
         for (const input of inputs) {
-          calls = 0;
-          run(make(), input);
-          const zod = calls;
-          calls = 0;
-          run(installOnto(make()), input);
-          expect(calls, `${entry}(${JSON.stringify(input)})`).toBe(zod);
+          const [zod, compiled] = count(make, run, input);
+          expect(compiled, `${entry}(${JSON.stringify(input)})`).toBe(zod);
         }
-      }
-      // `.is()` is the compiled schema's own; zod's verdict costs a safeParse.
-      for (const input of inputs) {
-        calls = 0;
-        make().safeParse(input);
-        const zod = calls;
-        calls = 0;
-        (installOnto(make()) as unknown as { is(x: unknown): boolean }).is(input);
-        expect(calls, `is(${JSON.stringify(input)})`).toBe(zod);
       }
       expectParity(make(), inputs);
     });
   }
+
+  for (const [label, make, valid, rejected] of NESTED) {
+    it(`further down, as zod's on valid input and at most twice on rejected: ${label}`, () => {
+      for (const [entry, run] of ENTRY_POINTS) {
+        for (const input of valid) {
+          const [zod, compiled] = count(make, run, input);
+          expect(compiled, `${entry}(${JSON.stringify(input)})`).toBe(zod);
+        }
+        for (const input of rejected) {
+          const [zod, compiled] = count(make, run, input);
+          expect(compiled, `${entry}(${JSON.stringify(input)})`).toBeLessThanOrEqual(2 * zod);
+        }
+      }
+      expectParity(make(), [...valid, ...rejected]);
+    });
+  }
+
+  it("accepts what a callback that takes its node's issues back accepts", () => {
+    // A failed build is no rejection here: the callback runs on the walk, sees
+    // the issue the short `a` raised, and clears it, as zod's does.
+    const clear = (_v: unknown, ctx: z.core.$RefinementCtx<unknown>) => {
+      ctx.issues.length = 0;
+    };
+    const SCHEMAS: [string, () => z.ZodType, unknown[]][] = [
+      [
+        "on the root",
+        () => z.object({ a: z.string().min(3) }).superRefine(clear),
+        [{ a: "x" }, { a: 1 }],
+      ],
+      [
+        "on a member",
+        () =>
+          z.object({
+            id: z.number(),
+            inner: z.object({ a: z.string().min(3) }).superRefine(clear),
+          }),
+        [
+          { id: 1, inner: { a: "x" } },
+          { id: "x", inner: { a: "x" } },
+        ],
+      ],
+      [
+        "on array elements",
+        () => z.array(z.string().min(3).superRefine(clear)),
+        [["x", "yyy"], [1]],
+      ],
+    ];
+    for (const [label, make, inputs] of SCHEMAS) {
+      expect(make().safeParse(inputs[0]).success, label).toBe(true);
+      expectParity(make(), inputs, label);
+      expectLeanParity(make(), inputs, label);
+      expectParity(make(), inputs, label, undefined, { compact: true });
+    }
+  });
+
+  it("runs the callbacks of an object's members in zod's order", () => {
+    // The build validates the cheapest members first; a superRefine is pinned
+    // to its place, as a transform is, since its callback may watch the order.
+    let order: string[] = [];
+    const make = () =>
+      z.object({
+        tags: z.array(z.string()).superRefine(() => {
+          order.push("tags");
+        }),
+        n: z.number(),
+        name: z.string().superRefine(() => {
+          order.push("name");
+        }),
+        flag: z.boolean(),
+      });
+    const input = { tags: ["a"], n: 1, name: "x", flag: true };
+    make().safeParse(input);
+    const zodOrder = order;
+    order = [];
+    installOnto(make()).safeParse(input);
+    expect(order).toEqual(zodOrder);
+  });
 
   it("returns the value a callback rewrote, from every entry point", () => {
     const compiled = installOnto(

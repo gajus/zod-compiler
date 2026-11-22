@@ -448,7 +448,7 @@ export function propertyKeyTest(keyExpr: string): string {
 }
 
 /**
- * Module-local (never imported by generated code) — __zcSr calls it.
+ * Module-local (never imported by generated code) — __zcSr and __zcSrB call it.
  * Lean mode declares it in the runtime module beside them; inline mode pushes it
  * into the preamble alongside whichever of the two is used.
  *
@@ -587,8 +587,9 @@ export const ZC_DELEGATE_ISSUES_DECL =
  * it, or added to it, has the paths put back where the issues stand. At the
  * root, where a relative path is the whole path, nothing is copied at all.
  * `__zcSrI` merges one issue the callback added, for both, and `__zcSrJ` joins
- * the node's path to an issue's: a copy loop, where `concat` — a C++ builtin
- * in V8 — cost a nested failure about 55 ns a path (see ZC_PATH_APPEND_DECL).
+ * the node's path to an issue's (see ZC_SR_MERGE_INTERNAL_DECL): a copy loop,
+ * where `concat` — a C++ builtin in V8 — cost a nested failure about 55 ns a
+ * path (see ZC_PATH_APPEND_DECL).
  *
  * Returns the payload, so the caller can write `.value` back (the callback may
  * have rewritten it) and read `.aborted`. Aborted is set when any issue aborts
@@ -615,7 +616,16 @@ export const ZC_SR_DECL =
   "for(i=n-b;i<c.length;i++)__zcSrI(q,c[i],p,e,m);return q;}" +
   "o=e.slice(b);e.length=b;for(i=0;i<c.length;i++){s=c[i];" +
   "if(o.indexOf(s)!==-1){s.path=__zcSrJ(p,s.path);e.push(s);}" +
-  "else __zcSrI(q,s,p,e,m);}return q;}" +
+  "else __zcSrI(q,s,p,e,m);}return q;}";
+
+/**
+ * Module-local (never imported by generated code), the halves of a merge that
+ * `__zcSr` and `__zcSrM` share: `__zcSrI` moves one issue a callback added
+ * onto the validator's list (see ZC_SR_DECL), and `__zcSrJ` joins the node's
+ * path to an issue's. Lean mode declares them in the runtime module beside
+ * those two; inline mode places them in the preamble (see effect.ts).
+ */
+export const ZC_SR_MERGE_INTERNAL_DECL =
   "function __zcSrI(q,s,p,e,m){var t={},k;" +
   'for(k in s){if(k!=="inst"&&k!=="continue")t[k]=s[k];}' +
   "if(s.continue!==true){q.aborted=true;t.continue=false;}" +
@@ -623,6 +633,30 @@ export const ZC_SR_DECL =
   "if(t.message===undefined&&m!==undefined)t.message=m;e.push(t);}" +
   "function __zcSrJ(p,r){var n=p.length,k=r?r.length:0,o,i;if(k===0)return p;if(n===0)return r;" +
   "o=new Array(n+k);for(i=0;i<n;i++)o[i]=p[i];for(i=0;i<k;i++)o[n+i]=r[i];return o;}";
+
+/**
+ * Merge every issue of a superRefine payload `q` onto the validator's list, at
+ * path `p`, as the walk merges what a callback adds (see ZC_SR_DECL). For the
+ * root's check, whose payload the build left behind on failing (see
+ * ZC_SR_BUILD_DECL): those issues are the parse's whole error.
+ */
+export const ZC_SR_MERGE_DECL =
+  "function __zcSrM(q,p,e,m){for(var i=0;i<q.issues.length;i++)__zcSrI(q,q.issues[i],p,e,m);}";
+
+/**
+ * A superRefine on the build path: run the callback on a fresh payload and
+ * return the value it leaves there, or `x` — the build's FAIL sentinel — when
+ * it added an issue. The build reaches the check only once everything before
+ * it passed, and zod's payload holds no issues then either, so the callback is
+ * handed what zod hands it. The issues are the deferred walk's to collect, by
+ * calling it again (see ZC_SR_DECL) — except the root's. Nothing else is left
+ * to validate after the root's check, so what it raises is the whole error,
+ * and the build leaves its payload in `s.q` for `safeParse` to turn into that
+ * error (see generateValidator), the callback run once.
+ */
+export const ZC_SR_BUILD_DECL =
+  "function __zcSrB(f,v,x,s){var q={value:v,issues:[]};__zcSrRun(f,q);" +
+  "if(q.issues.length===0)return q.value;if(s!==undefined)s.q=q;return x;}";
 
 /** Non-issue runtime helper declarations hosted in the virtual module. */
 export const RUNTIME_HELPER_DECLS: Readonly<Record<string, string>> = {
@@ -644,6 +678,8 @@ export const RUNTIME_HELPER_DECLS: Readonly<Record<string, string>> = {
   __zcPa: ZC_PATH_APPEND_DECL,
   __zcCu: ZC_CUSTOM_OK_DECL,
   __zcSr: ZC_SR_DECL,
+  __zcSrB: ZC_SR_BUILD_DECL,
+  __zcSrM: ZC_SR_MERGE_DECL,
   __zcAsy: ZC_ASYNC_DECL,
   __zcRd: ZC_RUN_DELEGATE_DECL,
   __zcRf: ZC_DELEGATE_ISSUES_DECL,

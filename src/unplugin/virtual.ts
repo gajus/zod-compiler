@@ -12,7 +12,12 @@
  * static (no per-build state), so caching the source string is safe.
  */
 
-import { ISSUE_DECLS, RUNTIME_HELPER_DECLS, ZC_SR_RUN_DECL } from "../core/codegen/issue-decls.js";
+import {
+  ISSUE_DECLS,
+  RUNTIME_HELPER_DECLS,
+  ZC_SR_MERGE_INTERNAL_DECL,
+  ZC_SR_RUN_DECL,
+} from "../core/codegen/issue-decls.js";
 import { fastTestSource, WELL_KNOWN_REGEXES } from "../core/codegen/well-known-regex.js";
 import {
   ENTRY_POINT_HELPER_DECLS,
@@ -89,8 +94,10 @@ function buildRuntimeSource(): string {
     `export ${FIN_CORE_DECL}`,
     `export ${FIN_DEFERRED_CORE_DECL}`,
     `export ${FINZ_DECL}`,
-    // Module-local (never imported by generated code) — __zcSr calls it.
+    // Module-local (never imported by generated code) — __zcSr and __zcSrB call
+    // the first, __zcSr and __zcSrM the second.
     ZC_SR_RUN_DECL,
+    ZC_SR_MERGE_INTERNAL_DECL,
     ...Object.values(ISSUE_DECLS).map((decl) => `export ${decl}`),
     ...Object.values(RUNTIME_HELPER_DECLS).map((decl) => `export ${decl}`),
   ];

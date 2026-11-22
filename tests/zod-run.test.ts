@@ -191,6 +191,10 @@ describe("zod run — which schemas qualify", () => {
     // The build leaves a record with an own symbol key to zod before the
     // callback ever runs, as zod's own record walk rejects it first.
     ["a record under a transform", () => z.record(z.string(), z.number()).transform((r) => r)],
+    // The callback is handed a payload the compiler made, holding what zod's
+    // would hold where the build reaches it: the value, and no issues.
+    ["a superRefine", () => Item().superRefine(() => {})],
+    ["a superRefine on a member", () => z.object({ a: z.string().superRefine(() => {}) })],
   ];
 
   const NEVER: [string, () => z.ZodType][] = [
@@ -200,8 +204,6 @@ describe("zod run — which schemas qualify", () => {
     ],
     ["an intersection of primitives", () => z.intersection(z.string().min(1), z.string().max(5))],
     ["a catch", () => z.object({ n: z.number().catch(0) })],
-    ["a superRefine", () => Item().superRefine(() => {})],
-    ["a superRefine on a member", () => z.object({ a: z.string().superRefine(() => {}) })],
     ["a delegated member", () => z.object({ t: z.jwt() })],
     ["a schema delegated whole", () => Item().check(() => {})],
     [
@@ -719,6 +721,66 @@ const CHILDREN: ChildCase[] = [
         }),
     [() => [{ k: "a", r: { x: 1 } }, { k: "b" }]],
     [() => [{ k: "a", r: { x: "1" } }]],
+  ],
+  // superRefine: the callback is handed what zod hands it where the build
+  // reaches it, the value and no issues, and a value it writes back is the
+  // output on every route.
+  [
+    "a cross-field superRefine",
+    () =>
+      z.object({ password: z.string().min(3), confirm: z.string() }).superRefine((v, ctx) => {
+        if (v.password !== v.confirm) {
+          ctx.addIssue({ code: "custom", message: "mismatch", path: ["confirm"] });
+        }
+      }),
+    [() => ({ password: "abc", confirm: "abc", extra: 1 })],
+    [
+      () => ({ password: "abc", confirm: "abd" }),
+      () => ({ password: "ab", confirm: "ab" }),
+      () => ({ password: 1, confirm: "x" }),
+    ],
+  ],
+  [
+    "a superRefine that rewrites ctx.value",
+    () =>
+      z.object({ a: z.string() }).superRefine((v, ctx) => {
+        ctx.value = { a: v.a.trim() };
+      }),
+    [() => ({ a: " x " })],
+    [() => ({ a: 1 })],
+  ],
+  [
+    "a superRefine on a member",
+    () =>
+      z.object({
+        s: z.string().superRefine((v, ctx) => {
+          if (v === "bad") ctx.addIssue("bad");
+        }),
+        n: z.number(),
+      }),
+    [() => ({ s: "ok", n: 1 })],
+    [() => ({ s: "bad", n: 1 }), () => ({ s: "ok", n: "x" })],
+  ],
+  [
+    "a superRefine that takes its node's issues back",
+    () =>
+      z.object({ a: z.string().min(3) }).superRefine((_v, ctx) => {
+        ctx.issues.length = 0;
+      }),
+    // A short `a` is accepted: the callback clears the issue zod raised for it.
+    [() => ({ a: "x" }), () => ({ a: "xyz" })],
+    [() => ({ a: 1 })],
+  ],
+  [
+    "superRefines on array elements",
+    () =>
+      z.array(
+        z.number().superRefine((v, ctx) => {
+          if (v < 0) ctx.addIssue("negative");
+        }),
+      ),
+    [() => [1, 2, 3]],
+    [() => [1, -2, 3], () => [1, "x"]],
   ],
 ];
 

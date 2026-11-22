@@ -78,6 +78,21 @@ describe("build path — everyday constructs stay on the single-pass generator",
     ["url with hostname and protocol tests", z.object({ u: z.httpUrl() })],
     ["normalized url", z.object({ u: z.url({ normalize: true }) })],
     ["url inside an array", z.object({ links: z.array(z.url()) })],
+    // The value a superRefine leaves in its payload is the node's output.
+    ["superRefine on the root", z.object({ a: z.number() }).superRefine(() => {})],
+    ["superRefine on a member", z.object({ s: z.string().superRefine(() => {}) })],
+    [
+      "superRefine on a number",
+      z.object({
+        n: z
+          .number()
+          .min(1)
+          .superRefine(() => {}),
+      }),
+    ],
+    ["superRefine on a coerced number", z.object({ n: z.coerce.number().superRefine(() => {}) })],
+    ["superRefine on array elements", z.array(z.object({ a: z.string() }).superRefine(() => {}))],
+    ["superRefine on an array", z.object({ t: z.array(z.string()).superRefine(() => {}) })],
     [
       "several at once",
       z.object({
@@ -94,8 +109,6 @@ describe("build path — everyday constructs stay on the single-pass generator",
     // catchValue receives a ctx holding the inner schema's collected issues, and
     // this pass produces a sentinel rather than an issue list.
     ["catch", z.object({ n: z.number().catch(0) })],
-    // superRefine may rewrite through zod's payload.
-    ["superRefine", z.object({ a: z.number() }).superRefine(() => {})],
   ])("declines %s and keeps the eager walk", (_label, schema) => {
     expect(pathOf(schema)).toBe("eager");
   });

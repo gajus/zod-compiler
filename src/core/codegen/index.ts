@@ -1,6 +1,6 @@
 import type { ZodErrorClass } from "../extract/error-class.js";
 import { asIdentifierPart } from "../identifier.js";
-import type { SchemaIR } from "../types.js";
+import type { SchemaIR, SuperRefineEffectCheckIR } from "../types.js";
 import type {
   CodeGenContext,
   CodeGenResult,
@@ -22,14 +22,22 @@ import {
   emitRetainedMethod,
   emitRfDelegate,
   emitRuntimeHelper,
+  emitTemp,
   FINALIZERS,
   hasMutation,
+  hasSuperRefine,
   needsProtoScrub,
   RETAINED_SCHEMA_VAR,
 } from "./context.js";
 import type { SharedSchemaPlan } from "./dedupe.js";
-import { ZC_OVERFLOW_DECL, ZC_OVERFLOW_ERROR_DECL, ZC_PROTO_SCRUB_DECL } from "./issue-decls.js";
+import {
+  ZC_OVERFLOW_DECL,
+  ZC_OVERFLOW_ERROR_DECL,
+  ZC_PROTO_SCRUB_DECL,
+  ZOD_FALLBACK_FLAG,
+} from "./issue-decls.js";
 import { createFastGen, generateFast } from "./fast-path.js";
+import { superRefineMerge } from "./schemas/effect.js";
 import { createSlowGen, generateSlow } from "./slow-path.js";
 
 export type { CodeGenResult } from "./context.js";
@@ -241,9 +249,51 @@ export function generateValidator(
   const runSupport = options?.zodRun === false ? null : zodRunSupport(ir);
   const copiesForZod = runSupport !== null && handsBackContainers(ir);
   if (copiesForZod && options?.compact === true) ctx.zodRunBlocked = true;
+  // A superRefine on the root runs after everything else has passed, so what
+  // it raises is the parse's whole error: the build leaves its failing payload
+  // where the entry point below turns it into that error, rather than failing
+  // into the walk, which would call the callback again. Not in a recursive
+  // schema, whose build checks each nested occurrence of the root with it.
+  const rootCheck = containsRecursion(ir) ? undefined : rootSuperRefine(ir);
+  // A superRefine callback may also take its node's issues back, which turns a
+  // failed build into a parse that may yet succeed: such a schema settles every
+  // failed build on the walk, never on the sentinel alone.
+  const settlesOnWalk = containsSuperRefine(ir);
+  let stashDecl: string | undefined;
+  if (rootCheck !== undefined) {
+    const stash = emitTemp(ctx, "srs");
+    stashDecl = `var ${stash}={q:null};`;
+    ctx.preamble.push(stashDecl);
+    ctx.rootSuperRefine = { check: rootCheck, stash };
+  }
   const buildFnName = generateBuild(ir, ctx, {
     dual: copiesForZod && options?.compact !== true,
   });
+  if (buildFnName === null && stashDecl !== undefined) {
+    ctx.preamble.splice(ctx.preamble.indexOf(stashDecl), 1);
+    delete ctx.rootSuperRefine;
+  }
+  /**
+   * The entry point's two statements for the root's check: clearing what an
+   * earlier parse may have left (zod's traversal runs the same build, and
+   * hands its failures back to zod), and, once the build failed, returning
+   * the error from the payload it left, when it left one.
+   */
+  const rootFailure = (): { clear: string[]; answer: string[] } => {
+    const root = ctx.rootSuperRefine;
+    if (root === undefined) return { clear: [], answer: [] };
+    ctx.usedHelpers.add(fin);
+    const issues = emitTemp(ctx, "re");
+    const message = (ir as { typeMessage?: string }).typeMessage;
+    return {
+      clear: [`${root.stash}.q=null;`],
+      answer: [
+        `if(${root.stash}.q!==null){var ${issues}=[];` +
+          superRefineMerge(root.stash, issues, message, ctx) +
+          `return ${fin}(${issues},${root.stash}.q.value);}`,
+      ],
+    };
+  };
 
   // A zodDelegate with a rebuilding inner exists only to accelerate that
   // build. If an unmodelled descendant made the all-or-nothing build decline,
@@ -335,13 +385,20 @@ export function generateValidator(
     ctx.usedHelpers.add("__zcFinZ");
     const built = `__bd_${ctx.counter++}`;
     const zodRun = zodRunFields(ir, ctx, runSupport, buildFnName);
+    const root = rootFailure();
     return {
       code: ["/* zod-compiler */", ...ctx.preamble].join("\n"),
       functionDef: [
         `function ${fnName}(input){`,
+        ...root.clear,
         `var ${built}=${buildFnName}(input);`,
         `if(${built}!==${ctx.buildFailName}){return{success:true,data:${built}};}`,
-        `return __zcFinZ(${delegate},${RETAINED_SCHEMA_VAR},input);`,
+        ...root.answer,
+        // A failed build is a rejection only where no superRefine can take its
+        // issues back (see settlesOnWalk): there zod is asked outright.
+        settlesOnWalk
+          ? `return ${delegate}.call(${RETAINED_SCHEMA_VAR},input,{[${ZOD_FALLBACK_FLAG}]:true});`
+          : `return __zcFinZ(${delegate},${RETAINED_SCHEMA_VAR},input);`,
         `}`,
       ].join("\n"),
       refCount: baseRefCount,
@@ -391,7 +448,6 @@ export function generateValidator(
   // read every property twice — but it is still an EXACT acceptance predicate
   // (stripping reshapes the output, never the verdict), so `.is()` installs it.
   if (buildFnName !== null && ctx.buildFailName !== undefined) {
-    ctx.usedHelpers.add(finD);
     const built = `__bd_${ctx.counter++}`;
     // A self-recursive walk calls this validator BY NAME (slowRecursiveRef),
     // and that binding exists only inside the named function expression — so
@@ -400,9 +456,24 @@ export function generateValidator(
     // in the mutation-free branch below.
     const recursive = slowCode.includes(fnName);
     let deferred: string;
-    if (recursive) {
+    if (settlesOnWalk) {
+      // A superRefine can take the issues back (`ctx.issues.splice(…)`), so a
+      // failed build does not mean a rejected input: the walk runs now and its
+      // issues, or their absence, decide.
+      const eager = `var _e=[];\nvar _d=input;\n${slowCode}\nif(_e.length===0){return{success:true,data:_d};}\nreturn ${fin}(_e,_d)`;
+      ctx.usedHelpers.add(fin);
+      if (recursive) {
+        deferred = `(function(){${eager};})()`;
+      } else {
+        const walkName = `__se_${ctx.counter++}`;
+        ctx.preamble.push(`function ${walkName}(input){${eager};}`);
+        deferred = `${walkName}(input)`;
+      }
+    } else if (recursive) {
+      ctx.usedHelpers.add(finD);
       deferred = `${finD}(function(input){var _e=[];\nvar _d=input;\n${slowCode}\nreturn _e;},input)`;
     } else {
+      ctx.usedHelpers.add(finD);
       const walkName = `__sw_${ctx.counter++}`;
       ctx.preamble.push(
         `function ${walkName}(input){var _e=[];\nvar _d=input;\n${slowCode}\nreturn _e;}`,
@@ -410,12 +481,15 @@ export function generateValidator(
       deferred = `${finD}(${walkName},input)`;
     }
     const zodRun = zodRunFields(ir, ctx, runSupport, buildFnName);
+    const root = rootFailure();
     return {
       code: buildCode(),
       functionDef: [
         `function ${fnName}(input){`,
+        ...root.clear,
         `var ${built}=${buildFnName}(input);`,
         `if(${built}!==${ctx.buildFailName}){return{success:true,data:${built}};}`,
+        ...root.answer,
         `return ${deferred};`,
         `}`,
       ].join("\n"),
@@ -618,6 +692,27 @@ function recursionGuard(ir: SchemaIR, ctx: CodeGenContext): Pick<CodeGenResult, 
   emitRuntimeHelper(ctx, "__zcOvf", ZC_OVERFLOW_DECL);
   emitRuntimeHelper(ctx, "__zcOvd", ZC_OVERFLOW_ERROR_DECL);
   return { recurses: true };
+}
+
+/** Does any node of `root` carry a superRefine? */
+function containsSuperRefine(root: SchemaIR): boolean {
+  const seen = new Set<SchemaIR>();
+  const walk = (ir: SchemaIR): boolean => {
+    if (seen.has(ir)) return false;
+    seen.add(ir);
+    return (
+      hasSuperRefine((ir as { checks?: readonly { kind: string }[] }).checks) ||
+      childIRs(ir).some(walk)
+    );
+  };
+  return walk(root);
+}
+
+/** The root's superRefine, where the root carries one: always the last of its checks. */
+function rootSuperRefine(ir: SchemaIR): SuperRefineEffectCheckIR | undefined {
+  const checks = (ir as { checks?: readonly { kind: string }[] }).checks;
+  const last = checks?.[checks.length - 1];
+  return last?.kind === "super_refine_effect" ? (last as SuperRefineEffectCheckIR) : undefined;
 }
 
 /** Does `root` recurse anywhere: a `recursiveRef` back to it, or to a target nested in it? */

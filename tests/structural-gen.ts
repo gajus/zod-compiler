@@ -58,6 +58,25 @@ const LEAVES: ((r: () => number) => Gen)[] = [
     good: () => 5,
     bad: () => -5,
   }),
+  () => ({
+    schema: z
+      .string()
+      .min(1)
+      .superRefine((v, ctx) => {
+        if (v.startsWith("x")) ctx.addIssue({ code: "custom", message: "no x" });
+      }),
+    good: () => "abc",
+    bad: () => "xyz",
+  }),
+  () => ({
+    // Writes the output back through the payload, and rejects past a bound.
+    schema: z.number().superRefine((v, ctx) => {
+      ctx.value = v * 2;
+      if (v > 100) ctx.addIssue("big");
+    }),
+    good: () => 7,
+    bad: () => 1000,
+  }),
   () => ({ schema: z.string().readonly(), good: () => "x", bad: () => 1 }),
   () => ({ schema: z.string().brand("B") as unknown as z.ZodType, good: () => "x", bad: () => 1 }),
   () => ({ schema: z.file(), good: () => new File(["x"], "a.txt"), bad: () => "x" }),
@@ -70,7 +89,7 @@ function build(r: () => number, depth: number): Gen {
     const make = LEAVES[Math.floor(r() * LEAVES.length)] as (r: () => number) => Gen;
     return make(r);
   }
-  const kind = Math.floor(r() * 10);
+  const kind = Math.floor(r() * 12);
   const inner = build(r, depth - 1);
   switch (kind) {
     case 0:
@@ -139,6 +158,26 @@ function build(r: () => number, depth: number): Gen {
         bad: () => ({ t: "x", v: inner.bad(), w: second.good() }),
       };
     }
+    case 10:
+      // Adds an issue of its own only where the node raised one already: what
+      // it reads in `ctx.issues` decides the result.
+      return {
+        schema: inner.schema.superRefine((_v, ctx) => {
+          if (ctx.issues.length > 0) ctx.addIssue("also");
+        }),
+        good: inner.good,
+        bad: inner.bad,
+      };
+    case 11:
+      // A fatal issue with a path, which aborts a union option holding it.
+      return {
+        schema: inner.schema.superRefine((v, ctx) => {
+          if (v === null)
+            ctx.addIssue({ code: "custom", message: "null", path: ["n"], fatal: true });
+        }),
+        good: inner.good,
+        bad: inner.bad,
+      };
     default:
       return inner;
   }

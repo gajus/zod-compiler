@@ -4,7 +4,7 @@ import type {
   SuperRefineEffectCheckIR,
   TransformEffectIR,
 } from "../../types.js";
-import type { FastGen, SlowGen } from "../context.js";
+import type { CodeGenContext, FastGen, SlowGen } from "../context.js";
 import {
   emitConstant,
   emitEffectCallable,
@@ -13,7 +13,14 @@ import {
   extendStaticPathIndex,
 } from "../context.js";
 import { emit } from "../emit.js";
-import { ZC_ASYNC_DECL, ZC_SR_DECL, ZC_SR_RUN_DECL } from "../issue-decls.js";
+import {
+  ZC_ASYNC_DECL,
+  ZC_SR_BUILD_DECL,
+  ZC_SR_DECL,
+  ZC_SR_MERGE_DECL,
+  ZC_SR_MERGE_INTERNAL_DECL,
+  ZC_SR_RUN_DECL,
+} from "../issue-decls.js";
 
 /**
  * Generate code for a TransformEffectIR node.
@@ -124,14 +131,13 @@ export function fastRefineTest(check: RefineEffectCheckIR, expr: string, g: Fast
 }
 
 /**
- * Declare the invoker the superRefine helper calls. It is module-local rather
- * than an imported helper (lean mode declares it in the runtime module beside
- * it), so inline mode must place it in the preamble itself.
+ * Declare a module-local function the superRefine helpers call: the invoker
+ * (ZC_SR_RUN_DECL) or the merge they share (ZC_SR_MERGE_INTERNAL_DECL). Lean
+ * mode declares those in the runtime module beside the helpers, never imported,
+ * so inline mode must place them in the preamble itself.
  */
-function emitSuperRefineRunner(ctx: SlowGen["ctx"]): void {
-  if (ctx.mode !== "lean" && !ctx.preamble.includes(ZC_SR_RUN_DECL)) {
-    ctx.preamble.push(ZC_SR_RUN_DECL);
-  }
+function emitSuperRefineInternal(ctx: SlowGen["ctx"], decl: string): void {
+  if (ctx.mode !== "lean" && !ctx.preamble.includes(decl)) ctx.preamble.push(decl);
 }
 
 /**
@@ -155,7 +161,8 @@ export function superRefineCheck(
   g: SlowGen,
   start: string,
 ): string {
-  emitSuperRefineRunner(g.ctx);
+  emitSuperRefineInternal(g.ctx, ZC_SR_RUN_DECL);
+  emitSuperRefineInternal(g.ctx, ZC_SR_MERGE_INTERNAL_DECL);
   const helper = emitRuntimeHelper(g.ctx, "__zcSr", ZC_SR_DECL);
   const fn = emitEffectCallable(g.ctx, check);
   const p = g.temp("sp");
@@ -167,4 +174,41 @@ export function superRefineCheck(
   // pruning matches zod (see ZC_SR_DECL); elsewhere the flag is unobserved.
   if (g.aborted) code += `if(${p}.aborted){${g.aborted}=true;}`;
   return code;
+}
+
+/**
+ * A superRefine on the build path, as an expression: the value the callback
+ * leaves in its payload, or `fail` when it added an issue (see
+ * ZC_SR_BUILD_DECL). `stash`, for the root's check alone, names the object the
+ * failing payload is left in.
+ */
+export function superRefineBuild(
+  check: SuperRefineEffectCheckIR,
+  value: string,
+  fail: string,
+  ctx: CodeGenContext,
+  stash?: string,
+): string {
+  emitSuperRefineInternal(ctx, ZC_SR_RUN_DECL);
+  const helper = emitRuntimeHelper(ctx, "__zcSrB", ZC_SR_BUILD_DECL);
+  const stashArg = stash === undefined ? "" : `,${stash}`;
+  return `${helper}(${emitEffectCallable(ctx, check)},${value},${fail}${stashArg})`;
+}
+
+/**
+ * Merge the issues of the payload a root superRefine left in `stash` onto
+ * `issues`, at the root's path: the statement that turns them into the parse's
+ * error (see ZC_SR_MERGE_DECL). `message` is the root schema's own, which an
+ * issue without one takes, as in the walk.
+ */
+export function superRefineMerge(
+  stash: string,
+  issues: string,
+  message: string | undefined,
+  ctx: CodeGenContext,
+): string {
+  emitSuperRefineInternal(ctx, ZC_SR_MERGE_INTERNAL_DECL);
+  const helper = emitRuntimeHelper(ctx, "__zcSrM", ZC_SR_MERGE_DECL);
+  const msgArg = message === undefined ? "" : `,${JSON.stringify(message)}`;
+  return `${helper}(${stash}.q,[],${issues}${msgArg});`;
 }

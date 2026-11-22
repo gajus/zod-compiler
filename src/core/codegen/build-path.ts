@@ -30,18 +30,21 @@
  * whole schema its single-pass parse. Modelled, beyond the stripping containers
  * this started with: array size checks and `.refine()`, object-level `.refine()`,
  * `.default()` substitution, ordered string rewrites (`.trim()`,
- * `.toLowerCase()`, `z.url()`), sync `.transform()`, `z.stringbool()`, and the
- * five native coercions (`string`, `number`, `boolean`, `bigint`, `date`). Still
- * declined, via {@link mutatesBeyondStrip} — `.catch()` (its callback wants the
- * inner schema's issue list, which this pass never builds) and `superRefine`.
+ * `.toLowerCase()`, `z.url()`), sync `.transform()`, `z.stringbool()`,
+ * `superRefine`, and the five native coercions (`string`, `number`, `boolean`,
+ * `bigint`, `date`). Still declined, via {@link mutatesBeyondStrip}:
+ * `.catch()`, whose callback wants the inner schema's issue list, which this
+ * pass never builds.
  */
 
 import type {
   DiscriminatedUnionIR,
+  NumberIR,
   ObjectIR,
   RefineEffectCheckIR,
   SchemaIR,
   StringBoolIR,
+  SuperRefineEffectCheckIR,
 } from "../types.js";
 import type { CodeGenContext, FastScope } from "./context.js";
 import {
@@ -53,6 +56,7 @@ import {
   emitTemp,
   escapeString,
   hasMutation,
+  hasSuperRefine,
   isFresh,
   keyMembershipTest,
   literalToJs,
@@ -72,6 +76,7 @@ import {
 import { ZC_ASYNC_DECL, ZC_HOP_DECL, ZC_PLAIN_DECL, ZC_PROTO_SCRUB_DECL } from "./issue-decls.js";
 import { defaultValueExpr, needsPostInnerDefault } from "./schemas/default.js";
 import { parsedProperties } from "./schemas/object.js";
+import { superRefineBuild } from "./schemas/effect.js";
 import { innerAppliesDefaultOnUndefined } from "./schemas/optional.js";
 import { detectUnionDiscriminator } from "./schemas/discriminated-union.js";
 import { buildUrlCheck, fastStringCheck, isUrlRewrite } from "./schemas/string.js";
@@ -197,6 +202,9 @@ function rebuildSet(
         (includeProtoScrub && needsProtoScrub(node)) ||
         // `z.stringbool()` replaces its accepted string with a boolean.
         node.type === "stringBool" ||
+        // A superRefine callback may write `ctx.value`, whose value is the
+        // node's output (see buildSuperRefine).
+        hasSuperRefine((node as { checks?: readonly { kind: string }[] }).checks) ||
         // An overwrite effect (`.trim()`, `.toLowerCase()`) or a `z.url()` check
         // rewrites the string, so the node's output is a new value: it has to be
         // BUILT rather than validated in place (see buildString).
@@ -301,8 +309,7 @@ export function fastResultIsInput(ir: SchemaIR): boolean {
  *
  *  - an intersection, whose output is zod's MERGE of two separately parsed
  *    copies;
- *  - `.catch()`, whose callback sees finalized issues where zod's sees raw ones,
- *    and `superRefine`, whose callback holds a payload of the compiler's making;
+ *  - `.catch()`, whose callback sees finalized issues where zod's sees raw ones;
  *  - a recursive schema. Zod closes reference cycles in the DATA with state
  *    keyed on the parse context (its memoizer), which a generated validator
  *    never receives — the same reason zod's own `z.compile` refuses them;
@@ -311,6 +318,12 @@ export function fastResultIsInput(ir: SchemaIR): boolean {
  *
  * A leaf is always fine, including the ones that pass a reference through
  * (`z.any()`, `z.custom()`, a `Date`): zod passes the same reference.
+ *
+ * So is a `superRefine`, though its callback is handed a payload the compiler
+ * made rather than zod's: the build reaches it only once everything before it
+ * passed, when zod's payload holds the value and no issues, which is all the
+ * fresh one holds. A callback that adds an issue fails the build, and zod
+ * parses the value again from the start (calling it again).
  *
  * The answer also says WHEN. A validator that calls user code which may turn
  * out to be asynchronous — a refinement, a transform, a `z.custom()` predicate
@@ -328,8 +341,13 @@ export function zodRunSupport(ir: SchemaIR): "sync" | "async" | null {
     seen.add(node);
     const checks = (node as { checks?: readonly { kind: string }[] }).checks;
     if (checks !== undefined) {
-      if (superRefines(checks)) return false;
-      if (checks.some((check) => check.kind === "refine_effect")) callsUserCode = true;
+      if (
+        checks.some(
+          (check) => check.kind === "refine_effect" || check.kind === "super_refine_effect",
+        )
+      ) {
+        callsUserCode = true;
+      }
     }
     switch (node.type) {
       case "fallback":
@@ -352,10 +370,10 @@ export function zodRunSupport(ir: SchemaIR): "sync" | "async" | null {
 }
 
 /**
- * True when the subtree mutates for any reason the build pass cannot reproduce —
- * `.catch()`, `superRefine`. Those rewrite values in ways this pass
- * (which validates, coerces, decodes string booleans, substitutes declared
- * defaults, applies ordered string rewrites and copies) does not model, so the
+ * True when the subtree mutates for any reason the build pass cannot reproduce:
+ * a `.catch()`, or a delegate. Those produce values this pass (which validates,
+ * coerces, decodes string booleans, substitutes declared defaults, applies
+ * ordered string rewrites, runs superRefines and copies) does not model, so the
  * schema keeps the eager walk.
  */
 function mutatesBeyondStrip(ir: SchemaIR): boolean {
@@ -369,15 +387,15 @@ function mutatesBeyondStrip(ir: SchemaIR): boolean {
  */
 function mutatesHere(ir: SchemaIR): boolean {
   switch (ir.type) {
+    // Coercion, overwrite effects, `z.url()` and a superRefine are absent from
+    // these: the builders apply them in order (see buildSuperRefine).
     case "string":
-      // Coercion, overwrite effects and `z.url()` are absent: `buildString`
-      // applies them in order.
-      return superRefines(ir.checks);
     case "number":
-      return superRefines(ir.checks);
     case "boolean":
     case "bigint":
     case "date":
+    case "object":
+    case "array":
       return false;
     // `default` and `effect` are absent: substituting a constant for `undefined`
     // and applying a sync transform are both modelled (see buildDefault /
@@ -389,16 +407,9 @@ function mutatesHere(ir: SchemaIR): boolean {
     case "catch":
     case "fallback":
       return true;
-    case "object":
-    case "array":
-      return superRefines(ir.checks);
     default:
       return false;
   }
-}
-
-function superRefines(checks: readonly { kind: string }[] | undefined): boolean {
-  return checks !== undefined && checks.some((c) => c.kind === "super_refine_effect");
 }
 
 /**
@@ -757,10 +768,11 @@ function passesThroughWithScrub(ir: SchemaIR, rebuilds: ReadonlySet<SchemaIR>): 
  * parse, and a rejected one fires neither (a failing parse never guaranteed
  * that its effects ran — this pass bails at the first bad check). What counts
  * as observable is user code and value construction: a transform or
- * preprocess, a `.default()` (a function default is invoked on read), a
- * `.catch()`, a coercion (`Number(x)` reaches a `valueOf`), an overwrite, a
- * delegate, and a recursion edge, whose target is not inspected. A `.refine()`
- * is not pinned — it is a predicate, and the fast path already reorders it.
+ * preprocess, a superRefine, a `.default()` (a function default is invoked on
+ * read), a `.catch()`, a coercion (`Number(x)` reaches a `valueOf`), an
+ * overwrite, a delegate, and a recursion edge, whose target is not inspected. A
+ * `.refine()` is not pinned — it is a predicate, and the fast path already
+ * reorders it.
  */
 function orderedForBuild(
   properties: readonly [string, SchemaIR][],
@@ -778,6 +790,9 @@ function orderedForBuild(
 
 /** Does running this subtree do anything a caller could observe besides the verdict? */
 function orderSensitive(ir: SchemaIR): boolean {
+  // A superRefine callback is user code that may also rewrite the value, run
+  // in zod's order like a transform.
+  if (hasSuperRefine((ir as { checks?: readonly { kind: string }[] }).checks)) return true;
   switch (ir.type) {
     case "effect":
     case "default":
@@ -843,6 +858,9 @@ function buildInline(ir: SchemaIR, input: string, g: BuildGen): Built | null {
     case "stringBool":
       return buildStringBool(ir, input, g);
     case "number":
+      return hasSuperRefine(ir.checks)
+        ? buildSuperRefinedNumber(ir, input, g)
+        : buildCoercedPrimitive(ir, input, g);
     case "boolean":
     case "bigint":
     case "date":
@@ -1150,11 +1168,14 @@ function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {
   if (ir.skipAbsentKeys !== undefined && ir.skipAbsentKeys.length > 0) return null;
   if (ir.suppressAbsentKeys !== undefined && ir.suppressAbsentKeys.length > 0) return null;
   const nonoptional = new Set(ir.nonoptionalKeys ?? []);
-  // Object-level `.refine()` runs on the assembled output (below). superRefine
-  // rewrites the payload, which this pass does not model — mutatesBeyondStrip
-  // already rejects it, so this is a belt-and-braces narrowing of the type.
+  // Object-level `.refine()` and `.superRefine()` run on the assembled output
+  // (below), the only checks an object carries.
   const refines = ir.checks ?? [];
-  if (refines.some((check) => check.kind !== "refine_effect")) return null;
+  if (
+    refines.some((check) => check.kind !== "refine_effect" && check.kind !== "super_refine_effect")
+  ) {
+    return null;
+  }
 
   // A dispatched union option (see buildDispatch): the switch has proved
   // object-ness and matched this key's value, so neither is checked again.
@@ -1225,7 +1246,10 @@ function buildObject(ir: ObjectIR, input: string, g: BuildGen): Built | null {
   // when that produced issues, so a bad property suppresses the refine — which
   // this pass gets for free, having already returned FAIL at that property.
   for (const check of refines) {
-    code += buildRefine(check as RefineEffectCheckIR, out, g);
+    code +=
+      check.kind === "refine_effect"
+        ? buildRefine(check, out, g)
+        : buildSuperRefine(check as SuperRefineEffectCheckIR, out, g);
   }
   return { code, value: out };
 }
@@ -1327,6 +1351,18 @@ function buildRefine(check: RefineEffectCheckIR, value: string, g: BuildGen): st
   return `${verdict}=${emitEffectCallable(g.ctx, check)}(${value});if(${verdict} instanceof Promise)${asy}();if(!${verdict})return ${g.fail};`;
 }
 
+/**
+ * A `.superRefine()` on the build path, always its node's last check: the
+ * value it leaves in the payload replaces `value`, the local holding the
+ * node's output, and an issue it adds fails the build (see ZC_SR_BUILD_DECL).
+ * The root's check also leaves that payload where `safeParse` finds it.
+ */
+function buildSuperRefine(check: SuperRefineEffectCheckIR, value: string, g: BuildGen): string {
+  const root = g.ctx.rootSuperRefine;
+  const stash = root?.check === check ? root.stash : undefined;
+  return `${value}=${superRefineBuild(check, value, g.fail, g.ctx, stash)};if(${value}===${g.fail})return ${g.fail};`;
+}
+
 function buildArray(ir: SchemaIR & { type: "array" }, input: string, g: BuildGen): Built | null {
   // Length checks are pure predicates over `input.length`, so they hoist ahead
   // of the element loop: a size mismatch bails before a single element is
@@ -1334,7 +1370,7 @@ function buildArray(ir: SchemaIR & { type: "array" }, input: string, g: BuildGen
   // build pass produces no issues — only the sentinel — and the deferred walk
   // that does produce them keeps zod's order.
   let sizes = "";
-  const refines: RefineEffectCheckIR[] = [];
+  const refines: (RefineEffectCheckIR | SuperRefineEffectCheckIR)[] = [];
   for (const check of ir.checks) {
     switch (check.kind) {
       case "min_length":
@@ -1347,10 +1383,11 @@ function buildArray(ir: SchemaIR & { type: "array" }, input: string, g: BuildGen
         sizes += `if(${input}.length!==${check.length})return ${g.fail};`;
         break;
       case "refine_effect":
+      case "super_refine_effect":
         refines.push(check);
         break;
       default:
-        // super_refine (rewrites the value) or a check kind not modelled here.
+        // A check kind not modelled here.
         return null;
     }
   }
@@ -1369,7 +1406,8 @@ function buildArray(ir: SchemaIR & { type: "array" }, input: string, g: BuildGen
   // `.refine()` sees the parsed payload, which for a rebuilding element is the
   // freshly assembled array — the same value zod hands its checks.
   for (const check of refines) {
-    code += buildRefine(check, out, g);
+    code +=
+      check.kind === "refine_effect" ? buildRefine(check, out, g) : buildSuperRefine(check, out, g);
   }
   return { code, value: out };
 }
@@ -1554,8 +1592,8 @@ function buildString(ir: SchemaIR & { type: "string" }, input: string, g: BuildG
         code += buildRefine(check, value, g);
         break;
       case "super_refine_effect":
-        // Rewrites through zod's payload; mutatesBeyondStrip already rejects it.
-        return null;
+        code += buildSuperRefine(check, value, g);
+        break;
       default: {
         // `z.url()` trims the value and writes back a rewrite of it, which the
         // checks after it see — the same ordering an overwrite gets.
@@ -1633,6 +1671,28 @@ type CoercedPrimitiveIR = Extract<SchemaIR, { type: "number" | "boolean" | "bigi
  * those throws and reports invalid_type, so the sentinel branch does the same
  * without allocating an issue. Boolean never invokes conversion hooks.
  */
+/**
+ * A number carrying a superRefine, its last check: the checks before it as the
+ * fast path writes them, then the callback, whose payload holds the output. A
+ * coercion converts first, as in buildCoercedPrimitive.
+ */
+function buildSuperRefinedNumber(ir: NumberIR, input: string, g: BuildGen): Built | null {
+  const check = ir.checks[ir.checks.length - 1];
+  if (check?.kind !== "super_refine_effect") return null;
+  const value = local(g, "bn");
+  const predicate = generateFast(
+    { ...ir, coerce: false, checks: ir.checks.slice(0, -1) },
+    createFastGen(value, g.ctx, true, g.scope),
+  );
+  if (predicate === null) return null;
+  let code =
+    ir.coerce === true
+      ? `try{${value}=Number(${input});}catch(_){return ${g.fail};}`
+      : `${value}=${input};`;
+  if (predicate !== "true") code += `if(!(${predicate}))return ${g.fail};`;
+  return { code: code + buildSuperRefine(check, value, g), value };
+}
+
 function buildCoercedPrimitive(ir: CoercedPrimitiveIR, input: string, g: BuildGen): Built | null {
   if (ir.coerce !== true) return null;
   const value = local(g, "bc");

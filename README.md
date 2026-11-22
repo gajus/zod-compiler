@@ -506,9 +506,9 @@ container by reference (an array of primitives, a strict object, a record, a set
 [Behavioral Differences](#behavioral-differences-from-zod)), Zod's route gets Zod's own copy of it,
 built in the same single read of the input that validates it, so an item with a `tags` array is ~7x
 faster too. `output: "compact"` leaves out the code for that copy and leaves such schemas to Zod on
-this route. A schema that uses `.catch()` or `superRefine`, is recursive, or holds an intersection,
-a delegated member, a record over a declared key set or a tuple with optional items stays on plain
-Zod when reached this way.
+this route. A schema that uses `.catch()`, is recursive, or holds an intersection, a delegated
+member, a record over a declared key set or a tuple with optional items stays on plain Zod when
+reached this way.
 
 ## Schema Diagnostics
 
@@ -593,7 +593,7 @@ not the whole object. Run `zod-compiler check` to see what compiled.
 ### Behavioral Differences from Zod
 
 Compiled validators match Zod on verdicts, output data and error messages, including issue ordering.
-Four things differ by design:
+Five things differ by design:
 
 | Behavior                                 | Zod                                                    | zod-compiler                                                                                                                        |
 | ---------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -601,6 +601,7 @@ Four things differ by design:
 | Container output identity                | A fresh array / set / map / object                     | The input container, by reference (array holes and the input's key order survive); a rebuilt object is fresh and in zod's key order |
 | Per-call parse params                    | `safeParse(x, { error, reportInput })` honoured        | Ignored; global `z.config()` maps still apply                                                                                       |
 | An object a recursive schema meets twice | Parsed once: one output object, its callbacks run once | Parsed in each place: a rebuilt object becomes one copy per place, and its callbacks run for each                                   |
+| A callback on rejected input             | Runs once                                              | Can run twice: in the compiled attempt, which stops at the first failure, and in the pass that collects the issues                  |
 
 Schema-level `error` and `z.config()` maps are unaffected; for a per-call map use
 `z.safeParse(Schema, x, params)`, whose issues are always Zod's own.
@@ -612,6 +613,13 @@ The containers handed back by reference never reach a callback. Every container 
 way Zod builds it. A callback that sorts, pushes or deletes edits only that copy, and the copy is what
 the parse returns. Values Zod itself passes by reference (a `z.any()` or `z.unknown()` member, a
 loose object's unknown keys) are passed the same way.
+
+On valid input a `.refine()`, `.transform()` or `.superRefine()` callback runs as often as in Zod.
+On rejected input it may run twice, or not at all if the compiled attempt stopped at an earlier
+failure and the issues are never read. A `.superRefine()` on the root always runs as often as in
+Zod: everything else has passed by the time it runs, so the issues it raises are the whole error. On
+a route through Zod, a value the compiled schema rejects is parsed again by Zod itself, so its
+callbacks run once more there.
 
 An input with a reference cycle (`a.next = a`) gets Zod's result, cycle included. The compiled walks
 follow it to the stack limit and then hand the input to Zod's own parse. A callback on the way runs

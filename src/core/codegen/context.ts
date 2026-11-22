@@ -6,6 +6,7 @@ import type {
   LiteralValue,
   SchemaIR,
   SetCheckIR,
+  SuperRefineEffectCheckIR,
 } from "../types.js";
 import type { SharedSchemaPlan } from "./dedupe.js";
 import { ZC_PATH_APPEND_DECL } from "./issue-decls.js";
@@ -186,6 +187,11 @@ export interface CodeGenContext {
   sharedConstantNames?: ReadonlyMap<string, string> | undefined;
   /** Name of the build path's FAIL sentinel, declared once per validator. */
   buildFailName?: string;
+  /**
+   * The root's superRefine, which the build runs last of all, and the object a
+   * failing payload of it is left in for `safeParse` (see ZC_SR_BUILD_DECL).
+   */
+  rootSuperRefine?: { check: SuperRefineEffectCheckIR; stash: string };
   /**
    * A dual build met a container no copy build can serve (see generateBuild),
    * so the validator may not answer zod's own traversal after all.
