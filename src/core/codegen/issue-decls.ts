@@ -464,6 +464,27 @@ export const ZC_SR_RUN_DECL =
   'if(r&&typeof r.then==="function"){throw new __zcCore.$ZodAsyncError();}}';
 
 /**
+ * Module-local (never imported by generated code) — __zcSr, __zcSrP and __zcSrB
+ * build the payload they hand a superRefine callback with it. Lean mode
+ * declares it in the runtime module beside them; inline mode places it in the
+ * preamble (see effect.ts).
+ *
+ * A constructor rather than a `{ value, issues }` literal, with
+ * `Object.prototype` as its prototype, so the callback still gets the plain
+ * object zod gives it. V8 tracks the objects an object literal allocates and,
+ * once enough of them outlive a scavenge, allocates every later one from that
+ * site in old space. A constructor's objects are never tracked that way. The
+ * payload dies with the parse, but it holds the value, the issues and the
+ * `addIssue` closure zod installs, so once it was moved to old space it kept
+ * all of those alive past each scavenge too. The benchmark's
+ * `superRefine — object (cross-field)` row ran at 7.3–8.2M ops/s that way, its
+ * parses paused for up to 4 ms by the major collections that followed, and
+ * runs at about 9M with the constructor.
+ */
+export const ZC_SR_PAYLOAD_DECL =
+  "function __zcSrQ(v,i){this.value=v;this.issues=i;}__zcSrQ.prototype=Object.prototype;";
+
+/**
  * z.custom()/z.instanceof() fast verdict. Zod treats truthy predicate returns
  * as success and raises $ZodAsyncError when a synchronous parse encounters a
  * thenable, including a non-async function that happens to return a Promise.
@@ -606,9 +627,9 @@ export const ZC_DELEGATE_ISSUES_DECL =
  */
 export const ZC_SR_DECL =
   "function __zcSr(f,v,p,e,b,m){if(b<e.length)return __zcSrP(f,v,p,e,b,m);" +
-  "var q={value:v,issues:[]};__zcSrRun(f,q);" +
+  "var q=new __zcSrQ(v,[]);__zcSrRun(f,q);" +
   "for(var i=0;i<q.issues.length;i++)__zcSrI(q,q.issues[i],p,e,m);return q;}" +
-  "function __zcSrP(f,v,p,e,b,m){var n=e.length,l=p.length,q={value:v,issues:e.slice(b)},c,o,i,s;" +
+  "function __zcSrP(f,v,p,e,b,m){var n=e.length,l=p.length,q=new __zcSrQ(v,e.slice(b)),c,o,i,s;" +
   "for(i=b;i<n;i++){s=e[i];" +
   's.path=s.path.length>l||s.code==="custom"?(l?s.path.slice(l):s.path):undefined;}' +
   "__zcSrRun(f,q);c=q.issues;for(i=0;i<n-b&&c[i]===e[b+i];i++);" +
@@ -655,7 +676,7 @@ export const ZC_SR_MERGE_DECL =
  * error (see generateValidator), the callback run once.
  */
 export const ZC_SR_BUILD_DECL =
-  "function __zcSrB(f,v,x,s){var q={value:v,issues:[]};__zcSrRun(f,q);" +
+  "function __zcSrB(f,v,x,s){var q=new __zcSrQ(v,[]);__zcSrRun(f,q);" +
   "if(q.issues.length===0)return q.value;if(s!==undefined)s.q=q;return x;}";
 
 /** Non-issue runtime helper declarations hosted in the virtual module. */

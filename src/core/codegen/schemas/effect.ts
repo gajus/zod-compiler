@@ -19,6 +19,7 @@ import {
   ZC_SR_DECL,
   ZC_SR_MERGE_DECL,
   ZC_SR_MERGE_INTERNAL_DECL,
+  ZC_SR_PAYLOAD_DECL,
   ZC_SR_RUN_DECL,
 } from "../issue-decls.js";
 
@@ -132,9 +133,10 @@ export function fastRefineTest(check: RefineEffectCheckIR, expr: string, g: Fast
 
 /**
  * Declare a module-local function the superRefine helpers call: the invoker
- * (ZC_SR_RUN_DECL) or the merge they share (ZC_SR_MERGE_INTERNAL_DECL). Lean
- * mode declares those in the runtime module beside the helpers, never imported,
- * so inline mode must place them in the preamble itself.
+ * (ZC_SR_RUN_DECL), the merge they share (ZC_SR_MERGE_INTERNAL_DECL) or the
+ * payload's constructor (ZC_SR_PAYLOAD_DECL). Lean mode declares those in the
+ * runtime module beside the helpers, never imported, so inline mode must place
+ * them in the preamble itself.
  */
 function emitSuperRefineInternal(ctx: SlowGen["ctx"], decl: string): void {
   if (ctx.mode !== "lean" && !ctx.preamble.includes(decl)) ctx.preamble.push(decl);
@@ -163,6 +165,7 @@ export function superRefineCheck(
 ): string {
   emitSuperRefineInternal(g.ctx, ZC_SR_RUN_DECL);
   emitSuperRefineInternal(g.ctx, ZC_SR_MERGE_INTERNAL_DECL);
+  emitSuperRefineInternal(g.ctx, ZC_SR_PAYLOAD_DECL);
   const helper = emitRuntimeHelper(g.ctx, "__zcSr", ZC_SR_DECL);
   const fn = emitEffectCallable(g.ctx, check);
   const p = g.temp("sp");
@@ -190,6 +193,7 @@ export function superRefineBuild(
   stash?: string,
 ): string {
   emitSuperRefineInternal(ctx, ZC_SR_RUN_DECL);
+  emitSuperRefineInternal(ctx, ZC_SR_PAYLOAD_DECL);
   const helper = emitRuntimeHelper(ctx, "__zcSrB", ZC_SR_BUILD_DECL);
   const stashArg = stash === undefined ? "" : `,${stash}`;
   return `${helper}(${emitEffectCallable(ctx, check)},${value},${fail}${stashArg})`;

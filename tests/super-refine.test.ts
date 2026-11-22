@@ -23,6 +23,7 @@ import { core, z } from "zod";
 import { extractSchema, type RefEntry } from "#src/core/extract/index.js";
 import type { ArrayIR, ObjectIR, SchemaIR, StringIR } from "#src/core/types.js";
 import {
+  compileLeanLikeProduction,
   compileLikeProduction,
   expectLeanParity,
   expectParity,
@@ -213,6 +214,48 @@ describe("superRefine — compiles by calling zod's payload wrapper", () => {
     expect(a.type).toBe("array");
     expect(s.checks).toContainEqual({ kind: "super_refine_effect", refIndex: 0 });
     expect(a.checks).toContainEqual({ kind: "super_refine_effect", refIndex: 0 });
+  });
+
+  it("hands the callback a plain object, as zod does", () => {
+    // The payload comes from a constructor (see ZC_SR_PAYLOAD_DECL), whose
+    // prototype is `Object.prototype` so a callback cannot tell it from zod's
+    // literal. The inputs reach each helper that builds one: the build (valid),
+    // a walk after a member's issue (`__zcSrP`) and a walk without one (`__zcSr`).
+    const make = (seen: string[]) => {
+      const record = (ctx: object) => {
+        const issues = (ctx as { issues: unknown }).issues;
+        seen.push(
+          `${Object.getPrototypeOf(ctx) === Object.prototype} ${ctx.constructor === Object} ` +
+            `${Array.isArray(issues)} ${Object.keys(ctx).join()}`,
+        );
+      };
+      return z
+        .object({
+          age: z.number(),
+          name: z
+            .string()
+            .min(3)
+            .superRefine((_v, ctx) => record(ctx)),
+        })
+        .superRefine((_v, ctx) => record(ctx));
+    };
+    for (const compile of [compileLikeProduction, compileLeanLikeProduction]) {
+      for (const input of [
+        { age: 36, name: "Ada" },
+        { age: 36, name: "Al" },
+        { age: "x", name: "Ada" },
+      ]) {
+        const zodSaw: string[] = [];
+        const compiledSaw: string[] = [];
+        make(zodSaw).safeParse(input);
+        const result = compile(make(compiledSaw), "srPlain")(input);
+        if (!result.success) void result.error.issues;
+        const label = JSON.stringify(input);
+        expect(zodSaw.length, label).toBeGreaterThan(0);
+        expect(compiledSaw.length, label).toBeGreaterThanOrEqual(zodSaw.length);
+        for (const seen of compiledSaw) expect(zodSaw, label).toContain(seen);
+      }
+    }
   });
 
   describe("delegates the shapes a plain call cannot reproduce", () => {

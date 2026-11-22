@@ -16,6 +16,7 @@ import {
   ISSUE_DECLS,
   RUNTIME_HELPER_DECLS,
   ZC_SR_MERGE_INTERNAL_DECL,
+  ZC_SR_PAYLOAD_DECL,
   ZC_SR_RUN_DECL,
 } from "../core/codegen/issue-decls.js";
 import { fastTestSource, WELL_KNOWN_REGEXES } from "../core/codegen/well-known-regex.js";
@@ -95,9 +96,11 @@ function buildRuntimeSource(): string {
     `export ${FIN_DEFERRED_CORE_DECL}`,
     `export ${FINZ_DECL}`,
     // Module-local (never imported by generated code) — __zcSr and __zcSrB call
-    // the first, __zcSr and __zcSrM the second.
+    // the first and build their payload with the third, __zcSr and __zcSrM call
+    // the second.
     ZC_SR_RUN_DECL,
     ZC_SR_MERGE_INTERNAL_DECL,
+    ZC_SR_PAYLOAD_DECL,
     ...Object.values(ISSUE_DECLS).map((decl) => `export ${decl}`),
     ...Object.values(RUNTIME_HELPER_DECLS).map((decl) => `export ${decl}`),
   ];
