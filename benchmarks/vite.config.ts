@@ -16,10 +16,12 @@ export default defineConfig({
     benchmark: {
       include: ["suites/**/*.bench.ts"],
     },
-    server: {
-      deps: {
-        inline: ["zod", "zod3"],
-      },
-    },
+    // One file at a time: files measured side by side compete for cores, and
+    // some land on the slower efficiency cores.
+    fileParallelism: false,
+    // zod and zod v3 are left to Node's own loader (no `server.deps.inline`):
+    // through Vite's module runner every one of zod's own imports is read
+    // through a getter on each use, which made zod v4 up to 73% slower than it
+    // runs in an application.
   },
 });
