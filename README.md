@@ -2,7 +2,7 @@
 
 **Compile Zod schemas into zero-overhead validation functions at build time.**
 
-Keep your existing Zod schemas. Get **up to 43x faster** validation, and up to **140x** on rejected
+Keep your existing Zod schemas. Get **up to 37x faster** validation, and up to **338x** on rejected
 input. No code changes required.
 
 Requires **Zod ≥ 4.5**; compiled output reproduces 4.5's semantics exactly, so it does not match
@@ -30,7 +30,7 @@ loads pre-generated validators.
 |                                        | zod-compiler (build plugins / CLI)           | Zod `z.compile()`                             |
 | -------------------------------------- | -------------------------------------------- | --------------------------------------------- |
 | Compilation                            | Build time (true AOT)                        | Runtime (`z.compile()` or the first parse)    |
-| Reported validation speedup            | Up to 43x; up to 140x on rejected input      | ~9x in Zod's headline example                 |
+| Reported validation speedup            | Up to 37x; up to 338x on rejected input      | ~9x in Zod's headline example                 |
 | Uses `new Function()` at runtime       | No                                           | Yes                                           |
 | Cold start                             | Fast; the validator is already generated     | Pays for code generation at startup/first use |
 | Strict CSP without `'unsafe-eval'`     | Supported                                    | Compilation is unavailable                    |
@@ -504,7 +504,7 @@ code — ~6x on a 20-item page — and ask Zod only for the issues of a value th
 A parse that goes through Zod still returns Zod's output. Where the compiled schema would return a
 container by reference (an array of primitives, a strict object, a record, a set; see
 [Behavioral Differences](#behavioral-differences-from-zod)), Zod's route gets Zod's own copy of it,
-built in the same single read of the input that validates it, so an item with a `tags` array is ~7x
+built in the same single read of the input that validates it, so an item with a `tags` array is ~6x
 faster too. `output: "compact"` leaves out the code for that copy and leaves such schemas to Zod on
 this route. A schema that uses `.catch()`, is recursive, or holds an intersection, a delegated
 member, a record over a declared key set or a tuple with optional items stays on plain Zod when
@@ -561,7 +561,7 @@ npx zod-compiler check src/schemas.ts --json --fail-under 80
 
 ## What Gets Compiled
 
-### Fully Compiled (up to 43x faster)
+### Fully Compiled (up to 37x faster)
 
 Every Zod type except the fallbacks below: all primitives, `object` / `strictObject` / `looseObject`,
 `array`, `tuple`, `record`, `set`, `map`, `union`, `discriminatedUnion`, `intersection`, `pipe`,
@@ -632,62 +632,62 @@ a cyclic parse costs about half a millisecond.
 
 | Scenario                                        | Zod v3 | Zod v4 | **zod-compiler** | Typia | AJV   | vs Zod v4 |
 | ----------------------------------------------- | ------ | ------ | ---------------- | ----- | ----- | --------- |
-| simple string                                   | 13.1M  | 15.9M  | **17.3M**        | 18.0M | 17.6M | 1.1x      |
-| string (min/max)                                | 12.3M  | 7.3M   | **17.3M**        | 17.2M | 15.6M | 2.4x      |
-| number (int+positive)                           | 12.4M  | 9.7M   | **17.5M**        | 17.7M | 17.0M | 1.8x      |
-| enum                                            | 11.6M  | 15.5M  | **17.8M**        | 18.1M | 17.5M | 1.1x      |
-| bigint (min/max)                                | 11.9M  | 8.6M   | **17.3M**        | —     | —     | 2.0x      |
-| tuple [string, int, bool]                       | 5.5M   | 7.4M   | **16.7M**        | 16.0M | 15.8M | 2.3x      |
-| record\<string, number\>                        | 3.2M   | 2.5M   | **12.9M**        | 12.0M | 15.2M | 5.1x      |
-| set\<string\> (5 items)                         | 3.6M   | 2.3M   | **15.3M**        | —     | —     | 6.8x      |
-| set\<string\> (20 items)                        | 1.3M   | 679K   | **12.2M**        | —     | —     | **18x**   |
-| map\<string, number\> (5 entries)               | 2.0M   | 1.3M   | **13.5M**        | —     | —     | **10x**   |
-| map\<string, number\> (20 entries)              | 628K   | 346K   | **8.5M**         | —     | —     | **25x**   |
-| pipe (non-transform)                            | 8.8M   | 4.7M   | **16.9M**        | —     | —     | 3.6x      |
-| discriminatedUnion (3 variants)                 | 3.4M   | 5.2M   | **17.1M**        | 16.5M | 7.9M  | 3.3x      |
-| discriminatedUnion (8 variants, rotating)       | 2.6M   | 4.6M   | **10.5M**        | —     | —     | 2.3x      |
-| plain union of 8 tagged objects (auto-discrim.) | 357K   | 1.3M   | **10.5M**        | —     | —     | 7.9x      |
-| strict object (DB row)                          | 1.8M   | 2.9M   | **11.4M**        | —     | —     | 3.8x      |
-| medium object (valid)                           | 1.9M   | 2.3M   | **9.8M**         | 11.1M | 7.6M  | 4.2x      |
-| medium object (extra keys stripped)             | 1.8M   | 2.1M   | **9.7M**         | —     | —     | 4.6x      |
-| medium object (invalid)                         | 517K   | 364K   | **15.9M**        | 2.8M  | 7.5M  | **44x**   |
-| large object (10 items)                         | 118K   | 161K   | **6.1M**         | 6.3M  | 1.3M  | **38x**   |
-| large object (100 items)                        | 13K    | 17K    | **950K**         | 1.2M  | 133K  | **56x**   |
-| readonly field (wrapper compiles away)          | 3.1M   | 6.6M   | **17.8M**        | —     | —     | 2.7x      |
-| readonly root object (rebuild + freeze)         | 2.9M   | 5.6M   | **13.5M**        | —     | —     | 2.4x      |
-| readonly array (copy + freeze)                  | 4.0M   | 4.2M   | **12.9M**        | —     | —     | 3.1x      |
-| recursive tree (7 nodes)                        | 574K   | 997K   | **9.0M**         | 11.9M | 4.8M  | 9.0x      |
-| recursive tree (121 nodes)                      | 32K    | 58K    | **986K**         | 1.9M  | 375K  | **17x**   |
-| nested recursion (7 nodes)                      | 390K   | 696K   | **7.8M**         | 10.5M | 2.9M  | **11x**   |
-| nested recursion (121 nodes)                    | 24K    | 42K    | **816K**         | 1.6M  | 205K  | **20x**   |
-| deeply nested object (243 leaves)               | 11K    | 28K    | **845K**         | 1.0M  | 125K  | **30x**   |
-| event log (combined)                            | 375K   | 808K   | **7.6M**         | —     | —     | 9.4x      |
-| catalog product with image URLs (valid)         | 444K   | 485K   | **4.6M**         | —     | —     | 9.5x      |
-| catalog product with image URLs (invalid)       | 196K   | 176K   | **14.9M**        | —     | —     | **85x**   |
-| catalog page (20 products)                      | 22K    | 24K    | **308K**         | —     | —     | **13x**   |
-| page of compiled items, page not compiled (20)  | —      | 163K   | **1.0M**         | —     | —     | 6.2x      |
-| same, items with a `tags` array (20)            | —      | 97K    | **702K**         | —     | —     | 7.2x      |
-| functional API: `z.safeParse(Schema, x)`        | —      | 2.6M   | **7.6M**         | —     | —     | 2.9x      |
-| object with transform (zero-capture)            | 1.1M   | 1.9M   | **7.6M**         | —     | —     | 4.0x      |
-| array 10 × transform (zero-capture)             | 123K   | 209K   | **4.3M**         | —     | —     | **21x**   |
-| array 50 × transform (zero-capture)             | 26K    | 41K    | **1.0M**         | —     | —     | **25x**   |
-| object with captured transform                  | 1.2M   | 8.3M   | **16.2M**        | —     | —     | 2.0x      |
-| object with captured refine (cross-field)       | 1.5M   | 2.2M   | **11.7M**        | —     | —     | 5.3x      |
-| object with superRefine (cross-field)           | 1.5M   | 2.2M   | **9.6M**         | —     | —     | 4.3x      |
-| coerced query object (valid)                    | 1.8M   | 3.0M   | **5.4M**         | —     | —     | 1.8x      |
-| coerced query object (invalid)                  | 1.0M   | 837K   | **10.6M**        | —     | —     | **13x**   |
-| preprocessed query object (valid)               | 432K   | 1.8M   | **5.4M**         | —     | —     | 3.0x      |
-| preprocessed query object (invalid)             | 393K   | 796K   | **12.7M**        | —     | —     | **16x**   |
-| stringbool config object (valid)                | —      | 2.8M   | **6.3M**         | —     | —     | 2.2x      |
-| stringbool config object (invalid)              | —      | 698K   | **13.5M**        | —     | —     | **19x**   |
-| custom/instanceof request (valid)               | 979K   | 3.2M   | **10.4M**        | —     | —     | 3.3x      |
-| custom/instanceof request (invalid)             | 795K   | 955K   | **13.6M**        | —     | —     | **14x**   |
-| disjoint object intersection (valid)            | 1.4M   | 1.6M   | **9.7M**         | —     | —     | 6.0x      |
-| disjoint object intersection (invalid)          | 494K   | 335K   | **15.7M**        | —     | —     | **47x**   |
+| simple string                                   | 27.6M  | 49.7M  | **49.4M**        | 50.6M | 49.7M | 1.0x      |
+| string (min/max)                                | 25.4M  | 19.6M  | **49.6M**        | 50.8M | 45.2M | 2.5x      |
+| number (int+positive)                           | 25.0M  | 23.0M  | **50.9M**        | 50.4M | 50.4M | 2.2x      |
+| enum                                            | 23.9M  | 38.6M  | **50.6M**        | 50.6M | 50.5M | 1.3x      |
+| bigint (min/max)                                | 23.9M  | 15.4M  | **49.9M**        | —     | —     | 3.2x      |
+| tuple [string, int, bool]                       | 7.3M   | 13.3M  | **50.4M**        | 49.6M | 45.9M | 3.8x      |
+| record\<string, number\>                        | 3.7M   | 3.3M   | **30.2M**        | 25.3M | 43.3M | 9.0x      |
+| set\<string\> (5 items)                         | 4.2M   | 3.8M   | **42.7M**        | —     | —     | **11x**   |
+| set\<string\> (20 items)                        | 1.4M   | 1.1M   | **23.9M**        | —     | —     | **23x**   |
+| map\<string, number\> (5 entries)               | 2.2M   | 1.6M   | **32.1M**        | —     | —     | **20x**   |
+| map\<string, number\> (20 entries)              | 669K   | 429K   | **13.8M**        | —     | —     | **32x**   |
+| pipe (non-transform)                            | 14.1M  | 10.4M  | **50.7M**        | —     | —     | 4.9x      |
+| discriminatedUnion (3 variants)                 | 3.7M   | 9.9M   | **48.5M**        | 47.3M | 11.8M | 4.9x      |
+| discriminatedUnion (8 variants, rotating)       | 3.3M   | 8.8M   | **31.6M**        | —     | —     | 3.6x      |
+| plain union of 8 tagged objects (auto-discrim.) | 380K   | 1.8M   | **31.6M**        | —     | —     | **17x**   |
+| strict object (DB row)                          | 2.1M   | 4.5M   | **25.2M**        | —     | —     | 5.6x      |
+| medium object (valid)                           | 2.2M   | 3.5M   | **19.4M**        | 23.5M | 11.2M | 5.6x      |
+| medium object (extra keys stripped)             | 2.0M   | 3.0M   | **18.8M**        | —     | —     | 6.3x      |
+| medium object (invalid)                         | 584K   | 444K   | **45.6M**        | 3.5M  | 12.0M | **103x**  |
+| large object (10 items)                         | 125K   | 238K   | **7.8M**         | 8.9M  | 1.3M  | **33x**   |
+| large object (100 items)                        | 14K    | 25K    | **918K**         | 1.4M  | 129K  | **37x**   |
+| readonly field (wrapper compiles away)          | 3.7M   | 11.9M  | **48.8M**        | —     | —     | 4.1x      |
+| readonly root object (rebuild + freeze)         | 3.4M   | 9.4M   | **31.5M**        | —     | —     | 3.4x      |
+| readonly array (copy + freeze)                  | 5.0M   | 7.1M   | **21.7M**        | —     | —     | 3.0x      |
+| recursive tree (7 nodes)                        | 616K   | 1.3M   | **15.9M**        | 25.6M | 6.5M  | **12x**   |
+| recursive tree (121 nodes)                      | 33K    | 76K    | **1.1M**         | 2.2M  | 391K  | **14x**   |
+| nested recursion (7 nodes)                      | 406K   | 960K   | **13.3M**        | 24.4M | 3.6M  | **14x**   |
+| nested recursion (121 nodes)                    | 24K    | 54K    | **884K**         | 1.8M  | 218K  | **16x**   |
+| deeply nested object (243 leaves)               | 11K    | 44K    | **926K**         | 1.2M  | 131K  | **21x**   |
+| event log (combined)                            | 384K   | 1.1M   | **11.6M**        | —     | —     | **11x**   |
+| catalog product with image URLs (valid)         | 438K   | 570K   | **5.9M**         | —     | —     | **10x**   |
+| catalog product with image URLs (invalid)       | 128K   | 121K   | **41.0M**        | —     | —     | **338x**  |
+| catalog page (20 products)                      | 21K    | 29K    | **327K**         | —     | —     | **11x**   |
+| page of compiled items, page not compiled (20)  | —      | 203K   | **1.1M**         | —     | —     | 5.5x      |
+| same, items with a `tags` array (20)            | —      | 132K   | **758K**         | —     | —     | 5.7x      |
+| functional API: `z.safeParse(Schema, x)`        | —      | 4.0M   | **15.3M**        | —     | —     | 3.8x      |
+| object with transform (zero-capture)            | 1.3M   | 3.2M   | **12.4M**        | —     | —     | 3.9x      |
+| array 10 × transform (zero-capture)             | 133K   | 283K   | **5.6M**         | —     | —     | **20x**   |
+| array 50 × transform (zero-capture)             | 27K    | 56K    | **1.1M**         | —     | —     | **20x**   |
+| object with captured transform                  | 1.4M   | 12.5M  | **48.8M**        | —     | —     | 3.9x      |
+| object with captured refine (cross-field)       | 1.6M   | 3.2M   | **24.2M**        | —     | —     | 7.5x      |
+| object with superRefine (cross-field)           | 1.7M   | 3.3M   | **17.3M**        | —     | —     | 5.2x      |
+| coerced query object (valid)                    | 1.9M   | 4.0M   | **7.3M**         | —     | —     | 1.8x      |
+| coerced query object (invalid)                  | 1.1M   | 988K   | **21.8M**        | —     | —     | **22x**   |
+| preprocessed query object (valid)               | 453K   | 2.6M   | **6.8M**         | —     | —     | 2.6x      |
+| preprocessed query object (invalid)             | 417K   | 934K   | **28.1M**        | —     | —     | **30x**   |
+| stringbool config object (valid)                | —      | 3.5M   | **9.2M**         | —     | —     | 2.7x      |
+| stringbool config object (invalid)              | —      | 765K   | **36.8M**        | —     | —     | **48x**   |
+| custom/instanceof request (valid)               | 1.1M   | 4.3M   | **22.7M**        | —     | —     | 5.3x      |
+| custom/instanceof request (invalid)             | 861K   | 1.1M   | **36.9M**        | —     | —     | **33x**   |
+| disjoint object intersection (valid)            | 1.6M   | 2.2M   | **19.4M**        | —     | —     | 9.0x      |
+| disjoint object intersection (invalid)          | 525K   | 406K   | **45.8M**        | —     | —     | **113x**  |
 
-_ops/s, higher is better. `vp test bench` on an Apple M4 Max (zod 4.5.2, zod v3 3.23.8, typia 12, ajv 8),
-best of three runs. The harness costs ~60 ns per iteration, so the fastest rows sit at that floor and gaps
-between the AOT columns there are noise, not real._
+_ops/s, higher is better. `vp test bench`, one file at a time, on an Apple M4 Max (zod 4.5.2, zod v3 3.23.8,
+typia 12, ajv 8), best of five runs. The harness costs ~20 ns per iteration (an empty function runs at 49M
+ops/s), so the fastest rows sit at that floor and gaps between the AOT columns there are noise, not real._
 
 Nested objects, arrays and recursive types gain the most. Rejection is fast because a failed
 `safeParse` defers building the error until `.error` is read. Zod 4.5 stopped capturing a stack trace
