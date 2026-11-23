@@ -1,5 +1,10 @@
 import { bench, describe } from "vite-plus/test";
-import {
+import * as fixtures from "../../fixtures/schemas/index.js";
+
+// Bound once, outside the timed functions: under Vitest's module runner each use
+// of an imported name is a getter call per module it passes through (three for
+// the fixtures), which bundled code never pays and which added ~50 ns per row.
+const {
   aotCatalogPage,
   aotCatalogProduct,
   CatalogPageSchema,
@@ -9,7 +14,7 @@ import {
   v3CatalogProductSchema,
   validCatalogPage,
   validCatalogProduct,
-} from "../../fixtures/schemas/index.js";
+} = fixtures;
 
 // A schema module whose schemas share sub-shapes (see fixtures/schemas/catalog):
 // `z.url()` keeps the error-collecting walk on the hot path, and that walk

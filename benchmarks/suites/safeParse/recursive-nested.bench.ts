@@ -1,5 +1,10 @@
 import { bench, describe } from "vite-plus/test";
-import {
+import * as fixtures from "../../fixtures/schemas/index.js";
+
+// Bound once, outside the timed functions: under Vitest's module runner each use
+// of an imported name is a getter call per module it passes through (three for
+// the fixtures), which bundled code never pays and which added ~50 ns per row.
+const {
   ajvThread,
   aotThread,
   CommentThreadSchema,
@@ -7,7 +12,7 @@ import {
   v3CommentThreadSchema,
   validThreadDeep,
   validThreadShallow,
-} from "../../fixtures/schemas/index.js";
+} = fixtures;
 
 // Recursion that is NOT the compiled root: a recursive `Comment` type nested
 // inside a response envelope. Before multi-target recursion support the comment

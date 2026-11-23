@@ -1,5 +1,10 @@
 import { bench, describe } from "vite-plus/test";
-import {
+import * as fixtures from "../../fixtures/schemas/index.js";
+
+// Bound once, outside the timed functions: under Vitest's module runner each use
+// of an imported name is a getter call per module it passes through (three for
+// the fixtures), which bundled code never pays and which added ~50 ns per row.
+const {
   ajvApiResponse,
   ajvUser,
   aotApiResponse,
@@ -11,7 +16,7 @@ import {
   validApiResponse10,
   validUser,
   wrongShapeUser,
-} from "../../fixtures/schemas/index.js";
+} = fixtures;
 
 // Boolean type guard ("does this match?") — the cheapest validation question.
 // zod-compiler's `.is()` is the compiled fast-check itself: one boolean

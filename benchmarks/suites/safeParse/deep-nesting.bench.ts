@@ -1,12 +1,17 @@
 import { bench, describe } from "vite-plus/test";
-import {
+import * as fixtures from "../../fixtures/schemas/index.js";
+
+// Bound once, outside the timed functions: under Vitest's module runner each use
+// of an imported name is a getter call per module it passes through (three for
+// the fixtures), which bundled code never pays and which added ~50 ns per row.
+const {
   ajvDeepLayout,
   aotDeepLayout,
   DeepLayoutSchema,
   typiaValidateDeepLayout,
   v3DeepLayoutSchema,
   validDeepLayout,
-} from "../../fixtures/schemas/index.js";
+} = fixtures;
 
 // A fixed object nested 4 panel levels deep (243 leaf widgets). The fully
 // inlined fast-check would exceed V8's TurboFan budget and drop to the slower

@@ -1,5 +1,10 @@
 import { bench, describe } from "vite-plus/test";
-import {
+import * as fixtures from "../../fixtures/schemas/index.js";
+
+// Bound once, outside the timed functions: under Vitest's module runner each use
+// of an imported name is a getter call per module it passes through (three for
+// the fixtures), which bundled code never pays and which added ~50 ns per row.
+const {
   ApiResponseSchema,
   ajvApiResponse,
   ajvUser,
@@ -22,7 +27,7 @@ import {
   validApiResponse100,
   validStrictRow,
   validUser,
-} from "../../fixtures/schemas/index.js";
+} = fixtures;
 
 describe("safeParse: medium object — valid user", () => {
   bench("zod", () => {

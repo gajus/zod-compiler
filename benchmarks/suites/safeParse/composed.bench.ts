@@ -1,6 +1,11 @@
 import { bench, describe } from "vite-plus/test";
 import { z } from "zod";
-import {
+import * as fixtures from "../../fixtures/schemas/index.js";
+
+// Bound once, outside the timed functions: under Vitest's module runner each use
+// of an imported name is a getter call per module it passes through (three for
+// the fixtures), which bundled code never pays and which added ~50 ns per row.
+const {
   aotComposedItem,
   ComposedItemSchema,
   ComposedPageSchema,
@@ -10,7 +15,8 @@ import {
   validComposedItem,
   validComposedPage,
   validComposedTaggedPage,
-} from "../../fixtures/schemas/index.js";
+} = fixtures;
+const { safeParse } = z;
 
 // Both pages are plain zod, built by the same generic factory. Only the item
 // differs: zod parses each one through `item._zod.run`, and a compiled item
@@ -39,9 +45,9 @@ describe("safeParse: generic page of a compiled item with an array field, page n
 // written in — calls `schema._zod.run` and never the schema's own method.
 describe("safeParse: functional API, z.safeParse(schema, value)", () => {
   bench("zod", () => {
-    z.safeParse(ComposedItemSchema, validComposedItem);
+    safeParse(ComposedItemSchema, validComposedItem);
   });
   bench("zod-compiler", () => {
-    z.safeParse(aotComposedItem, validComposedItem);
+    safeParse(aotComposedItem, validComposedItem);
   });
 });
